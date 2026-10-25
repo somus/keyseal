@@ -255,14 +255,18 @@ fn directory_string(value: &AttributeTypeAndValue) -> Option<String> {
         | Tag::Utf8String
         | Tag::Ia5String => std::str::from_utf8(data).ok().map(str::to_owned),
         Tag::BmpString if data.len() % 2 == 0 => char::decode_utf16(
-            data.chunks_exact(2)
-                .map(|pair| u16::from_be_bytes([pair[0], pair[1]])),
+            data.as_chunks::<2>()
+                .0
+                .iter()
+                .map(|&pair| u16::from_be_bytes(pair)),
         )
         .collect::<Result<String, _>>()
         .ok(),
         Tag::UniversalString if data.len() % 4 == 0 => data
-            .chunks_exact(4)
-            .map(|quad| char::from_u32(u32::from_be_bytes([quad[0], quad[1], quad[2], quad[3]])))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|&quad| char::from_u32(u32::from_be_bytes(quad)))
             .collect(),
         // TeletexString, read as Latin-1 the way OpenSSL and Node do.
         Tag::T61String => Some(data.iter().map(|&byte| char::from(byte)).collect()),

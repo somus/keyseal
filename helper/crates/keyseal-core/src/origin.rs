@@ -321,10 +321,7 @@ mod tests {
             inner: DefaultResolver::default(),
         };
         let config = Agent::config_builder().build();
-        let timeout = NextTimeout {
-            after: ureq::unversioned::transport::time::Duration::NotHappening,
-            reason: ureq::Timeout::Global,
-        };
+        let timeout = NextTimeout::default();
         let other: Uri = "https://evil.example.org/".parse().unwrap();
         let error = resolver.resolve(&other, &config, timeout).unwrap_err();
         assert!(

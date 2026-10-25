@@ -15,11 +15,11 @@ jobs:
   typescript:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: oven-sh/setup-bun@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version-file: package.json
-      - uses: actions/cache@v6
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.bun/install/cache
           key: bun-${{ runner.os }}-${{ hashFiles('bun.lock', 'catalogue/bun.lock') }}
@@ -42,8 +42,8 @@ jobs:
       run:
         working-directory: service
     steps:
-      - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
           enable-cache: true
           cache-dependency-glob: service/uv.lock
@@ -61,11 +61,11 @@ jobs:
         shell: bash
         working-directory: helper
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: |
-          rustup toolchain install 1.97.1 --profile minimal --component clippy,rustfmt
-          rustup default 1.97.1
-      - uses: Swatinem/rust-cache@v2
+          rustup toolchain install 1.99.1 --profile minimal --component clippy,rustfmt
+          rustup default 1.99.1
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: helper
       # The SoftHSM test skips itself without KEYSEAL_SOFTHSM_MODULE, so each
@@ -92,13 +92,17 @@ jobs:
           module="$(brew --prefix softhsm)/lib/softhsm/libsofthsm2.so"
           test -f "$module"
           echo "KEYSEAL_SOFTHSM_MODULE=$module" >>"$GITHUB_ENV"
-      # SoftHSM2-for-Windows 2.5.0 (the MSI behind softhsm.install) installs
-      # to C:\SoftHSM2; OpenSC's MSI puts pkcs11-tool under tools.
+      # Chocolatey's softhsm.install no longer leaves SoftHSM2-for-Windows
+      # 2.5.0 installed, so extract its MSI with an administrative install,
+      # which lays it out in C:\SoftHSM2. The tests write their own
+      # softhsm2.conf. OpenSC's MSI puts pkcs11-tool under tools.
       # softhsm2-util loads softhsm2-x64.dll by name, so lib goes on the PATH.
       - name: SoftHSM (Windows)
         if: runner.os == 'Windows'
         run: |
           choco install -y --no-progress softhsm.install opensc
+          msi=$(cygpath -w /c/ProgramData/chocolatey/lib/softhsm.install/tools/SoftHSM2-2.5.0.msi)
+          powershell -NoProfile -Command "Start-Process msiexec -Wait -ArgumentList '/a','\"$msi\"','/qn','TARGETDIR=C:\'"
           module='C:\SoftHSM2\lib\softhsm2-x64.dll'
           test -f "$module"
           test -f 'C:\SoftHSM2\bin\softhsm2-util.exe'

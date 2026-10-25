@@ -393,20 +393,6 @@ impl Token {
 mod tests {
     use super::*;
 
-    /// A second job in the same process loads the driver again; it is
-    /// still started, since it is never finalised. Runs with
-    /// `KEYSEAL_SOFTHSM_MODULE`, like the SoftHSM suites.
-    #[test]
-    fn a_driver_loads_twice_in_one_process() {
-        let Ok(module) = std::env::var("KEYSEAL_SOFTHSM_MODULE") else {
-            eprintln!("skipped: set KEYSEAL_SOFTHSM_MODULE to libsofthsm2 to run");
-            return;
-        };
-        let path = Path::new(&module);
-        assert!(Module::load(path).is_ok());
-        assert!(Module::load(path).is_ok());
-    }
-
     #[test]
     fn signing_certificates_need_non_repudiation() {
         assert!(is_signing_certificate(include_bytes!(

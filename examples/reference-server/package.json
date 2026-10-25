@@ -1,0 +1,12 @@
+{
+  "name": "@keyseal/reference-server",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "bun --conditions=@keyseal/source src/main.ts",
+    "check:types": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@keyseal/server": "workspace:*"
+  }
+}

@@ -1,0 +1,39 @@
+name: e2e
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: package.json
+      - uses: actions/cache@v6
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+          restore-keys: bun-${{ runner.os }}-
+      - run: bun install --frozen-lockfile
+      - run: |
+          rustup toolchain install 1.97.1 --profile minimal
+          rustup default 1.97.1
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: helper
+      - run: |
+          sudo apt-get update
+          sudo apt-get install -y softhsm2 opensc jq libasound2-dev libfontconfig-dev libvulkan1 libwayland-dev libx11-xcb-dev libxkbcommon-x11-dev
+      - run: scripts/ci/e2e.sh
+        env:
+          KEYSEAL_SOFTHSM_MODULE: /usr/lib/softhsm/libsofthsm2.so

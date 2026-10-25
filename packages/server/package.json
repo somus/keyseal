@@ -1,0 +1,31 @@
+{
+  "name": "@keyseal/server",
+  "version": "0.1.0",
+  "description": "Fetch-API handlers for the KeySeal job protocol.",
+  "homepage": "https://github.com/somus/keyseal/tree/main/packages/server#readme",
+  "bugs": "https://github.com/somus/keyseal/issues",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/somus/keyseal.git",
+    "directory": "packages/server"
+  },
+  "files": [
+    "dist"
+  ],
+  "type": "module",
+  "exports": {
+    ".": {
+      "@keyseal/source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "check:types": "tsc --noEmit"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

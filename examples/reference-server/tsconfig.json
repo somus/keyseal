@@ -1,0 +1,9 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "customConditions": ["@keyseal/source"],
+    "types": ["bun"]
+  },
+  "include": ["src"]
+}

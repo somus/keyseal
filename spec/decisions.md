@@ -1,0 +1,61 @@
+# Decisions in protocol v1 draft
+
+Details [docs/design.md](../docs/design.md) leaves open, settled with the simplest option. Section numbers refer to [protocol-v1.md](protocol-v1.md).
+
+- Decision: the job URL path is `<base>/v1/jobs/<token>` with an integrator-chosen `<base>`; endpoints append `/certificate`, `/signature`, `/failure` and `/documents/<index>` (3.2).
+- Decision: job URLs have no userinfo, query or fragment (3.2).
+- Decision: links are at most 2048 bytes, the path after the action may be empty or `/`, exactly one `job` parameter, other parameters ignored (3.3).
+- Decision: "private ranges" means the resolved address of every connection is checked against loopback, unspecified, RFC 1918, CGNAT, link-local and ULA ranges, which also blocks DNS rebinding (4.2).
+- Decision: same-origin redirects may be followed, at most 5 per request (4.3).
+- Decision: hosts are compared and displayed in A-label (punycode) form (4.1, 12.1).
+- Decision: insecure development origins get the first-contact prompt on every job, since they are never stored (4.4).
+- Decision: the first-contact prompt comes before any network request to the origin, including the manifest; declining leaves the job pending (5).
+- Decision: trust is stored when the user accepts the prompt, not when the job succeeds (5).
+- Decision: the 2 second budget covers manifest and icon together; manifest capped at 16384 bytes (6.1).
+- Decision: any manifest fetch failure, including 404, falls back to the cached copy; the cache is replaced on every valid fetch and has no expiry (6.1).
+- Decision: a manifest whose `protocol` is not 1 is treated as invalid; `name` is required, 1 to 64 characters (6.2).
+- Decision: `icon` and `document` are absolute URLs, not relative (6.2, 8.2).
+- Decision: `accentColor` accepts hex digits in either case (6.2).
+- Decision: a helper below `minHelperVersion` SHOULD NOT claim the job, so the page's install prompt appears; the 426 stays authoritative (6.2).
+- Decision: a server with a minimum version treats a missing or unparseable `X-KeySeal-Version` as too old; versions compare by SemVer 2.0.0 precedence (7.3).
+- Decision: on 426 the server SHOULD fail the job with the message only when the job is `pending` or the request is a POST carrying the matching claim nonce, and never while another request holds a live settle lease; otherwise the job is unchanged, so the token alone cannot end a claimed job. The helper SHOULD run an update check outside the daily schedule (7.3, 8.1).
+- Decision: 426 is sent without the `Upgrade` header RFC 9110 asks for, since no protocol upgrade applies (7.3).
+- Decision: within v1, receivers ignore unknown members on both requests and responses; schemas do not set `additionalProperties: false` (7.1).
+- Decision: every GET after the claim gets 409; there is no way to re-read the description, even with the nonce (8.2).
+- Decision: the claim nonce uses the token charset and the same generation rule as the token (8.2).
+- Decision: `title` and `signer` are 1 to 200 characters (8.2).
+- Decision: sign round 1 returns `signatureAlgorithm` (`rsa-pkcs1-v1_5`, `rsa-pss`, `ecdsa`) in addition to `toSign` and `digestAlgorithm`, chosen by the server, because the helper otherwise cannot tell PSS from PKCS#1 v1.5 for an RSA key (8.3).
+- Decision: body limits: certificate 16384 characters, chain at most 8 entries and required (may be empty), each signature 4096 characters, failure message 1 to 500 characters, whole body 262144 bytes with 413 above it (8.1, 8.3, 8.5, 8.7).
+- Decision: sign round 2 and failure return `{}`; the helper shows its own success text rather than a server message (8.5, 8.7).
+- Decision: each document is fetched with `Authorization: Bearer <job token>`, plus `X-KeySeal-Claim: <claim nonce>`, only while the job is `prepared`, capped at 64 MiB, and the signature checked is the last `/ByteRange` in the file (8.4).
+- Decision: invalid JSON and schema violations are 422 and leave the job unchanged; a refused certificate or signature is 422 and fails the job (8.8).
+- Decision: 410 covers `failed` as well as `completed`; `expired` stays 404 (8.1, 8.8).
+- Decision: the status code is the only machine-readable error result; error bodies carry only `message` (8.9).
+- Decision: the settle lease applies to all three POST endpoints, not only the final completion (9.3).
+- Decision: a request that acquired the lease before expiry may finish its transition after expiry (9.2).
+- Decision: a helper may repeat a POST with the same body after a network failure; there is no idempotent replay, a repeat on a moved job gets 409 or 410 (9.3).
+- Decision: the certificate shown before the PIN is identified by its subject (12.1).
+- Decision: the helper first enumerates certificates without login; only a token that exposes none before login may get the PIN first, with a second prompt showing digest and certificate and an explicit confirm before signing, and logout on decline (12.1).
+- Decision: the document download also carries the claim nonce in `X-KeySeal-Claim`; the server answers 403 when it is missing or wrong (8.4).
+- Decision: the helper may log in to read certificates for enrol, since nothing is signed (8.6).
+- Decision: update manifest files are `keyseal-update.json` and `keyseal-update.json.sig`; the threshold is pinned in the helper, not carried in the manifest; `keyId` is the hex SHA-256 of the raw public key; platform ids are `macos-universal`, `windows-x64`, `linux-x64` (13).
+- Decision: job creation, the page's status endpoint and the backend-to-service interface are outside this spec (2).
+- Decision: an unreachable signing service, or any error status from it other than 400 or 422, is 502; the server releases the settle lease and leaves the job unchanged, and the helper may repeat the same request once after a short delay. A service 400 or 422 is a refusal: 422 and the job fails with the service's message (8.8, 9.3).
+- Decision: `/documents/<index>` is one of the job endpoints, the index 0-based in decimal without leading zeros; an index the job has no document at is 404, after the 403 and 409 checks (3.2, 8.4).
+- Decision: the document download checks 429, 404, 426, 404, 410 in the order of 8.1, then requires the bearer token to equal the path token and the claim nonce to match, else 403; a `pending` job has no nonce yet and gets 403 (8.4).
+- Decision: every sign job description carries `documents`; `digestAlgorithm` appears only when the integrator fixed one in advance, and a certificate whose key implies another digest is refused with 422 and fails the job (8.2, 8.3).
+- Decision: enrol applies the same certificate checks as sign round 1: valid now, supported key, expected SHA-256, chain to a trusted root (8.6).
+- Decision: the claim nonce is stored only as its SHA-256 and compared in constant time, like the token (8.1, 9.4).
+- Decision: expiry is evaluated on every read of the job; servers may also sweep expired jobs, skipping any job whose settle lease is live (9.2).
+- Decision: lengths in characters count Unicode code points (1).
+- Decision: a wrong method on a job path is 404, and servers need not check the request Content-Type (3.2, 8.1).
+- Decision: the integrator's completion callback runs under the settle lease before the job becomes `completed` and may run twice after a lease takeover, so it must be idempotent on the job id; this is `@keyseal/server` behaviour, documented in its README, not protocol (8.5, 9.3).
+- Decision: the `output` member of the `/sign/start` state (base64 of the prepared PDF) is a stable part of the signing service API, which `@keyseal/server` reads to serve the document; the rest of the state stays opaque (8.4, service/README.md).
+- Decision: `@keyseal/server` lets `onCompleted` throw `JobRefused` to fail the job with its message (422 to the helper), and calls an optional `onFailed` under the settle lease before a job becomes `failed` by a helper report, a server refusal or a 426, never on expiry; its errors are logged and do not stop the failure. This is package behaviour, documented in its README, not protocol (8.5, 8.8, 9.3).
+- Decision: `certificatePolicy` sits between pinning one certificate and accepting any trusted one: any listed policy OID, any listed issuer CN, and the subject O, every present member required, strings compared exactly, a name with no or several CN or O attributes never matching. Limits: 16 entries per list, OIDs 128 characters, names 200. The issuer CN is read from the certificate's issuer name, which the chain check to a trusted root binds to the issuing CA (8.2, 8.3, 8.6).
+- Decision: every sign job carries a list of 1 to 20 documents; one document is a list of one, with no separate single-document shape. The job `title` describes the batch and each document has its own `title`, 1 to 200 characters. Enrol jobs carry no documents (8.2).
+- Decision: a batch is one job: one certificate, digest and signature scheme for every document, one round 1 and one round 2 request, and the existing states and settle lease. `PreparedSignature.documents` and `SignatureSubmission.signatures` follow the order and length of the description's `documents`; a signature list of another length is a schema error (422, job unchanged) (8.3, 8.5).
+- Decision: a batch is all or nothing. The helper validates every `toSign` and every downloaded document before the PIN prompt or confirmation and signs none if one fails; the server verifies every signature before finishing any, finishes all of them before handing any to the integrator, and one refused document fails the job (8.3 to 8.5, 10).
+- Decision: a job's documents together are at most 256 MiB as served, on top of the 64 MiB per document; `@keyseal/server` caps the PDFs given to `createSignJob` at 240 MiB together, leaving room for the signature placeholders and stamps preparing adds (8.4).
+- Decision: the signer approves a batch with one PIN prompt (or one confirmation on the login-first path and CNG). The view shows the number of documents up front, and may keep the titles, the certificate and the digests behind a control that reveals them (12.1).
+- Decision: through CNG the helper signs every document with one key handle, so a provider that keeps the handle authenticated shows its PIN dialog once per job; a provider that asks on every signature by policy asks once per document, which the helper cannot change (12.1).

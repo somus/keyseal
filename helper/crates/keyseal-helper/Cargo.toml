@@ -1,0 +1,28 @@
+[package]
+name = "keyseal-helper"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "keyseal"
+path = "src/main.rs"
+
+[build-dependencies]
+embed-resource.workspace = true
+
+[dependencies]
+keyseal-core = { path = "../keyseal-core" }
+keyseal-ui = { path = "../keyseal-ui" }
+x509-parser.workspace = true
+zeroize.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows = { workspace = true, features = ["Win32_System_Console"] }
+
+[dev-dependencies]
+base64.workspace = true
+hex.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+x509-parser.workspace = true

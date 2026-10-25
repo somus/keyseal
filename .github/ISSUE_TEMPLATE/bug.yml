@@ -1,0 +1,43 @@
+name: Bug report
+description: Something in KeySeal doesn't work as documented.
+labels: [bug]
+body:
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options:
+        - Helper
+        - "@keyseal/server"
+        - "@keyseal/browser"
+        - Signing service
+        - Driver catalogue
+        - Protocol spec
+        - Docs
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: "`keyseal --version` for the helper, the package or image version otherwise."
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: Platform and token
+      description: OS and version, browser, and the token model or driver if one is involved.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: doctor
+    attributes:
+      label: keyseal doctor output
+      description: For helper and token problems. Remove anything you consider private.
+      render: text

@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=KeySeal
+Comment=Sign documents with a DSC token
+Exec=keyseal %u
+Icon=keyseal
+Terminal=false
+NoDisplay=true
+Categories=Utility;
+MimeType=x-scheme-handler/keyseal;

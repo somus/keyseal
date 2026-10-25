@@ -1,0 +1,28 @@
+name: Token or driver support
+description: A DSC token or driver KeySeal doesn't find, or a catalogue entry that is wrong.
+labels: [catalogue]
+body:
+  - type: input
+    id: token
+    attributes:
+      label: Token model
+      description: For example HYP2003, ePass2003, ProxKey.
+    validations:
+      required: true
+  - type: input
+    id: usb
+    attributes:
+      label: USB vendor and product id
+      description: "From `system_profiler SPUSBDataType` (macOS), `lsusb` (Linux) or Device Manager (Windows), as vid:pid."
+  - type: textarea
+    id: driver
+    attributes:
+      label: Driver
+      description: The vendor's installer or package, and the PKCS#11 module path it installs on each platform you know.
+    validations:
+      required: true
+  - type: textarea
+    id: doctor
+    attributes:
+      label: keyseal doctor output
+      render: text

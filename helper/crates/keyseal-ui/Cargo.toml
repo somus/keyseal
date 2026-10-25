@@ -1,0 +1,35 @@
+[package]
+name = "keyseal-ui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+# The GPUI snapshot uses library features stabilised in Rust 1.93.
+rust-version = "1.93"
+
+[dependencies]
+futures.workspace = true
+gpui-kit.workspace = true
+keyseal-core = { path = "../keyseal-core" }
+url.workspace = true
+zeroize.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+metal.workspace = true
+objc2-app-kit.workspace = true
+
+# The version GPUI implements `HasWindowHandle` with, for the HWND CNG's PIN
+# dialog belongs to.
+[target.'cfg(windows)'.dependencies]
+raw-window-handle = "0.6.2"
+
+[features]
+# `cargo run -p keyseal-ui --example gallery --features gallery -- <view>`
+# opens one window with sample data, for screenshots.
+gallery = []
+
+[[example]]
+name = "gallery"
+required-features = ["gallery"]
+
+[dev-dependencies]
+gpui-kit = { workspace = true, features = ["test-support"] }

@@ -1,0 +1,214 @@
+{
+  "$schema": "./schema.json",
+  "version": 2,
+  "generatedAt": "2026-10-23T00:00:00Z",
+  "tokens": [
+    {
+      "name": "ePass2003",
+      "vendor": "Feitian Technologies",
+      "usb": [
+        {
+          "vid": "096e",
+          "pid": "0807"
+        },
+        {
+          "vid": "096e",
+          "pid": "080a"
+        }
+      ],
+      "modules": {
+        "macos-arm64": [
+          "/usr/local/lib/libcastle_v2.1.0.0.dylib",
+          "/usr/local/lib/libcastle.1.0.0.dylib",
+          "/usr/local/lib/libcastle.dylib"
+        ],
+        "macos-x64": [
+          "/usr/local/lib/libcastle_v2.1.0.0.dylib",
+          "/usr/local/lib/libcastle.1.0.0.dylib",
+          "/usr/local/lib/libcastle.dylib"
+        ],
+        "windows-x64": [
+          "C:\\Windows\\System32\\eps2003csp11.dll",
+          "C:\\Windows\\System32\\eps2003csp11v2.dll",
+          "C:\\Windows\\System32\\eps2003csp11_v2.dll"
+        ],
+        "linux-x64": [
+          "/usr/lib/libcastle.so.1.0.0",
+          "/usr/lib/libcastle.so",
+          "/usr/lib/libcastle_v2.1.0.0.so",
+          "/usr/lib64/libcastle.so.1.0.0"
+        ]
+      },
+      "notes": "096e:080a is the ePass2003Auto variant. Many Indian CAs (eMudhra, Capricorn, Sify, (n)Code) issue on this token."
+    },
+    {
+      "name": "HYP2003 (HyperPKI)",
+      "vendor": "HyperSecu Information Systems",
+      "usb": [
+        {
+          "vid": "2ccf",
+          "pid": "080a"
+        }
+      ],
+      "modules": {
+        "macos-arm64": ["/usr/local/lib/libcastle_v2.1.0.0.dylib"],
+        "macos-x64": ["/usr/local/lib/libcastle_v2.1.0.0.dylib"],
+        "windows-x64": [
+          "C:\\Windows\\System32\\HYP2003csp11IND.dll",
+          "C:\\Windows\\System32\\HyperPKICsp11_2003.dll",
+          "C:\\Windows\\System32\\eps2003csp11v2.dll",
+          "C:\\Program Files\\Hypersecu\\HyperPKI\\castle_v3.dll"
+        ],
+        "linux-x64": ["/usr/lib/libcastle.so.1.0.0", "/usr/lib/libcastle_v3.so"]
+      },
+      "notes": "Rebranded ePass2003 sharing the EnterSafe ePass2003 middleware. A HYP2003 on macOS 26 enumerates as 2ccf:080a. The driver reports its slot empty for about two seconds after C_Initialize while a background thread finds the card, so the USB match is what makes the helper wait. Some units may enumerate with Feitian's 096e:0807. Resellers list a FIPS 140-3 model since September 2026; its driver paths are unconfirmed."
+    },
+    {
+      "name": "ProxKey",
+      "vendor": "Watchdata",
+      "usb": [],
+      "modules": {
+        "macos-arm64": [
+          "/usr/local/lib/wdProxKeyUsbKeyTool/libwdpkcs_Proxkey.dylib",
+          "/usr/local/lib/libwdpkcs.dylib",
+          "/usr/local/lib/libwdpkcs_SignatureP11.dylib",
+          "/Library/WatchData/ProxKey/lib/libwdpkcs_SignatureP11.dylib",
+          "/usr/lib/WatchData/eMudhra_3.4.3/lib/libwdpkcs_eMudhra_343.dylib"
+        ],
+        "macos-x64": [
+          "/usr/local/lib/wdProxKeyUsbKeyTool/libwdpkcs_Proxkey.dylib",
+          "/usr/local/lib/libwdpkcs.dylib",
+          "/usr/local/lib/libwdpkcs_SignatureP11.dylib",
+          "/Library/WatchData/ProxKey/lib/libwdpkcs_SignatureP11.dylib",
+          "/usr/lib/WatchData/eMudhra_3.4.3/lib/libwdpkcs_eMudhra_343.dylib"
+        ],
+        "windows-x64": [
+          "C:\\Windows\\System32\\SignatureP11.dll",
+          "C:\\Windows\\System32\\wdpkcs.dll"
+        ],
+        "linux-x64": [
+          "/usr/lib/WatchData/ProxKey/lib/libwdpkcs_SignatureP11.so",
+          "/usr/lib/libwdpkcs.so"
+        ]
+      },
+      "notes": "Watchdata's USB vendor id is 163c and the CCID driver lists Watchdata USB Key product ids 0407, 0417 and 0418, but no source ties any of them to ProxKey. Sources disagree on whether a FIPS 140-3 ProxKey has shipped."
+    },
+    {
+      "name": "mToken CryptoID",
+      "vendor": "Longmai Technology",
+      "usb": [],
+      "modules": {
+        "macos-arm64": [
+          "/usr/local/lib/libcryptoid_pkcs11.dylib",
+          "/usr/local/lib/libmtoken.dylib"
+        ],
+        "macos-x64": [
+          "/usr/local/lib/libcryptoid_pkcs11.dylib",
+          "/usr/local/lib/libmtoken.dylib"
+        ],
+        "windows-x64": [
+          "C:\\Windows\\System32\\CryptoIDA_pkcs11.dll",
+          "C:\\Windows\\System32\\cryptoide_pkcs11.dll",
+          "C:\\Windows\\System32\\mToken CryptoID PKCS11.dll",
+          "C:\\Windows\\System32\\mToken.dll"
+        ],
+        "linux-x64": [
+          "/usr/lib/libcryptoida_pkcs11.so",
+          "/usr/lib/libcryptoide_pkcs11.so",
+          "/usr/lib/libmtoken.so"
+        ]
+      },
+      "notes": "Some macOS installers put the module inside an app bundle under /Applications and some Linux installers under /opt. No source gives the full file name there, so those paths are not listed yet. Resellers list a FIPS 140-3 model since September 2026; its driver paths are unconfirmed."
+    },
+    {
+      "name": "InnaIT Key (PK32XX)",
+      "vendor": "Precision Biometric India",
+      "usb": [],
+      "modules": {
+        "macos-arm64": ["/usr/local/lib/libInnaITKey.dylib"],
+        "macos-x64": ["/usr/local/lib/libInnaITKey.dylib"],
+        "windows-x64": [
+          "C:\\Windows\\System32\\InnaITKey.dll",
+          "C:\\Windows\\System32\\InnaITPKCS11Driver.dll"
+        ],
+        "linux-x64": ["/usr/lib/libInnaITKey.so"]
+      },
+      "notes": "FIPS 140-3 token, issued since the CCA stopped FIPS 140-2 issuance on 21 September 2026. One source reports the macOS and Linux driver under /opt/Precision_Biometric/InnaITDSC/libraries without the file name, so that path is not listed yet."
+    },
+    {
+      "name": "SafeNet eToken 5110",
+      "vendor": "Thales (SafeNet)",
+      "usb": [
+        {
+          "vid": "08e6",
+          "pid": "34cf"
+        }
+      ],
+      "modules": {
+        "macos-arm64": [
+          "/usr/local/lib/libeTPkcs11.dylib",
+          "/Library/Frameworks/eToken.framework/Versions/A/libeTPkcs11.dylib",
+          "/Library/Frameworks/eToken.framework/Versions/A/libeToken.dylib"
+        ],
+        "macos-x64": [
+          "/usr/local/lib/libeTPkcs11.dylib",
+          "/Library/Frameworks/eToken.framework/Versions/A/libeTPkcs11.dylib",
+          "/Library/Frameworks/eToken.framework/Versions/A/libeToken.dylib"
+        ],
+        "windows-x64": ["C:\\Windows\\System32\\eTPKCS11.dll"],
+        "linux-x64": [
+          "/usr/lib/libeTPkcs11.so",
+          "/usr/lib64/libeTPkcs11.so",
+          "/usr/lib/libeToken.so"
+        ]
+      },
+      "notes": "Driver is SafeNet Authentication Client. 08e6:34cf is the eToken 5110+ FIPS; ids for other 5110 models are not confirmed."
+    },
+    {
+      "name": "eToken PRO 72K / SafeNet eToken 5100",
+      "vendor": "Aladdin (now Thales SafeNet)",
+      "usb": [
+        {
+          "vid": "0529",
+          "pid": "0620"
+        }
+      ],
+      "modules": {
+        "macos-arm64": [
+          "/usr/local/lib/libeTPkcs11.dylib",
+          "/Library/Frameworks/eToken.framework/Versions/A/libeTPkcs11.dylib",
+          "/Library/Frameworks/eToken.framework/Versions/A/libeToken.dylib"
+        ],
+        "macos-x64": [
+          "/usr/local/lib/libeTPkcs11.dylib",
+          "/Library/Frameworks/eToken.framework/Versions/A/libeTPkcs11.dylib",
+          "/Library/Frameworks/eToken.framework/Versions/A/libeToken.dylib"
+        ],
+        "windows-x64": ["C:\\Windows\\System32\\eTPKCS11.dll"],
+        "linux-x64": [
+          "/usr/lib/libeTPkcs11.so",
+          "/usr/lib64/libeTPkcs11.so",
+          "/usr/lib/libeToken.so"
+        ]
+      },
+      "notes": "Older Aladdin eToken generation, still in circulation on long-lived DSCs. Same SafeNet Authentication Client modules as the 5110."
+    },
+    {
+      "name": "TrustKey",
+      "vendor": "eMudhra",
+      "usb": [],
+      "modules": {
+        "macos-arm64": ["/usr/local/lib/TrustKeyP11_ND_v3.4.dylib"],
+        "macos-x64": ["/usr/local/lib/TrustKeyP11_ND_v3.4.dylib"],
+        "windows-x64": [
+          "C:\\Windows\\System32\\TRUSTKEYP11_ND_v34.dll",
+          "C:\\Windows\\System32\\TrustKeyP11.dll"
+        ],
+        "linux-x64": [
+          "/usr/lib/TRUSTKEY/libtrustkeyP11.so",
+          "/usr/lib/libtrustkeyP11.so"
+        ]
+      }
+    }
+  ]
+}

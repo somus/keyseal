@@ -1,0 +1,324 @@
+name: release
+
+# Helper releases, in two halves (docs/RELEASING.md):
+#
+# 1. Pushing a helper-v* tag builds the unsigned binaries reproducibly,
+#    signs and notarizes the macOS app, and makes a draft release holding
+#    every asset, keyseal-update.json and the SHA-256 lists.
+# 2. Maintainers rebuild, compare, and sign keyseal-update.json and SHA256SUMS
+#    offline on their YubiKeys (helper/packaging/sign-manifest.md). A manual
+#    run with the combined signatures verifies them with the pinned keys and
+#    threshold, checks every asset against SHA256SUMS, then publishes the
+#    draft as the latest release.
+#
+# Both halves release only a commit on main that pins main's keys.
+#
+# No release key is ever in CI. Secrets for macOS signing live in the
+# release-macos environment; publishing needs the release environment.
+
+on:
+  push:
+    tags: ["helper-v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "The draft release's tag, helper-vX.Y.Z"
+        required: true
+        type: string
+      signatures:
+        description: "The contents of keyseal-update.json.sig"
+        required: true
+        type: string
+      checksum_signatures:
+        description: "The contents of SHA256SUMS.sig"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      # A tag on an unreviewed commit could pin keys of its own.
+      - name: The tag is on main and pins main's keys
+        run: helper/packaging/check-release-commit.sh
+      # Helpers compare the manifest's version with their own, so the tag
+      # must be the version the binaries report.
+      - id: version
+        name: The tag matches the workspace version
+        run: |
+          version="$(awk -F'"' '/^version = /{print $2; exit}' helper/Cargo.toml)"
+          test "${GITHUB_REF_NAME#helper-v}" = "$version" \
+            || { echo "Tag $GITHUB_REF_NAME doesn't match helper version $version"; exit 1; }
+          echo "version=$version" >>"$GITHUB_OUTPUT"
+      # A helper that fetches from elsewhere, or pins only the placeholder
+      # key, could never update from this release.
+      - name: The helper updates from this repository with real keys
+        run: |
+          update=helper/crates/keyseal-core/src/update.rs
+          grep -qF "pub const RELEASES: &str = \"https://github.com/$GITHUB_REPOSITORY/releases/latest/download\";" "$update" \
+            || { echo "RELEASES in $update must name $GITHUB_REPOSITORY"; exit 1; }
+          ! grep -qF 'pub const RELEASE_KEYS: &[[u8; 32]] = &[[0; 32]];' "$update" \
+            || { echo "RELEASE_KEYS in $update is still the placeholder"; exit 1; }
+          catalogue=helper/crates/keyseal-core/src/catalogue.rs
+          grep -qF "\"https://github.com/$GITHUB_REPOSITORY/releases/download/catalogue/catalogue.json\"" "$catalogue" \
+            || { echo "CATALOGUE_URL in $catalogue must name $GITHUB_REPOSITORY"; exit 1; }
+          ! grep -qF 'pub const CATALOGUE_KEYS: &[[u8; 32]] = &[[0; 32]];' "$catalogue" \
+            || { echo "CATALOGUE_KEYS in $catalogue is still the placeholder"; exit 1; }
+
+  build-macos:
+    needs: check
+    runs-on: macos-15
+    env:
+      # The linker and clang are part of the reproducible toolchain.
+      DEVELOPER_DIR: /Applications/Xcode_16.4.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - working-directory: helper
+        run: |
+          rustup toolchain install
+          rustup target add aarch64-apple-darwin x86_64-apple-darwin
+      - run: helper/packaging/build-release.sh macos-universal dist
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: unsigned-macos-universal
+          path: dist/
+
+  build-windows:
+    needs: check
+    runs-on: windows-2025
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - working-directory: helper
+        run: |
+          rustup toolchain install
+          rustup target add x86_64-pc-windows-msvc
+      - run: helper/packaging/build-release.sh windows-x64 dist
+      # TODO(SignPath): after release one, submit the unsigned exe to
+      # SignPath Foundation here, gated on the reproducibility check
+      # (docs/CODE_SIGNING_POLICY.md). The signed exe then replaces it in
+      # dist/ before the zip is made, and becomes the update asset.
+      - name: Zip with install.cmd
+        shell: pwsh
+        run: |
+          $version = "${{ needs.check.outputs.version }}"
+          New-Item -ItemType Directory zip | Out-Null
+          Copy-Item "dist/keyseal-helper-$version-windows-x64.exe" zip/keyseal.exe
+          Copy-Item helper/packaging/windows/install.cmd zip/
+          Compress-Archive -Path zip/* -DestinationPath "dist/keyseal-helper-$version-windows-x64.zip"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: unsigned-windows-x64
+          path: dist/
+
+  # Built in an Ubuntu 22.04 container, so the binary needs only glibc 2.35
+  # and maintainers can reproduce it with the same image.
+  build-linux:
+    needs: check
+    runs-on: ubuntu-24.04
+    # By digest, so maintainers reproduce with the same image
+    # (docs/RELEASING.md).
+    container: ubuntu:22.04@sha256:0a9887931b0e38af2e3487ed39e29436b0535c4f3f52e57745baaf79d1898956
+    steps:
+      # GPUI's Linux build dependencies, as in checks.yml, plus the
+      # pkg-config the runner images have and the container lacks. Versions
+      # are whatever jammy serves today; BUILDINFO records the C toolchain.
+      - run: |
+          apt-get update
+          apt-get install -y --no-install-recommends build-essential ca-certificates curl file git \
+            pkg-config libasound2-dev libfontconfig-dev libvulkan1 libwayland-dev libx11-xcb-dev libxkbcommon-x11-dev
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: |
+          # The checkout belongs to another user than the container's root.
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          # rustup-init pinned by version and hash; it installs the
+          # toolchain rust-toolchain.toml pins.
+          curl --proto '=https' --tlsv1.2 -fsSLo rustup-init \
+            https://static.rust-lang.org/rustup/archive/1.29.2/x86_64-unknown-linux-gnu/rustup-init
+          echo "5be191e8c70a5007074254cb74d78dbfdd25cd5a61c27de7b8e5410122ec24f4  rustup-init" | sha256sum -c -
+          chmod +x rustup-init
+          ./rustup-init -y --profile minimal --default-toolchain none
+          rm rustup-init
+          echo "$HOME/.cargo/bin" >>"$GITHUB_PATH"
+      - working-directory: helper
+        run: rustup toolchain install
+      - id: build
+        run: echo "binary=$(helper/packaging/build-release.sh linux-x64 dist)" >>"$GITHUB_OUTPUT"
+      - name: Tarball, deb and AppImage
+        run: |
+          SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)"
+          export SOURCE_DATE_EPOCH
+          binary="${{ steps.build.outputs.binary }}"
+          helper/packaging/linux/build-tarball.sh "$binary" dist
+          helper/packaging/linux/build-deb.sh "$binary" dist
+          # appimagetool would fetch the newest runtime; pin both by hash.
+          curl -fsSLo appimagetool https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-x86_64.AppImage
+          curl -fsSLo runtime-x86_64 https://github.com/AppImage/type2-runtime/releases/download/20251108/runtime-x86_64
+          sha256sum -c - <<'SUMS'
+          ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0  appimagetool
+          2fca8b443c92510f1483a883f60061ad09b46b978b2631c807cd873a47ec260d  runtime-x86_64
+          SUMS
+          chmod +x appimagetool
+          APPIMAGETOOL="$PWD/appimagetool" APPIMAGETOOL_RUNTIME_FILE="$PWD/runtime-x86_64" \
+            helper/packaging/linux/build-appimage.sh "$binary" dist
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: unsigned-linux-x64
+          path: dist/
+
+  sign-macos:
+    needs: [check, build-macos]
+    runs-on: macos-15
+    environment: release-macos
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_16.4.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: unsigned-macos-universal
+          path: unsigned
+      - name: Developer ID certificate in a temporary keychain
+        env:
+          P12: ${{ secrets.APPLE_DEVELOPER_ID_P12 }}
+          P12_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_P12_PASSWORD }}
+        run: |
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          password="$(openssl rand -hex 16)"
+          printenv P12 | base64 --decode >"$RUNNER_TEMP/developer-id.p12"
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 3600 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          security import "$RUNNER_TEMP/developer-id.p12" -k "$keychain" -P "$P12_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$password" "$keychain"
+          security list-keychains -d user -s "$keychain"
+          rm "$RUNNER_TEMP/developer-id.p12"
+      - name: Sign, notarize and staple
+        env:
+          KEYSEAL_CODESIGN_IDENTITY: ${{ vars.APPLE_SIGNING_IDENTITY }}
+          NOTARIZE: "1"
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: |
+          export APPLE_API_KEY="$RUNNER_TEMP/AuthKey.p8"
+          printenv APPLE_API_KEY_P8 >"$APPLE_API_KEY"
+          version="${{ needs.check.outputs.version }}"
+          # The x86_64 token worker goes in the bundle beside the helper.
+          helper/packaging/macos/build-dmg.sh "unsigned/keyseal-helper-$version-macos-universal" signed \
+            "unsigned/keyseal-token-worker-$version-macos-x86_64"
+          rm -rf signed/KeySeal.app "$APPLE_API_KEY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: signed-macos-universal
+          path: signed/
+
+  draft:
+    needs: [check, build-windows, build-linux, sign-macos]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          path: artifacts
+      - name: Assets, manifest and SHA-256 lists
+        run: |
+          version="${{ needs.check.outputs.version }}"
+          mkdir dist
+          # The unsigned binaries maintainers reproduce before signing.
+          (cd artifacts && sha256sum \
+            unsigned-macos-universal/keyseal-* \
+            "unsigned-windows-x64/keyseal-helper-$version-windows-x64.exe" \
+            "unsigned-linux-x64/keyseal-helper-$version-linux-x64" \
+            | sed 's#  unsigned-[^/]*/#  #') >dist/SHA256SUMS-unsigned
+          for platform in macos-universal windows-x64 linux-x64; do
+            cat "artifacts/unsigned-$platform/BUILDINFO"
+            echo
+          done >dist/BUILDINFO
+          # The token worker reaches users only inside the macOS app.
+          cp artifacts/signed-macos-universal/* dist/
+          cp artifacts/unsigned-windows-x64/keyseal-helper-* dist/
+          # The AppImage is also the Linux update asset.
+          cp artifacts/unsigned-linux-x64/keyseal-helper-*.AppImage artifacts/unsigned-linux-x64/keyseal-helper-*.tar.gz \
+            artifacts/unsigned-linux-x64/keyseal_* dist/
+          helper/packaging/make-manifest.sh "$version" dist
+          cat dist/SHA256SUMS-unsigned dist/SHA256SUMS dist/keyseal-update.json
+      - name: Draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft --verify-tag \
+            --title "KeySeal helper ${{ needs.check.outputs.version }}" --generate-notes dist/*
+
+  publish:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    environment: release
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ inputs.tag }}
+    steps:
+      # Before the tag reaches a checkout, a download or a path.
+      - name: The tag names a helper release
+        run: |
+          [[ "$TAG" =~ ^helper-v[0-9]+\.[0-9]+\.[0-9]+$ ]] \
+            || { echo "Expected a tag helper-vX.Y.Z, not $TAG"; exit 1; }
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.tag }}
+          fetch-depth: 0
+      # The keys that verify below come from this checkout.
+      - name: The tag is on main and pins main's keys
+        run: helper/packaging/check-release-commit.sh
+      # Building the helper needs GPUI's packages, as in checks.yml.
+      - run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libfontconfig-dev libvulkan1 libwayland-dev libx11-xcb-dev libxkbcommon-x11-dev
+      - working-directory: helper
+        run: rustup toolchain install
+      - name: Download the draft
+        run: gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir dist
+      - name: Verify the signatures with the pinned keys and threshold
+        env:
+          SIGNATURES: ${{ inputs.signatures }}
+          CHECKSUM_SIGNATURES: ${{ inputs.checksum_signatures }}
+        run: |
+          mkdir signatures
+          printenv SIGNATURES >signatures/keyseal-update.json.sig
+          printenv CHECKSUM_SIGNATURES >signatures/SHA256SUMS.sig
+          (cd helper && cargo run --quiet --locked -p keyseal-helper -- \
+            update verify ../dist/keyseal-update.json ../signatures/keyseal-update.json.sig)
+          # First installs download without the helper; SHA256SUMS covers them.
+          helper/packaging/verify-signatures.sh dist/SHA256SUMS signatures/SHA256SUMS.sig
+      - name: The manifest and SHA256SUMS match the tag and every asset
+        run: |
+          version="${TAG#helper-v}"
+          test "$(jq -r .version dist/keyseal-update.json)" = "$version"
+          (cd dist && sha256sum -c SHA256SUMS)
+          # The draft holds exactly the listed assets, and both lists are
+          # what make-manifest.sh makes of them.
+          diff <(cut -c67- dist/SHA256SUMS | sort) \
+            <(find dist -type f ! -name SHA256SUMS -printf '%P\n' | sort)
+          helper/packaging/make-manifest.sh "$version" dist expected
+          cmp expected/keyseal-update.json dist/keyseal-update.json
+          cmp expected/SHA256SUMS dist/SHA256SUMS
+      # The helper reads releases/latest, so this release becomes latest.
+      - name: Publish
+        run: |
+          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" signatures/keyseal-update.json.sig signatures/SHA256SUMS.sig
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest

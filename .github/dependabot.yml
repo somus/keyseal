@@ -1,0 +1,38 @@
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+  - package-ecosystem: bun
+    directories: [/, /catalogue]
+    schedule:
+      interval: weekly
+    groups:
+      bun:
+        patterns: ["*"]
+  - package-ecosystem: cargo
+    directory: /helper
+    schedule:
+      interval: weekly
+    # GPUI Kit pins a GPUI snapshot; it moves by hand, with the UI checked
+    # on each platform.
+    ignore:
+      - dependency-name: gpui-kit
+    groups:
+      cargo:
+        patterns: ["*"]
+  - package-ecosystem: uv
+    directory: /service
+    schedule:
+      interval: weekly
+    groups:
+      uv:
+        patterns: ["*"]
+  - package-ecosystem: docker
+    directory: /service
+    schedule:
+      interval: weekly

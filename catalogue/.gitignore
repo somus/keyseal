@@ -1,0 +1,3 @@
+# Signatures are release assets, never committed. Keys never live in the repository.
+catalogue.json.sig
+*.pem

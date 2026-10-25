@@ -1,0 +1,630 @@
+openapi: 3.1.0
+info:
+  title: KeySeal protocol
+  version: "1"
+  summary: Manifest and job endpoint of KeySeal protocol v1.
+  description: |
+    Machine-readable companion to protocol-v1.md. The Markdown is normative
+    and wins on any disagreement. Job endpoints are mounted by the integrator
+    under any base path; the job URL is `<base>/v1/jobs/<token>`. The job
+    token in the path is the only authority for the claim; later requests
+    carry the claim nonce in their body, and the document downloads
+    (`GET <job URL>/documents/<index>`, whose URLs come from the job
+    description) carry the job token as a bearer token and the claim nonce
+    in the X-KeySeal-Claim header. A sign job carries 1 to 20 documents that
+    are prepared, signed and finished together: the job completes only when
+    every document is signed. A wrong method on a job path is 404,
+    and the request Content-Type is not enforced.
+  license:
+    name: Apache-2.0
+    identifier: Apache-2.0
+servers:
+  - url: https://{host}{basePath}
+    description: Integrator backend. basePath is empty or starts with a slash and has no trailing slash.
+    variables:
+      host:
+        default: dash.example.org
+      basePath:
+        default: /api/keyseal
+security: []
+tags:
+  - name: manifest
+    description: Branding manifest on the job origin.
+  - name: job
+    description: Job endpoint the helper talks to.
+paths:
+  /.well-known/keyseal.json:
+    servers:
+      - url: https://{host}
+        description: Job origin.
+        variables:
+          host:
+            default: dash.example.org
+    get:
+      tags: [manifest]
+      operationId: getManifest
+      summary: Fetch the branding manifest
+      description: Fetched per job with a 2 second budget. Optional; its absence never stops a job.
+      parameters:
+        - $ref: "#/components/parameters/KeySealVersionOptional"
+      responses:
+        "200":
+          description: The manifest.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Manifest"
+        "404":
+          description: The origin has no manifest.
+  /v1/jobs/{token}:
+    parameters:
+      - $ref: "#/components/parameters/Token"
+      - $ref: "#/components/parameters/KeySealVersion"
+    get:
+      tags: [job]
+      operationId: claimJob
+      summary: Claim the job and read its description
+      description: The first GET moves a pending job to claimed and returns the claim nonce. Any later GET gets 409.
+      responses:
+        "200":
+          description: Job claimed.
+          headers:
+            Cache-Control:
+              $ref: "#/components/headers/NoStore"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/JobDescription"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "410":
+          $ref: "#/components/responses/Gone"
+        "426":
+          $ref: "#/components/responses/UpgradeRequired"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+  /v1/jobs/{token}/certificate:
+    parameters:
+      - $ref: "#/components/parameters/Token"
+      - $ref: "#/components/parameters/KeySealVersion"
+    post:
+      tags: [job]
+      operationId: submitCertificate
+      summary: Submit the chosen certificate
+      description: |
+        Sign jobs: round 1; every document is prepared, the job moves from
+        claimed to prepared and the response is a PreparedSignature with one
+        entry per document. Enrol jobs: the single round; the job
+        moves from claimed to completed and the response is an EnrolResult.
+        A certificate that misses the job's expected SHA-256 or does not
+        satisfy its certificate policy is refused with 422 and fails the job.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CertificateSubmission"
+      responses:
+        "200":
+          description: Certificate accepted.
+          headers:
+            Cache-Control:
+              $ref: "#/components/headers/NoStore"
+          content:
+            application/json:
+              schema:
+                anyOf:
+                  - $ref: "#/components/schemas/PreparedSignature"
+                  - $ref: "#/components/schemas/EnrolResult"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "410":
+          $ref: "#/components/responses/Gone"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "422":
+          $ref: "#/components/responses/Unprocessable"
+        "426":
+          $ref: "#/components/responses/UpgradeRequired"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "502":
+          $ref: "#/components/responses/BadGateway"
+  /v1/jobs/{token}/documents/{index}:
+    parameters:
+      - $ref: "#/components/parameters/Token"
+      - $ref: "#/components/parameters/KeySealVersion"
+      - name: index
+        in: path
+        required: true
+        description: The document's 0-based position in the job description's documents, in decimal without leading zeros.
+        schema:
+          type: string
+          pattern: "^(0|[1-9][0-9]*)$"
+      - name: X-KeySeal-Claim
+        in: header
+        required: true
+        description: The claim nonce the claim returned.
+        schema:
+          $ref: "#/components/schemas/ClaimNonce"
+    get:
+      tags: [job]
+      operationId: downloadDocument
+      summary: Download one prepared PDF (section 8.4)
+      description: |
+        Served only while the job is prepared. The Authorization header must
+        carry the same token as the path, as `Bearer <token>`; a missing or
+        wrong token or claim nonce is 403, a claimed job is 409, and an index
+        the job has no document at is 404. The documents of a job together
+        are at most 268435456 bytes.
+      parameters:
+        - name: Authorization
+          in: header
+          required: true
+          schema:
+            type: string
+            pattern: "^Bearer [A-Za-z0-9_-]{20,128}$"
+      responses:
+        "200":
+          description: The prepared PDF that the toSign at the same index was computed for, at most 67108864 bytes.
+          headers:
+            Cache-Control:
+              $ref: "#/components/headers/NoStore"
+          content:
+            application/pdf:
+              schema:
+                type: string
+                contentMediaType: application/pdf
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "410":
+          $ref: "#/components/responses/Gone"
+        "426":
+          $ref: "#/components/responses/UpgradeRequired"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+  /v1/jobs/{token}/signature:
+    parameters:
+      - $ref: "#/components/parameters/Token"
+      - $ref: "#/components/parameters/KeySealVersion"
+    post:
+      tags: [job]
+      operationId: submitSignature
+      summary: Submit the signatures (sign round 2)
+      description: |
+        Every signature is verified before any document is finished; one that
+        doesn't verify is refused with 422 and fails the job. Every document
+        is finished before the integrator receives any, and the job moves
+        from prepared to completed.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SignatureSubmission"
+      responses:
+        "200":
+          description: Signatures accepted and every PDF finished.
+          headers:
+            Cache-Control:
+              $ref: "#/components/headers/NoStore"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Empty"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "410":
+          $ref: "#/components/responses/Gone"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "422":
+          $ref: "#/components/responses/Unprocessable"
+        "426":
+          $ref: "#/components/responses/UpgradeRequired"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "502":
+          $ref: "#/components/responses/BadGateway"
+  /v1/jobs/{token}/failure:
+    parameters:
+      - $ref: "#/components/parameters/Token"
+      - $ref: "#/components/parameters/KeySealVersion"
+    post:
+      tags: [job]
+      operationId: reportFailure
+      summary: Report that the helper gave up
+      description: The job moves from claimed or prepared to failed.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FailureReport"
+      responses:
+        "200":
+          description: Failure recorded.
+          headers:
+            Cache-Control:
+              $ref: "#/components/headers/NoStore"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Empty"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "410":
+          $ref: "#/components/responses/Gone"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "422":
+          $ref: "#/components/responses/Unprocessable"
+        "426":
+          $ref: "#/components/responses/UpgradeRequired"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+components:
+  parameters:
+    Token:
+      name: token
+      in: path
+      required: true
+      description: Job token, the last path segment of the job URL.
+      schema:
+        $ref: "#/components/schemas/Token"
+    KeySealVersion:
+      name: X-KeySeal-Version
+      in: header
+      required: true
+      description: Helper version. Missing or unparseable counts as below the server's minimum.
+      schema:
+        $ref: "#/components/schemas/SemVer"
+    KeySealVersionOptional:
+      name: X-KeySeal-Version
+      in: header
+      required: false
+      description: Helper version; the helper sends it on every request.
+      schema:
+        $ref: "#/components/schemas/SemVer"
+  headers:
+    NoStore:
+      description: Every job endpoint response carries no-store.
+      schema:
+        type: string
+        const: no-store
+    RetryAfter:
+      description: Seconds to wait before retrying.
+      schema:
+        type: integer
+        minimum: 0
+  responses:
+    NotFound:
+      description: Token malformed or unknown, job expired, or wrong method for the path.
+      headers:
+        Cache-Control:
+          $ref: "#/components/headers/NoStore"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Conflict:
+      description: Job already claimed, claimNonce mismatch, wrong state, or settle lease held by another request.
+      headers:
+        Cache-Control:
+          $ref: "#/components/headers/NoStore"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Gone:
+      description: Job completed or failed.
+      headers:
+        Cache-Control:
+          $ref: "#/components/headers/NoStore"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    PayloadTooLarge:
+      description: Body larger than 262144 bytes.
+      headers:
+        Cache-Control:
+          $ref: "#/components/headers/NoStore"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Unprocessable:
+      description: Body invalid (job unchanged), or certificate or a signature refused by the server or the signing service (job failed).
+      headers:
+        Cache-Control:
+          $ref: "#/components/headers/NoStore"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    UpgradeRequired:
+      description: Helper version below the server's minimum.
+      headers:
+        Cache-Control:
+          $ref: "#/components/headers/NoStore"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/UpgradeRequired"
+    Forbidden:
+      description: The bearer token or the claim nonce is missing or doesn't match.
+      headers:
+        Cache-Control:
+          $ref: "#/components/headers/NoStore"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    TooManyRequests:
+      description: Rate limit exceeded.
+      headers:
+        Cache-Control:
+          $ref: "#/components/headers/NoStore"
+        Retry-After:
+          $ref: "#/components/headers/RetryAfter"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    BadGateway:
+      description: Signing service unreachable or answered with an error other than 400 or 422. The lease is released and the job unchanged; the helper may repeat the request once after a short delay.
+      headers:
+        Cache-Control:
+          $ref: "#/components/headers/NoStore"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+  schemas:
+    Token:
+      type: string
+      pattern: "^[A-Za-z0-9_-]{20,128}$"
+    ClaimNonce:
+      type: string
+      pattern: "^[A-Za-z0-9_-]{20,128}$"
+      description: Returned once by the claim; carried in every POST body.
+    SemVer:
+      type: string
+      description: SemVer 2.0.0 version.
+      pattern: "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(-(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(\\.(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?(\\+[0-9A-Za-z-]+(\\.[0-9A-Za-z-]+)*)?$"
+      examples: ["1.2.0"]
+    Sha256Hex:
+      type: string
+      pattern: "^[0-9a-f]{64}$"
+    Base64:
+      type: string
+      description: RFC 4648 section 4 base64 with padding.
+      contentEncoding: base64
+      pattern: "^[A-Za-z0-9+/]*={0,2}$"
+    CertificateDer:
+      description: Base64 of a DER X.509 certificate.
+      allOf:
+        - $ref: "#/components/schemas/Base64"
+      maxLength: 16384
+    DigestAlgorithm:
+      type: string
+      enum: [sha256, sha384]
+    SignatureAlgorithm:
+      type: string
+      description: Signature scheme chosen by the server. rsa-pss parameters are fixed by protocol-v1.md 11.1.
+      enum: [rsa-pkcs1-v1_5, rsa-pss, ecdsa]
+    JobKind:
+      type: string
+      enum: [sign, enrol]
+    SameOriginUrl:
+      type: string
+      format: uri
+      pattern: "^https?://"
+      description: Absolute URL on the job origin. http only under the development override.
+    Manifest:
+      type: object
+      description: Branding for the origin. Unknown members are ignored. Must never name driver or module paths.
+      required: [protocol, name]
+      properties:
+        protocol:
+          type: integer
+          const: 1
+        name:
+          type: string
+          minLength: 1
+          maxLength: 64
+        icon:
+          description: PNG on the job origin, at most 262144 bytes.
+          $ref: "#/components/schemas/SameOriginUrl"
+        accentColor:
+          type: string
+          pattern: "^#[0-9A-Fa-f]{6}$"
+        translucent:
+          description: False asks the helper for opaque job windows where it would make them translucent.
+          type: boolean
+        minHelperVersion:
+          $ref: "#/components/schemas/SemVer"
+      examples:
+        - protocol: 1
+          name: Example Trust
+          icon: https://dash.example.org/keyseal-icon.png
+          accentColor: "#1f6feb"
+          minHelperVersion: 1.0.0
+    JobDescription:
+      type: object
+      required: [kind, title, signer, claimNonce]
+      properties:
+        kind:
+          $ref: "#/components/schemas/JobKind"
+        title:
+          type: string
+          minLength: 1
+          maxLength: 200
+        signer:
+          type: string
+          minLength: 1
+          maxLength: 200
+        claimNonce:
+          $ref: "#/components/schemas/ClaimNonce"
+        expectedCertificateSha256:
+          $ref: "#/components/schemas/Sha256Hex"
+        certificatePolicy:
+          $ref: "#/components/schemas/CertificatePolicy"
+        digestAlgorithm:
+          description: Present only when the integrator fixed the digest in advance; a certificate whose key implies another digest is refused with 422.
+          $ref: "#/components/schemas/DigestAlgorithm"
+        documents:
+          description: The documents a sign job signs, in order; present on every sign job.
+          type: array
+          minItems: 1
+          maxItems: 20
+          items:
+            $ref: "#/components/schemas/DocumentEntry"
+      if:
+        properties:
+          kind:
+            const: enrol
+      then:
+        properties:
+          digestAlgorithm: false
+          documents: false
+      else:
+        required: [documents]
+        properties:
+          documents:
+            type: array
+    DocumentEntry:
+      type: object
+      required: [title, document]
+      properties:
+        title:
+          type: string
+          minLength: 1
+          maxLength: 200
+        document:
+          description: "Prepared PDF for document checks, `<job URL>/documents/<index>` with the entry's 0-based index. Fetched with `Authorization: Bearer <job token>` and `X-KeySeal-Claim: <claim nonce>` while the job is prepared; 403 when either does not match, including for a pending job (protocol-v1.md 8.4)."
+          $ref: "#/components/schemas/SameOriginUrl"
+    CertificatePolicy:
+      type: object
+      description: What the certificate must show (protocol-v1.md 8.2). Every member present must hold; strings compare exactly, and a name with no or several CN or O attributes matches nothing. The helper keeps only certificates that satisfy it; the server refuses any other with 422 and fails the job.
+      minProperties: 1
+      properties:
+        policyOids:
+          description: The certificatePolicies extension must hold at least one of these.
+          type: array
+          minItems: 1
+          maxItems: 16
+          items:
+            type: string
+            maxLength: 128
+            pattern: "^[0-2](\\.(0|[1-9][0-9]*))+$"
+        issuerCommonNames:
+          description: The CN of the certificate's issuer name, the subject CN of the issuing CA, must equal one of these.
+          type: array
+          minItems: 1
+          maxItems: 16
+          items:
+            type: string
+            minLength: 1
+            maxLength: 200
+        subjectOrganization:
+          description: The O of the certificate's subject name must equal this.
+          type: string
+          minLength: 1
+          maxLength: 200
+      examples:
+        - policyOids: ["2.16.356.100.2.3"]
+    CertificateSubmission:
+      type: object
+      required: [claimNonce, certificate, chain]
+      properties:
+        claimNonce:
+          $ref: "#/components/schemas/ClaimNonce"
+        certificate:
+          $ref: "#/components/schemas/CertificateDer"
+        chain:
+          type: array
+          maxItems: 8
+          items:
+            $ref: "#/components/schemas/CertificateDer"
+    PreparedSignature:
+      type: object
+      required: [digestAlgorithm, signatureAlgorithm, documents]
+      properties:
+        digestAlgorithm:
+          $ref: "#/components/schemas/DigestAlgorithm"
+        signatureAlgorithm:
+          $ref: "#/components/schemas/SignatureAlgorithm"
+        documents:
+          description: One entry per document, in the order and number of the job description's documents.
+          type: array
+          minItems: 1
+          maxItems: 20
+          items:
+            type: object
+            required: [toSign]
+            properties:
+              toSign:
+                description: The document's DER SignedAttributes, outer tag 0x31, the exact bytes its signature covers.
+                $ref: "#/components/schemas/Base64"
+    EnrolResult:
+      type: object
+      description: Empty object; the enrolment is complete.
+    SignatureSubmission:
+      type: object
+      required: [claimNonce, signatures]
+      properties:
+        claimNonce:
+          $ref: "#/components/schemas/ClaimNonce"
+        signatures:
+          description: One signature per document, in the order of the job description's documents; a list of another length is 422 and leaves the job unchanged.
+          type: array
+          minItems: 1
+          maxItems: 20
+          items:
+            description: RSA signature of modulus length, or DER ECDSA-Sig-Value. Never raw r||s.
+            allOf:
+              - $ref: "#/components/schemas/Base64"
+            maxLength: 4096
+    FailureReport:
+      type: object
+      required: [claimNonce, message]
+      properties:
+        claimNonce:
+          $ref: "#/components/schemas/ClaimNonce"
+        message:
+          type: string
+          minLength: 1
+          maxLength: 500
+          description: User-facing reason, 1 to 500 characters after trimming. Never contains the PIN.
+    Empty:
+      type: object
+      description: Empty object.
+    Error:
+      type: object
+      required: [message]
+      properties:
+        message:
+          type: string
+          description: User-facing message, shown as plain text.
+    UpgradeRequired:
+      type: object
+      required: [minVersion, message]
+      properties:
+        minVersion:
+          $ref: "#/components/schemas/SemVer"
+        message:
+          type: string

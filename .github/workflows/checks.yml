@@ -63,8 +63,8 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - run: |
-          rustup toolchain install 1.97.1 --profile minimal --component clippy,rustfmt
-          rustup default 1.97.1
+          rustup toolchain install 1.99.1 --profile minimal --component clippy,rustfmt
+          rustup default 1.99.1
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: helper

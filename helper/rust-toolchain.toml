@@ -2,6 +2,6 @@
 # toolchain. GPUI needs 1.93 or later; checks.yml pins the same version.
 # Bump both deliberately, in their own commit.
 [toolchain]
-channel = "1.97.1"
+channel = "1.99.1"
 components = ["clippy", "rustfmt"]
 profile = "minimal"

@@ -74,8 +74,10 @@ maintainer, and a manual publish. The signing rules are in
    pinned container, and stops at the first difference. Then it signs
    `keyseal-update.json` and `SHA256SUMS` with your release key, verifies
    the signatures with the draft's own helper and `verify-signatures.sh`,
-   and, once you confirm, starts the publish run. `--skip-rebuild` skips
-   the Linux rebuild. macOS and Windows aren't rebuilt: they need the
+   and, once you confirm, starts the publish run. The Linux rebuild takes
+   about 15 minutes under emulation; `--rebuild-host <ssh host>` runs it
+   natively on an x86_64 Linux machine with Docker, in a throwaway
+   container fed over SSH, and `--skip-rebuild` skips it. macOS and Windows aren't rebuilt: they need the
    Xcode, or the Visual Studio and Windows SDK, that `BUILDINFO` names
    (below).
 5. Approve the `release` environment. The publish run checks the tag again,

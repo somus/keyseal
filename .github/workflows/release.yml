@@ -334,5 +334,5 @@ jobs:
       # The helper reads releases/latest, so this release becomes latest.
       - name: Publish
         run: |
-          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" signatures/keyseal-update.json.sig signatures/SHA256SUMS.sig
+          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber signatures/keyseal-update.json.sig signatures/SHA256SUMS.sig
           gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest

@@ -2,7 +2,7 @@
 
 A pyHanko service behind FastAPI. It prepares PDFs with empty signature fields, returns the DER SignedAttributes a token signs, embeds the returned signature with a timestamp, validates signed PDFs and adds long-term validation data. The signer's key never reaches it; only the integrator backend talks to it, over a private network.
 
-Every route except `GET /health` needs `Authorization: Bearer $SIGNING_SERVICE_TOKEN`.
+Every route except `GET /health`, plugin routes included, needs `Authorization: Bearer $SIGNING_SERVICE_TOKEN`. The token is checked before any of the body is read, and a missing or wrong one is a 401.
 
 | Route | Does |
 |---|---|
@@ -23,6 +23,8 @@ The state's last member, `mac`, is an HMAC-SHA256 over the exact JSON text befor
 
 Supported keys: RSA (PKCS#1 v1.5 or PSS with MGF1 and a 32-byte salt, SHA-256) and ECDSA P-256 (SHA-256) or P-384 (SHA-384), with ECDSA signatures as DER `ECDSA-Sig-Value`. PDFs are limited to 25 MB.
 
+Bodies are capped as they stream in, so a chunked body is held to the same limits as one with a `Content-Length`: 25 MB for the raw PDF that `/validate`, `/finalize` and `/retimestamp` take, and 60 MB plus 16 KB for a JSON body. A larger body is a 413, and a `Content-Length` that isn't a non-negative decimal number is a 400.
+
 ## Run
 
 ```bash
@@ -42,14 +44,16 @@ The service refuses to start, logging which rule failed and exiting 1, when the 
 | `SIGNING_SERVICE_TOKEN` | none, required | Bearer token shared with the integrator backend |
 | `SIGNING_TSA_URL` | `http://timestamp.digicert.com` | RFC 3161 timestamp authority; `none` turns timestamps off, and `/finalize` and `/retimestamp` then answer 503 |
 | `SIGNING_TRUST_ROOTS_DIR` | bundled CCA India roots and intermediates | Directory of `.pem`, `.cer`, `.crt` or `.der` certificates replacing the bundled ones; self-signed ones are roots, the rest intermediates |
-| `SIGNING_ALLOW_FETCHING` | off | `true` lets validation fetch OCSP and CRL data |
+| `SIGNING_ALLOW_FETCHING` | off | `true` lets validation fetch issuer certificates, OCSP and CRL data |
 | `TZ` | container's (UTC) | Time zone of the date in the built-in stamp, for example `Asia/Kolkata`; a zone name, since pyHanko refuses POSIX zones such as `IST-5:30` |
+
+With `SIGNING_ALLOW_FETCHING=true`, the URLs fetched come from the certificates being checked, so the service only connects to public IP addresses, over direct HTTP or HTTPS: every DNS answer and the address actually connected to must be public, each redirect is checked again, and proxies, proxy environment variables and cookies are not used.
 
 Setting `SIGNING_TRUST_ROOTS_DIR` replaces both the bundled CCA India roots and the bundled intermediates, so put every root and intermediate the chains need in that directory. The service refuses to start when the directory holds no readable root.
 
 ## Plugins
 
-Install a package into the image that declares entry points. A stamp style is a callable returning a pyHanko stamp style, chosen with `"stampStyle": "<name>"` on `/sign/start` (the built-in one is `signed-by`; an unknown name is a 400). The style's text parameters are `signer`, `reason`, `location` and `contact_info`, the last three empty when not given, so a `TextStampStyle` can show them with `%(reason)s`. A router factory takes the service's `Settings` and returns an `APIRouter`, mounted behind the bearer token.
+Install a package into the image that declares entry points. A stamp style is a callable returning a pyHanko stamp style, chosen with `"stampStyle": "<name>"` on `/sign/start` (the built-in one is `signed-by`; an unknown name is a 400). The style's text parameters are `signer`, `reason`, `location` and `contact_info`, the last three empty when not given, so a `TextStampStyle` can show them with `%(reason)s`. A router factory takes the service's `Settings` and returns an `APIRouter`, mounted behind the bearer token. With fetching on, that `settings.validation` refuses to build a validation context: the public-only fetcher opens when the app starts, and only the built-in routes use it.
 
 ```toml
 # pyproject.toml of your plugin
@@ -76,17 +80,20 @@ def router(settings):
 
 ## Docker
 
+Released images are published as `ghcr.io/somus/keyseal-service`, for linux/amd64 and linux/arm64, tagged with the full version and with major.minor; pin the digest for an image that can't change ([docs/releasing-service.md](../docs/releasing-service.md)).
+
 ```bash
-docker build -t keyseal-service service
 docker run --rm -p 8080:8080 \
   -e SIGNING_SERVICE_TOKEN="$(openssl rand -base64 32)" \
-  keyseal-service
+  ghcr.io/somus/keyseal-service:0.1
 ```
+
+To build it from a checkout instead, run `docker build -t keyseal-service service` and use `keyseal-service` as the image.
 
 A derived image adds plugins and, if needed, its own roots:
 
 ```dockerfile
-FROM keyseal-service
+FROM ghcr.io/somus/keyseal-service:0.1
 USER root
 RUN uv pip install --python /app/.venv/bin/python acme-keyseal
 USER signing

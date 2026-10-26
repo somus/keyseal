@@ -1,6 +1,8 @@
 # Releasing the helper
 
-The npm packages release on their own: see [releasing-npm.md](releasing-npm.md).
+The npm packages and the signing service image release on their own: see
+[releasing-npm.md](releasing-npm.md) and
+[releasing-service.md](releasing-service.md).
 
 A helper release is a tag, a draft made by CI, an offline signature by each
 maintainer, and a manual publish. The signing rules are in

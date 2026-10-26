@@ -1,17 +1,18 @@
-"""HTTP API. Every request but /health carries the shared bearer token.
+"""HTTP API. Every request but GET /health carries the shared bearer token.
 
 Run with `uvicorn keyseal_service.app:create_app --factory`. Stamp styles and
 extra routers come from installed packages through entry points:
 `keyseal.stamp_styles` maps a name to a callable returning a pyHanko stamp
 style, and `keyseal.routers` maps a name to a callable taking the `Settings`
-and returning an `APIRouter`, mounted behind the bearer token.
+and returning an `APIRouter`, mounted behind the bearer token. `RequestGuard`
+checks the token and caps the body before any route, plugin ones included,
+reads it.
 """
 
 from __future__ import annotations
 
 import base64
 import binascii
-import hmac
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -19,14 +20,16 @@ from dataclasses import replace
 from importlib.metadata import entry_points
 from typing import Annotated, Literal
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response
+from fastapi import FastAPI, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field, StringConstraints
 from pyhanko.sign import timestamps
 from pyhanko_certvalidator.fetchers.aiohttp_fetchers import AIOHttpFetcherBackend
 
 from . import remote_sign
 from .appearance import SignedByStampStyle
+from .fetching import public_fetch_session
 from .prepare import MAX_FIELDS, FieldRequest, PrepareError, prepare_fields
+from .request_guard import RequestGuard
 from .settings import Settings, TrustRootsError, WeakTokenError, check_token
 from .validate import certificate_trusted, validate_pdf_async
 
@@ -36,9 +39,11 @@ MAX_PDF_BYTES = 25 * 1024 * 1024
 #: Base64 of a PDF of MAX_PDF_BYTES.
 MAX_PDF_CHARS = -(-MAX_PDF_BYTES // 3) * 4
 MAX_STATE_CHARS = 60 * 1024 * 1024
-#: A JSON body is read whole before it is parsed, so Content-Length is
-#: refused first where it can't fit the largest request, /sign/finish.
+#: A JSON body is read whole before it is parsed, so the guard caps every
+#: body but a raw PDF's at the largest request, /sign/finish.
 MAX_BODY_BYTES = MAX_STATE_CHARS + 16 * 1024
+#: Routes whose body is a raw PDF, capped at MAX_PDF_BYTES instead.
+PDF_PATHS = frozenset({"/validate", "/finalize", "/retimestamp"})
 MAX_CERTIFICATE_CHARS = 16 * 1024
 MAX_SIGNATURE_CHARS = 4096
 MAX_DETAIL_CHARS = 200
@@ -113,37 +118,40 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         raise SystemExit(1) from error
 
     validation = resolved.validation
-    fetcher_backend = AIOHttpFetcherBackend() if validation.allow_fetching else None
-    validation = replace(validation, fetcher_backend=fetcher_backend)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
-        yield
-        if fetcher_backend is not None:
-            await fetcher_backend.close()
+        # Routes see the shared public-only fetcher while the app runs; the
+        # settings without it refuse to build a fetching context.
+        nonlocal validation
+        if not validation.allow_fetching:
+            yield
+            return
+        async with public_fetch_session() as session:
+            validation = replace(
+                resolved.validation, fetcher_backend=AIOHttpFetcherBackend(session=session)
+            )
+            try:
+                yield
+            finally:
+                validation = resolved.validation
 
     app = FastAPI(
         title="KeySeal signing service", docs_url=None, redoc_url=None, lifespan=lifespan
+    )
+    app.add_middleware(
+        RequestGuard,
+        token=resolved.token,
+        max_body_bytes=MAX_BODY_BYTES,
+        max_pdf_bytes=MAX_PDF_BYTES,
+        pdf_paths=PDF_PATHS,
     )
     tsa = timestamps.HTTPTimeStamper(resolved.tsa_url) if resolved.tsa_url else None
     stamp_styles = {
         DEFAULT_STAMP_STYLE: SignedByStampStyle,
         **{ep.name: ep.load() for ep in entry_points(group=STAMP_STYLES_GROUP)},
     }
-    expected = resolved.token.encode()
     state_key = remote_sign.state_key(resolved.token)
-
-    def require_token(authorization: str | None = Header(default=None)) -> None:
-        scheme, _, supplied = (authorization or "").partition(" ")
-        if scheme != "Bearer" or not hmac.compare_digest(supplied.strip().encode(), expected):
-            raise HTTPException(401, "Unauthorized")
-
-    @app.middleware("http")
-    async def refuse_oversized_bodies(request: Request, call_next):  # type: ignore[no-untyped-def]
-        declared = request.headers.get("content-length")
-        if declared is not None and declared.isdigit() and int(declared) > MAX_BODY_BYTES:
-            return Response(content='{"detail":"Body too large"}', status_code=413, media_type="application/json")
-        return await call_next(request)
 
     def _b64(value: str, what: str) -> bytes:
         try:
@@ -158,20 +166,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return pdf
 
     async def _read_pdf(request: Request) -> bytes:
-        body = bytearray()
-        async for chunk in request.stream():
-            body.extend(chunk)
-            if len(body) > MAX_PDF_BYTES:
-                raise HTTPException(413, "PDF too large")
+        # The guard caps the stream at MAX_PDF_BYTES.
+        body = await request.body()
         if not body:
             raise HTTPException(400, "Empty body")
-        return bytes(body)
+        return body
 
     @app.get("/health")
     def health() -> dict[str, object]:
         return {"ok": True, "trustRoots": len(validation.trust_roots)}
 
-    @app.post("/validate", dependencies=[Depends(require_token)])
+    @app.post("/validate")
     async def validate(
         request: Request,
         base: int | None = Query(
@@ -180,7 +185,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     ) -> dict[str, object]:
         return await validate_pdf_async(await _read_pdf(request), validation, base)
 
-    @app.post("/certificate", dependencies=[Depends(require_token)])
+    @app.post("/certificate")
     async def certificate(body: CertificateRequest) -> dict[str, bool]:
         try:
             cert = remote_sign.load_cert(body.certificate)
@@ -190,7 +195,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(400, str(error)) from error
         return {"trusted": await certificate_trusted(cert, chain, validation)}
 
-    @app.post("/sign/start", dependencies=[Depends(require_token)])
+    @app.post("/sign/start")
     async def sign_start(body: SignStartRequest) -> dict[str, str]:
         pdf = _pdf_b64(body.pdf)
         stamp_style = stamp_styles.get(body.stampStyle)
@@ -219,7 +224,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "toSign": base64.b64encode(result.to_sign).decode(),
         }
 
-    @app.post("/sign/finish", dependencies=[Depends(require_token)])
+    @app.post("/sign/finish")
     async def sign_finish(body: SignFinishRequest) -> Response:
         try:
             state = remote_sign.open_state(state_key, body.state)
@@ -228,7 +233,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(422, str(error)) from error
         return Response(content=pdf, media_type="application/pdf")
 
-    @app.post("/finalize", dependencies=[Depends(require_token)])
+    @app.post("/finalize")
     async def finalize(request: Request) -> Response:
         if tsa is None:
             raise HTTPException(503, "No timestamp authority is configured")
@@ -240,7 +245,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(422, f"Couldn't finalise: {type(error).__name__}") from error
         return Response(content=out, media_type="application/pdf")
 
-    @app.post("/retimestamp", dependencies=[Depends(require_token)])
+    @app.post("/retimestamp")
     async def retimestamp(request: Request) -> Response:
         if tsa is None:
             raise HTTPException(503, "No timestamp authority is configured")
@@ -252,7 +257,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(422, f"Couldn't timestamp: {type(error).__name__}") from error
         return Response(content=out, media_type="application/pdf")
 
-    @app.post("/prepare", dependencies=[Depends(require_token)])
+    @app.post("/prepare")
     def prepare(body: PrepareRequest) -> Response:
         pdf = _pdf_b64(body.pdf)
         try:
@@ -272,6 +277,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return Response(content=prepared, media_type="application/pdf")
 
     for ep in entry_points(group=ROUTERS_GROUP):
-        app.include_router(ep.load()(resolved), dependencies=[Depends(require_token)])
+        app.include_router(ep.load()(resolved))
 
     return app

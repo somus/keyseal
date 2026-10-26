@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -7,9 +9,11 @@ from typing import Any
 import pytest
 from cryptography.hazmat.primitives import serialization
 from pyhanko_certvalidator import ValidationContext
+from pyhanko_certvalidator.fetchers.aiohttp_fetchers import AIOHttpFetcherBackend
 
 from keyseal_service import validate
 from keyseal_service.app import MAX_BODY_BYTES
+from keyseal_service.fetching import public_fetch_session
 from keyseal_service.validate import ValidationSettings, load_trust_roots, validate_pdf
 
 from .conftest import AUTH, TOKEN, Pki, blank_pdf, client_for, sign
@@ -112,13 +116,29 @@ def test_a_revocation_fetch_that_times_out_is_checked_without_fetching(
         return await real(sig, signer_validation_context=signer_validation_context, **kwargs)
 
     monkeypatch.setattr(validate, "async_validate_pdf_signature", unreachable_responder)
-    settings = ValidationSettings(trust_roots=[pki.ca_asn1], allow_fetching=True)
-    report = validate_pdf(sign(blank_pdf(), pki), settings)
+    signed = sign(blank_pdf(), pki)
+
+    async def run() -> dict[str, Any]:
+        async with public_fetch_session() as session:
+            settings = replace(
+                settings_with(pki),
+                allow_fetching=True,
+                fetcher_backend=AIOHttpFetcherBackend(session=session),
+            )
+            return await validate.validate_pdf_async(signed, settings)
+
+    report = asyncio.run(run())
     assert report["status"] == "valid"
     [signature] = report["signatures"]
     assert signature["intact"] is True
     assert signature["trusted"] is True
     assert "error" not in signature
+
+
+def test_fetching_without_the_managed_session_is_refused(pki: Pki) -> None:
+    settings = replace(settings_with(pki), allow_fetching=True)
+    with pytest.raises(RuntimeError, match="managed public fetch session"):
+        settings.context()
 
 
 def test_tampered_bytes_are_invalid(pki: Pki) -> None:

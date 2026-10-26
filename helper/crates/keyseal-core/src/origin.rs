@@ -4,7 +4,7 @@
 //! connection to a loopback, private or link-local address, checked on
 //! every connection so a changed DNS answer can't reach the user's network.
 
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::time::Duration;
 
 use ureq::Agent;
@@ -23,6 +23,10 @@ pub fn insecure_origins_allowed() -> bool {
 
 /// Same-origin redirects followed per request (section 4.3).
 const MAX_REDIRECTS: u32 = 5;
+
+/// Each connection attempt's limit, so an address that never answers can't
+/// hold a request for most of its budget before the next one is tried.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Origin {
@@ -115,6 +119,7 @@ impl Origin {
             .proxy(None)
             .tls_config(tls)
             .timeout_global(Some(timeout))
+            .timeout_connect(Some(CONNECT_TIMEOUT))
             .user_agent(format!("keyseal/{}", crate::VERSION))
             .build();
         let resolver = OriginResolver {
@@ -178,7 +183,7 @@ impl Resolver for OriginResolver {
                 format!("refused a request to {uri}, outside {}", self.origin).into(),
             ));
         }
-        let addresses = self.inner.resolve(uri, config, timeout)?;
+        let mut addresses = self.inner.resolve(uri, config, timeout)?;
         if !self.origin.insecure
             && let Some(address) = addresses.iter().find(|a| is_private(a.ip()))
         {
@@ -191,6 +196,10 @@ impl Resolver for OriginResolver {
                 .into(),
             ));
         }
+        // IPv4 first: many networks hand out IPv6 addresses whose route never
+        // answers, which browsers hide by racing both families. The order is
+        // otherwise the resolver's, and IPv6 still follows.
+        addresses.sort_by_key(SocketAddr::is_ipv6);
         Ok(addresses)
     }
 }
@@ -344,5 +353,29 @@ mod tests {
         let uri: Uri = "https://localhost/".parse().unwrap();
         let error = resolver.resolve(&uri, &config, timeout).unwrap_err();
         assert!(error.to_string().contains("a private address"), "{error}");
+    }
+
+    /// IPv4 comes first, so a network whose IPv6 route never answers costs
+    /// nothing; `localhost` resolves to both families on most systems.
+    #[test]
+    fn resolver_puts_ipv4_first() {
+        let local = Origin {
+            scheme: "http".into(),
+            host: "localhost".into(),
+            port: 8080,
+            insecure: true,
+        };
+        let resolver = OriginResolver {
+            origin: local,
+            inner: DefaultResolver::default(),
+        };
+        let config = Agent::config_builder().build();
+        let uri: Uri = "http://localhost:8080/".parse().unwrap();
+        let addresses = resolver
+            .resolve(&uri, &config, NextTimeout::default())
+            .unwrap();
+        let families: Vec<bool> = addresses.iter().map(SocketAddr::is_ipv6).collect();
+        assert!(families.is_sorted(), "{addresses:?}");
+        assert!(!families.is_empty());
     }
 }

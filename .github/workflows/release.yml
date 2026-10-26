@@ -105,8 +105,9 @@ jobs:
           rustup toolchain install
           rustup target add x86_64-pc-windows-msvc
       - run: helper/packaging/build-release.sh windows-x64 dist
-      # TODO(SignPath): after release one, submit the unsigned exe to
-      # SignPath Foundation here, gated on the reproducibility check
+      # TODO(Windows signing): once a signing service accepts the project
+      # (SignPath Foundation declined the first application), submit the
+      # unsigned exe here, gated on the reproducibility check
       # (docs/CODE_SIGNING_POLICY.md). The signed exe then replaces it in
       # dist/ before the zip is made, and becomes the update asset.
       - name: Zip with install.cmd

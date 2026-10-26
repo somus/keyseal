@@ -1,8 +1,8 @@
 # Code signing policy
 
 This policy covers everything KeySeal signs for users: the helper's update
-manifest, the macOS app, and, once SignPath Foundation accepts the project,
-the Windows executable. The driver catalogue has its own single-maintainer
+manifest, the macOS app, and, once a Windows signing service accepts the
+project, the Windows executable. The driver catalogue has its own single-maintainer
 key and is outside this policy.
 
 ## What is signed, and by whom
@@ -12,7 +12,7 @@ key and is outside this policy.
 | `keyseal-update.json` | Ed25519, threshold of pinned keys | Maintainers | Each maintainer's Bitwarden vault, with an offline backup key |
 | `SHA256SUMS` | Ed25519, the same keys and threshold | Maintainers | The same keys |
 | macOS `KeySeal.app` (with the token worker inside) and disk image | Apple Developer ID, notarized; ad-hoc signed until the project has a Developer ID | The release workflow | Apple certificate in the `release-macos` GitHub environment |
-| Windows `keyseal.exe` | Authenticode via SignPath Foundation (after release one) | SignPath, on a maintainer's approval | SignPath's HSM |
+| Windows `keyseal.exe` | none yet: SignPath Foundation declined the first application (October 2026) | | |
 | Linux binaries, tarball, deb, AppImage | none in release one | | |
 
 Every published asset is listed with its SHA-256 in the release's signed

@@ -107,7 +107,7 @@ English only, with every string in one table (`helper/crates/keyseal-ui/src/stri
 ### Platforms
 
 - macOS universal app, notarized.
-- Windows x64, unsigned in release one; SignPath Foundation signing is planned after it.
+- Windows x64, unsigned. SignPath Foundation declined the first application (October 2026); the project applies again once the helper has a record of use.
 - Linux tarball with an xdg handler, AppImage and deb, unsigned, using p11-kit.
 
 ## Releases and updates

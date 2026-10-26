@@ -45,6 +45,15 @@ strings! {
     ENROL_STORE_NOTE = "Next, KeySeal looks for your certificate in Windows.";
     CHOOSE_NOTE = "Your token holds more than one certificate. Choose the one to use.";
     WORKING = "Working...";
+    // "{host}" is the site's host, as in the heading.
+    STEP_CONNECTING = "Connecting to {host}...";
+    STEP_OPENING_TOKEN = "Opening your token...";
+    STEP_CHECKING_CERTIFICATE = "Checking your certificate with {host}...";
+    STEP_DOWNLOADING = "Downloading the document...";
+    STEP_DOWNLOADING_BATCH = "Downloading the documents...";
+    STEP_SIGNING = "Signing...";
+    STEP_SENDING = "Sending the signature...";
+    STEP_SENDING_BATCH = "Sending the signatures...";
     SIGN = "Sign";
     CONTINUE = "Continue";
     CONFIRM = "Confirm";

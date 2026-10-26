@@ -2,14 +2,14 @@
 //! window and the settings window, and [`Windows`], which opens them as the
 //! flow's requests arrive.
 
-use std::cell::Cell;
 use std::path::PathBuf;
-use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
 
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::radio::Radio;
+use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::switch::Switch;
 use gpui_kit::component::{ActiveTheme, Disableable, Icon, Sizable, StyledExt, h_flex, v_flex};
 use gpui_kit::{
@@ -20,6 +20,7 @@ use gpui_kit::{
     div, img, prelude::FluentBuilder, px, rems, rgb, size, white,
 };
 use keyseal_core::doctor::{Driver, DriverState, Report, Status};
+use keyseal_core::flow::Step;
 use keyseal_core::modules;
 use keyseal_core::preferences::Preferences;
 use keyseal_core::protocol::Kind;
@@ -49,8 +50,9 @@ pub(crate) fn key_bindings() -> Vec<KeyBinding> {
 pub(crate) struct Windows {
     log: fn(&str),
     job: Option<(AnyWindowHandle, WeakEntity<JobWindow>)>,
-    /// The user closed the job window: later job requests answer Cancel.
-    job_closed: Rc<Cell<bool>>,
+    /// The signer cancelled the job or closed its window: later job
+    /// requests answer Cancel. Shared with the job's thread.
+    job_closed: Arc<AtomicBool>,
 }
 
 impl Windows {
@@ -58,8 +60,13 @@ impl Windows {
         Self {
             log,
             job: None,
-            job_closed: Rc::default(),
+            job_closed: Arc::default(),
         }
+    }
+
+    /// Set when the signer cancels the job that starts now.
+    pub(crate) fn job_closed(&self) -> Arc<AtomicBool> {
+        self.job_closed.clone()
     }
 
     pub(crate) fn handle(&mut self, request: Request, cx: &mut App) {
@@ -89,29 +96,43 @@ impl Windows {
                 );
             }
             // Dropping the stage answers Cancel.
-            Request::Job { .. } if self.job_closed.get() => {}
+            Request::Job { .. } if self.job_closed.load(Ordering::Relaxed) => {}
             Request::Job { job, stage } => {
                 if let Some((handle, view)) = &self.job {
                     let view = view.clone();
+                    // A prompt after progress comes forward, as a new window
+                    // would: the signer may have gone back to the browser.
+                    let prompt = !matches!(stage, Stage::Busy | Stage::Progress(_));
                     let _ = handle.update(cx, |_, window, cx| {
-                        view.update(cx, |view, cx| view.show(job, stage, window, cx))
+                        let _ = view.update(cx, |view, cx| view.show(job, stage, window, cx));
+                        if prompt {
+                            window.activate_window();
+                        }
                     });
+                    if prompt {
+                        cx.activate(true);
+                    }
                     return;
                 }
                 let closed = self.job_closed.clone();
-                // Taller for a batch, so its list of documents shows a few.
-                let height = if job.is_batch() { 640. } else { 560. };
-                let (handle, view) =
-                    open(job_title(&job), 520., height, self.log, cx, |window, cx| {
-                        let view = cx.new(|cx| JobWindow::new(job, stage, window, cx));
+                let log = self.log;
+                let (width, height) = job_size(&job);
+                let (handle, view) = open(
+                    job_title(&job),
+                    width,
+                    height,
+                    self.log,
+                    cx,
+                    |window, cx| {
+                        let view = cx.new(|cx| JobWindow::new(job, stage, closed, log, window, cx));
                         let weak = view.downgrade();
                         window.on_window_should_close(cx, move |_, cx| {
-                            closed.set(true);
-                            let _ = weak.update(cx, |view, _| view.stage = Stage::Busy);
+                            let _ = weak.update(cx, |view, _| view.cancelled());
                             true
                         });
                         view
-                    });
+                    },
+                );
                 self.job = Some((handle, view.downgrade()));
             }
             Request::Message {
@@ -159,7 +180,7 @@ impl Windows {
             }
         }
         self.job = None;
-        self.job_closed = Rc::default();
+        self.job_closed = Arc::default();
         native::set_brand(None, true, cx);
     }
 
@@ -247,10 +268,21 @@ fn open<V: Render>(
         native::follow_appearance(window, cx);
         build(window, cx)
     };
-    gpui_kit::open_window(options, cx, build).unwrap_or_else(|error| {
+    let opened = gpui_kit::open_window(options, cx, build).unwrap_or_else(|error| {
         log(&format!("{} {error}", strings::NO_GPU));
         std::process::exit(1)
-    })
+    });
+    // A window opens after the link's network round trip, or in a helper
+    // already running from an earlier job, so the browser is usually still in
+    // front; without this the window can sit behind it or on another desktop.
+    cx.activate(true);
+    opened
+}
+
+/// The job window's size: taller for a batch, so its list of documents
+/// shows a few.
+fn job_size(job: &Job) -> (f32, f32) {
+    (520., if job.is_batch() { 640. } else { 560. })
 }
 
 fn job_title(job: &Job) -> &'static str {
@@ -653,6 +685,21 @@ fn site_heading(host: SharedString, ask: &'static str, cx: &App) -> impl IntoEle
         .child(div().text_color(cx.theme().muted_foreground).child(ask))
 }
 
+/// A spinner beside what the job is doing, read out as that text.
+fn progress_line(text: SharedString, cx: &App) -> impl IntoElement {
+    let muted = cx.theme().muted_foreground;
+    h_flex()
+        .id("progress")
+        .role(Role::Status)
+        .aria_label(text.clone())
+        .gap_2()
+        .text_sm()
+        .text_color(muted)
+        .child(Spinner::new().small().color(muted))
+        .child(text)
+        .test_support()
+}
+
 /// The first-contact prompt (section 5): the host only, never branding.
 struct TrustWindow {
     host: SharedString,
@@ -737,12 +784,22 @@ pub(crate) struct JobWindow {
     /// The certificate and the digest are shown: at first when the signer
     /// chose that in Settings.
     details: bool,
+    /// Set when the signer cancels; shared with the job's thread.
+    closed: Arc<AtomicBool>,
+    log: fn(&str),
     focus: FocusHandle,
     _subscriptions: Vec<Subscription>,
 }
 
 impl JobWindow {
-    fn new(job: Job, stage: Stage, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    fn new(
+        job: Job,
+        stage: Stage,
+        closed: Arc<AtomicBool>,
+        log: fn(&str),
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let pin = cx.new(|cx| {
             InputState::new(window, cx)
                 .masked(true)
@@ -761,6 +818,8 @@ impl JobWindow {
             pin,
             selected: 0,
             details: cx.try_global::<AlwaysShowDetails>().is_some_and(|on| on.0),
+            closed,
+            log,
             focus: cx.focus_handle(),
             _subscriptions: vec![subscription],
         };
@@ -770,6 +829,11 @@ impl JobWindow {
 
     fn show(&mut self, job: Job, stage: Stage, window: &mut Window, cx: &mut Context<Self>) {
         window.set_window_title(job_title(&job));
+        // The window opens before the claim says whether the job is a batch.
+        if job.is_batch() != self.job.is_batch() {
+            let (width, height) = job_size(&job);
+            window.resize(size(px(width), px(height)));
+        }
         native::set_brand(
             job.brand.as_ref().and_then(|brand| brand.accent),
             job.brand.as_ref().is_none_or(|brand| brand.translucent),
@@ -823,7 +887,7 @@ impl JobWindow {
             Stage::Choose { reply, .. } => {
                 let _ = reply.send(Some(self.selected));
             }
-            Stage::Busy => {}
+            Stage::Busy | Stage::Progress(_) => {}
         }
         window.focus(&self.focus, cx);
         cx.notify();
@@ -845,12 +909,37 @@ impl JobWindow {
         }
     }
 
+    /// The window closes at once; the flow logs out and reports the
+    /// failure behind it.
     fn cancel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        // Dropping the stage's channel answers Cancel.
-        self.stage = Stage::Busy;
         self.pin
             .update(cx, |input, cx| input.set_value("", window, cx));
-        cx.notify();
+        self.cancelled();
+        window.remove_window();
+    }
+
+    /// The signer cancelled or closed the window. Dropping the stage's
+    /// channel answers Cancel; the flag answers Cancel to what follows.
+    fn cancelled(&mut self) {
+        if !self.closed.swap(true, Ordering::Relaxed) {
+            (self.log)("Cancelled by the signer.");
+        }
+        self.stage = Stage::Busy;
+    }
+
+    fn step_text(&self, step: Step) -> SharedString {
+        let batch = self.job.is_batch();
+        let text = match step {
+            Step::Connecting => strings::STEP_CONNECTING,
+            Step::OpeningToken => strings::STEP_OPENING_TOKEN,
+            Step::CheckingCertificate => strings::STEP_CHECKING_CERTIFICATE,
+            Step::Downloading if batch => strings::STEP_DOWNLOADING_BATCH,
+            Step::Downloading => strings::STEP_DOWNLOADING,
+            Step::Signing => strings::STEP_SIGNING,
+            Step::Sending if batch => strings::STEP_SENDING_BATCH,
+            Step::Sending => strings::STEP_SENDING,
+        };
+        text.replace("{host}", &self.job.host).into()
     }
 
     fn stage_body(&self, cx: &mut Context<Self>) -> Div {
@@ -933,7 +1022,8 @@ impl JobWindow {
                     cx,
                 ))
             }
-            Stage::Busy => body.child(note(strings::WORKING, cx)),
+            Stage::Busy => body.child(progress_line(strings::WORKING.into(), cx)),
+            Stage::Progress(step) => body.child(progress_line(self.step_text(*step), cx)),
         }
     }
 }
@@ -963,11 +1053,11 @@ impl Render for JobWindow {
                 Some(digests.clone()),
                 strings::CONFIRM,
             ),
-            Stage::Choose { .. } | Stage::Enrol { .. } | Stage::Busy => {
+            Stage::Choose { .. } | Stage::Enrol { .. } | Stage::Busy | Stage::Progress(_) => {
                 (None, None, strings::CONTINUE)
             }
         };
-        let busy = matches!(self.stage, Stage::Busy);
+        let busy = matches!(self.stage, Stage::Busy | Stage::Progress(_));
         let brand = self.job.brand.as_ref();
         let accent = brand
             .and_then(|brand| brand.accent)
@@ -1095,7 +1185,9 @@ impl Render for JobWindow {
                                 v_flex()
                                     .min_h(px(0.))
                                     .gap_1()
-                                    .child(group(rows, cx))
+                                    // Before the claim there is only the host
+                                    // to show.
+                                    .when(self.job.claimed, |this| this.child(group(rows, cx)))
                                     .children(documents)
                                     .when(has_details, |this| {
                                         this.child(
@@ -1131,13 +1223,12 @@ impl Render for JobWindow {
                 Some(
                     Button::new("cancel")
                         .label(strings::CANCEL)
-                        .disabled(busy)
                         .on_click(cx.listener(|this, _, window, cx| this.cancel(window, cx))),
                 ),
+                // While the job works, the spinner is beside its step.
                 Button::new("submit")
                     .primary()
                     .label(submit)
-                    .loading(busy)
                     .disabled(busy || self.pin_missing(cx))
                     .on_click(cx.listener(|this, _, window, cx| this.submit(window, cx))),
                 cx,
@@ -1724,6 +1815,8 @@ pub const GALLERY_VIEWS: &[&str] = &[
     "choose",
     "enrol",
     "busy",
+    "progress-connecting",
+    "progress-certificate",
     "message",
     "message-driver",
     "busy-message",
@@ -1795,6 +1888,7 @@ pub(crate) fn gallery(view: &str, cx: &mut App) {
             translucent: !view.ends_with("-opaque"),
         }),
         kind,
+        claimed: true,
         title: "Circular 2026/14: Operation of bank accounts".into(),
         signer: "Asha Rao".into(),
         documents: vec!["Circular 2026/14: Operation of bank accounts".into()],
@@ -1869,6 +1963,26 @@ pub(crate) fn gallery(view: &str, cx: &mut App) {
             windows.busy(cx);
             return;
         }
+        // Before the claim: the host only, never branding.
+        "progress-connecting" => {
+            windows.handle(
+                Request::Job {
+                    job: Job {
+                        brand: None,
+                        claimed: false,
+                        title: String::new(),
+                        signer: String::new(),
+                        documents: Vec::new(),
+                        ..job(Kind::Sign)
+                    },
+                    stage: Stage::Progress(Step::Connecting),
+                },
+                cx,
+            );
+            std::mem::forget(windows);
+            return;
+        }
+        "progress-certificate" => Stage::Progress(Step::CheckingCertificate),
         "settings" | "settings-empty" | "settings-checking" | "settings-driver-failed" => {
             let dir = std::env::temp_dir().join(format!("keyseal-gallery-{view}"));
             let _ = std::fs::remove_dir_all(&dir);
@@ -1955,6 +2069,7 @@ mod tests {
     use keyseal_core::trust::TrustStore;
 
     use keyseal_core::doctor::{Report, Status};
+    use keyseal_core::flow::Step;
     use keyseal_core::preferences::Preferences;
 
     use super::{Windows, key_bindings, open_settings, sample_report};
@@ -1993,6 +2108,7 @@ mod tests {
                 translucent: true,
             }),
             kind: Kind::Sign,
+            claimed: true,
             title: "Lease agreement".into(),
             signer: "A. Signer".into(),
             documents: vec!["Lease agreement".into()],
@@ -2271,6 +2387,8 @@ mod tests {
             .unwrap();
         assert_eq!(answer.recv(), Err(mpsc::RecvError));
 
+        // The next job.
+        cx.update(|cx| windows.close_all(cx));
         let (reply, answer) = mpsc::channel();
         cx.update(|cx| {
             windows.handle(
@@ -2281,6 +2399,7 @@ mod tests {
                 cx,
             )
         });
+        let handle = open_windows(cx)[0];
         cx.update_window(handle, |_, window, cx| {
             window.render_frame(cx);
             assert!(window.try_find("digest").is_none());
@@ -2605,5 +2724,141 @@ mod tests {
             assert!(window.try_find("certificate").is_none());
         })
         .unwrap();
+    }
+    /// The job window opens at the first step with the host only, then
+    /// shows the claimed job and its steps, and its prompts, in one window.
+    #[gpui_kit::test]
+    fn the_job_window_shows_progress_from_the_start(cx: &mut TestAppContext) {
+        let mut windows = setup(cx);
+        let unclaimed = Job {
+            brand: None,
+            claimed: false,
+            title: String::new(),
+            signer: String::new(),
+            documents: Vec::new(),
+            ..job()
+        };
+        let progress = |job, step| Request::Job {
+            job,
+            stage: Stage::Progress(step),
+        };
+        cx.update(|cx| windows.handle(progress(unclaimed, Step::Connecting), cx));
+        let handle = open_windows(cx)[0];
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            assert_eq!(window.find("host").label(), Some("dash.example.org"));
+            assert!(window.try_find("title").is_none());
+            assert!(window.try_find("signer").is_none());
+            assert_eq!(
+                window.find("progress").label(),
+                Some("Connecting to dash.example.org...")
+            );
+            assert_ne!(window.find("cancel").disabled(), Some(true));
+            assert_eq!(window.find("submit").disabled(), Some(true));
+        })
+        .unwrap();
+
+        cx.update(|cx| windows.handle(progress(job(), Step::CheckingCertificate), cx));
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            assert_eq!(
+                window.find("title").label(),
+                Some(format!("{}: Lease agreement", strings::TITLE).as_str())
+            );
+            assert_eq!(
+                window.find("progress").label(),
+                Some("Checking your certificate with dash.example.org...")
+            );
+        })
+        .unwrap();
+
+        let (reply, answer) = mpsc::channel();
+        cx.update(|cx| {
+            windows.handle(
+                Request::Job {
+                    job: job(),
+                    stage: Stage::Pin {
+                        certificate: Some("CN=A. Signer".into()),
+                        digests: Some(vec![DIGEST.into()]),
+                        pin_pad: false,
+                        warning: None,
+                        reply,
+                    },
+                },
+                cx,
+            )
+        });
+        assert_eq!(open_windows(cx), [handle]);
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            assert!(window.try_find("progress").is_none());
+            window.input("1234", cx);
+            window.click("submit", cx);
+            window.render_frame(cx);
+            // Answered: working until the next step.
+            assert_eq!(window.find("progress").label(), Some(strings::WORKING));
+            assert_ne!(window.find("cancel").disabled(), Some(true));
+        })
+        .unwrap();
+        assert_eq!(answer.recv().unwrap().unwrap().as_str(), "1234");
+    }
+
+    /// Cancel closes the job window at once, during a step or at a prompt,
+    /// and no window opens for the rest of the job.
+    #[gpui_kit::test]
+    fn cancelling_closes_the_job_window(cx: &mut TestAppContext) {
+        let mut windows = setup(cx);
+        let pin = |reply| Request::Job {
+            job: job(),
+            stage: Stage::Pin {
+                certificate: None,
+                digests: None,
+                pin_pad: false,
+                warning: None,
+                reply,
+            },
+        };
+
+        let cancelled = windows.job_closed();
+        cx.update(|cx| {
+            windows.handle(
+                Request::Job {
+                    job: job(),
+                    stage: Stage::Progress(Step::OpeningToken),
+                },
+                cx,
+            )
+        });
+        let handle = open_windows(cx)[0];
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.click("cancel", cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        assert!(open_windows(cx).is_empty());
+        assert!(cancelled.load(std::sync::atomic::Ordering::Relaxed));
+        // The flow's next prompt answers Cancel without a window.
+        let (reply, answer) = mpsc::channel();
+        cx.update(|cx| windows.handle(pin(reply), cx));
+        assert_eq!(answer.recv(), Err(mpsc::RecvError));
+        assert!(open_windows(cx).is_empty());
+
+        // At a prompt, once the job is over and the next one starts.
+        cx.update(|cx| windows.close_all(cx));
+        let cancelled = windows.job_closed();
+        assert!(!cancelled.load(std::sync::atomic::Ordering::Relaxed));
+        let (reply, answer) = mpsc::channel();
+        cx.update(|cx| windows.handle(pin(reply), cx));
+        let handle = open_windows(cx)[0];
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.press("escape", cx);
+        })
+        .unwrap();
+        assert_eq!(answer.recv(), Err(mpsc::RecvError));
+        cx.run_until_parked();
+        assert!(open_windows(cx).is_empty());
+        assert!(cancelled.load(std::sync::atomic::Ordering::Relaxed));
     }
 }

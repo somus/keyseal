@@ -35,6 +35,7 @@ use crate::token::{self, TokenBackend, TokenCertificate, TokenError};
 use crate::trust::TrustStore;
 
 const CANCELLED: &str = "Signing cancelled.";
+const ENROLMENT_CANCELLED: &str = "Enrolment cancelled.";
 
 impl From<TokenError> for String {
     fn from(error: TokenError) -> Self {
@@ -131,6 +132,32 @@ pub struct DigestConfirm<'a> {
     pub digests: Vec<String>,
 }
 
+/// What the job is doing while the signer waits, in order. Enrol takes
+/// Connecting, OpeningToken and CheckingCertificate.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Step {
+    /// Fetching the manifest and claiming the job.
+    Connecting,
+    OpeningToken,
+    /// Posting the certificate for the server to check.
+    CheckingCertificate,
+    /// Downloading and checking every document (section 8.4).
+    Downloading,
+    Signing,
+    /// Posting the signatures.
+    Sending,
+}
+
+/// A step of a job on a trusted origin.
+pub struct Progress<'a> {
+    pub origin: &'a Origin,
+    /// The link's kind.
+    pub kind: Kind,
+    /// The claimed job; `None` before the claim.
+    pub job: Option<&'a JobView<'a>>,
+    pub step: Step,
+}
+
 pub trait Ui {
     /// First contact with `origin` (section 5): show the origin only.
     fn confirm_origin(&mut self, origin: &Origin) -> bool;
@@ -149,6 +176,11 @@ pub trait Ui {
     /// Something the user should know that isn't a failure, such as an
     /// update they have to install themselves.
     fn show_info(&mut self, message: &str);
+    /// The job reached `progress.step`; false when the signer cancelled.
+    /// Only called once the origin is trusted. Doesn't wait for the signer.
+    fn progress(&mut self, _progress: Progress) -> bool {
+        true
+    }
     /// The window the vendor's PIN dialog belongs to (CNG's
     /// `NCRYPT_WINDOW_HANDLE_PROPERTY`), as an `HWND`.
     fn window_handle(&self) -> Option<isize> {
@@ -212,6 +244,19 @@ fn run_link(
             store.trust(origin)?;
         }
     }
+    let cancelled = match link.kind {
+        Kind::Sign => CANCELLED,
+        Kind::Enrol => ENROLMENT_CANCELLED,
+    };
+    let connecting = Progress {
+        origin,
+        kind: link.kind,
+        job: None,
+        step: Step::Connecting,
+    };
+    if !ui.progress(connecting) {
+        return Err(Failure::cancelled(cancelled));
+    }
     let branding = manifest::branding(origin, &env.config_dir.join("manifests"));
     if let Some(branding) = &branding
         && branding.manifest.needs_newer_helper()
@@ -266,8 +311,13 @@ fn sign(
     ui: &mut dyn Ui,
     open: Open,
 ) -> Result<Outcome, Failure> {
+    show_step(ui, view, Step::OpeningToken, CANCELLED)?;
     let backend = open(&mut || Ok(()))?;
     let token = backend.token();
+    // Cancelling once the token is open logs out, as declining the digests
+    // does.
+    let reached =
+        |ui: &mut dyn Ui, step| show_step(ui, view, step, CANCELLED).inspect_err(|_| token.close());
     let mut certificates = signing_certificates(token, false)?;
     let login_first = match &backend {
         Backend::Pkcs11(_) if certificates.is_empty() => {
@@ -289,8 +339,10 @@ fn sign(
     };
     let certificate = choose(ui, view, certificates, job, false)?;
     let chain = chain(token, &certificate)?;
+    reached(ui, Step::CheckingCertificate)?;
     let prepared = client.prepare(&job.claim_nonce, &certificate.der, &chain)?;
     let digests = check_prepared(view.origin, job, &certificate, &prepared)?;
+    reached(ui, Step::Downloading)?;
     check_documents(client, view.origin, job, &prepared, &digests)?;
     let digests: Vec<String> = digests.iter().map(hex::encode).collect();
     let subject = token::subject(&certificate.der);
@@ -321,6 +373,7 @@ fn sign(
             }
         }
     }
+    reached(ui, Step::Signing)?;
     // Every document in the one session the PIN opened.
     let signatures = token.sign(
         &certificate.der,
@@ -333,6 +386,7 @@ fn sign(
     if signatures.len() != prepared.to_sign.len() {
         return Err("The token didn't sign every document.".into());
     }
+    reached(ui, Step::Sending)?;
     client.submit_signatures(&job.claim_nonce, &signatures)?;
     Ok(Outcome::Signed)
 }
@@ -348,11 +402,12 @@ fn enrol(
     ui: &mut dyn Ui,
     open: Open,
 ) -> Result<Outcome, Failure> {
+    show_step(ui, view, Step::OpeningToken, ENROLMENT_CANCELLED)?;
     let backend = open(&mut || {
         if ui.confirm_enrol(view) {
             Ok(())
         } else {
-            Err(Failure::cancelled("Enrolment cancelled."))
+            Err(Failure::cancelled(ENROLMENT_CANCELLED))
         }
     })?;
     let token = backend.token();
@@ -367,7 +422,7 @@ fn enrol(
             };
             let pin = ui
                 .prompt_pin(&prompt)
-                .ok_or_else(|| Failure::cancelled("Enrolment cancelled."))?;
+                .ok_or_else(|| Failure::cancelled(ENROLMENT_CANCELLED))?;
             token.login(pin)?;
             choose(ui, view, signing_certificates(token, true)?, job, false)?
         }
@@ -376,8 +431,25 @@ fn enrol(
     };
     let chain = chain(token, &certificate)?;
     token.close();
+    show_step(ui, view, Step::CheckingCertificate, ENROLMENT_CANCELLED)?;
     client.enrol(&job.claim_nonce, &certificate.der, &chain)?;
     Ok(Outcome::Enrolled)
+}
+
+/// Shows `step` of the claimed job in `view`; a failure saying `cancelled`
+/// when the signer cancelled.
+fn show_step(ui: &mut dyn Ui, view: &JobView, step: Step, cancelled: &str) -> Result<(), Failure> {
+    let progress = Progress {
+        origin: view.origin,
+        kind: view.kind,
+        job: Some(view),
+        step,
+    };
+    if ui.progress(progress) {
+        Ok(())
+    } else {
+        Err(Failure::cancelled(cancelled))
+    }
 }
 
 /// Where the job's key is.
@@ -650,6 +722,7 @@ mod tests {
         Pin,
         Confirm,
         Enrol,
+        Progress(Step),
     }
 
     /// Answers every prompt until `cancel_at`, which it cancels.
@@ -658,6 +731,8 @@ mod tests {
         errors: Vec<String>,
         /// The digests each PIN prompt showed.
         pins: Vec<Option<Vec<String>>>,
+        /// Each step shown, and whether it came with the claimed job.
+        steps: Vec<(Step, bool)>,
     }
 
     impl CancellingUi {
@@ -666,6 +741,7 @@ mod tests {
                 cancel_at,
                 errors: Vec::new(),
                 pins: Vec::new(),
+                steps: Vec::new(),
             }
         }
     }
@@ -691,6 +767,10 @@ mod tests {
             self.errors.push(message.to_owned());
         }
         fn show_info(&mut self, _: &str) {}
+        fn progress(&mut self, progress: Progress) -> bool {
+            self.steps.push((progress.step, progress.job.is_some()));
+            self.cancel_at != Stage::Progress(progress.step)
+        }
     }
 
     /// A token showing `public` before login and `private` after.
@@ -939,8 +1019,8 @@ mod tests {
         }
     }
 
-    /// Each cancelled prompt ends the job quietly: no error shown and one
-    /// failure report, or none when the origin was never trusted.
+    /// Each cancelled prompt or step ends the job quietly: no error shown
+    /// and one failure report, or none before the job is claimed.
     #[test]
     fn cancelling_any_prompt_reports_one_failure_and_shows_nothing() {
         for (kind, cng, public, private, cancel_at, reports) in [
@@ -954,6 +1034,86 @@ mod tests {
             ("sign", true, vec![RSA], vec![], Stage::Confirm, 1),
             ("enrol", true, vec![RSA], vec![], Stage::Enrol, 1),
             ("enrol", true, vec![RSA], vec![], Stage::Choose, 1),
+            (
+                "sign",
+                false,
+                vec![RSA],
+                vec![],
+                Stage::Progress(Step::Connecting),
+                0,
+            ),
+            (
+                "sign",
+                false,
+                vec![RSA],
+                vec![],
+                Stage::Progress(Step::OpeningToken),
+                1,
+            ),
+            (
+                "sign",
+                false,
+                vec![RSA],
+                vec![],
+                Stage::Progress(Step::CheckingCertificate),
+                1,
+            ),
+            (
+                "sign",
+                false,
+                vec![RSA],
+                vec![],
+                Stage::Progress(Step::Downloading),
+                1,
+            ),
+            (
+                "sign",
+                false,
+                vec![RSA],
+                vec![],
+                Stage::Progress(Step::Signing),
+                1,
+            ),
+            (
+                "sign",
+                false,
+                vec![],
+                vec![RSA],
+                Stage::Progress(Step::Signing),
+                1,
+            ),
+            (
+                "sign",
+                false,
+                vec![RSA],
+                vec![],
+                Stage::Progress(Step::Sending),
+                1,
+            ),
+            (
+                "enrol",
+                false,
+                vec![],
+                vec![RSA],
+                Stage::Progress(Step::Connecting),
+                0,
+            ),
+            (
+                "enrol",
+                false,
+                vec![],
+                vec![RSA],
+                Stage::Progress(Step::OpeningToken),
+                1,
+            ),
+            (
+                "enrol",
+                false,
+                vec![],
+                vec![RSA],
+                Stage::Progress(Step::CheckingCertificate),
+                1,
+            ),
         ] {
             let case = format!("{kind} {cng} {public:?} {private:?} {cancel_at:?}");
             let (origin, requests) = serve(kind, serde_json::Value::Null);
@@ -988,6 +1148,69 @@ mod tests {
                 !requests.iter().any(|r| r.ends_with("/signature")),
                 "{case}"
             );
+            // Before the claim, nothing reaches the origin.
+            if reports == 0 {
+                assert!(requests.is_empty(), "{case}: {requests:?}");
+            }
+            // The enrolment goes to the server only after its step.
+            if cancel_at == Stage::Progress(Step::CheckingCertificate) {
+                assert!(
+                    !requests.iter().any(|r| r.ends_with("/certificate")),
+                    "{case}"
+                );
+            }
+        }
+    }
+
+    /// Every step is shown in order, the first before the claim without the
+    /// job and the rest with it, on both sign paths and for enrol.
+    #[test]
+    fn shows_each_step_in_order() {
+        use Step::*;
+        let sign = [
+            Connecting,
+            OpeningToken,
+            CheckingCertificate,
+            Downloading,
+            Signing,
+            Sending,
+        ];
+        for (kind, public, private, expected) in [
+            ("sign", vec![RSA], vec![], &sign[..]),
+            ("sign", vec![], vec![RSA], &sign[..]),
+            (
+                "enrol",
+                vec![],
+                vec![RSA],
+                &[Connecting, OpeningToken, CheckingCertificate][..],
+            ),
+        ] {
+            let (origin, _) = serve(kind, serde_json::Value::Null);
+            let config_dir =
+                std::env::temp_dir().join(format!("keyseal-steps-{}", std::process::id()));
+            let env = Environment {
+                allow_insecure: true,
+                config_dir: config_dir.clone(),
+            };
+            let job: String = url::form_urlencoded::byte_serialize(
+                format!("{origin}/api/keyseal/v1/jobs/{TOKEN}").as_bytes(),
+            )
+            .collect();
+            let mut ui = CancellingUi::new(Stage::Enrol);
+            let open = |_: BeforeCng| {
+                Ok(Backend::Pkcs11(Box::new(FakeToken::new(
+                    public.clone(),
+                    private.clone(),
+                ))))
+            };
+            let result = run_with(&format!("keyseal://{kind}?job={job}"), &mut ui, &env, &open);
+            let _ = std::fs::remove_dir_all(&config_dir);
+            assert!(result.is_ok(), "{kind}: {:?}", result.err());
+            let steps: Vec<Step> = ui.steps.iter().map(|(step, _)| *step).collect();
+            assert_eq!(steps, expected, "{kind}");
+            let with_job: Vec<bool> = ui.steps.iter().map(|(_, job)| *job).collect();
+            assert!(!with_job[0], "{kind}");
+            assert!(with_job[1..].iter().all(|&job| job), "{kind}");
         }
     }
 

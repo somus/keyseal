@@ -1,23 +1,25 @@
 //! The KeySeal helper's windows, built with GPUI Kit. GPUI owns the main
 //! thread; the job's flow runs on a background thread with [`WindowUi`],
-//! whose calls send a request to the main thread and block until the user
-//! answers. A window closed without an answer counts as Cancel. Links that
-//! arrive while the app runs (macOS sends them to the running app) start a
-//! job when none is running.
+//! whose prompts send a request to the main thread and block until the user
+//! answers, and whose progress only sends one. A window closed without an
+//! answer counts as Cancel; cancelling closes the job window at once, and
+//! the flow unwinds behind it. Links that arrive while the app runs (macOS
+//! sends them to the running app) start a job when none is running.
 
 mod native;
 mod strings;
 mod views;
 
 use std::path::PathBuf;
-use std::sync::mpsc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, mpsc};
 use std::time::Duration;
 
 use futures::StreamExt;
 use futures::channel::mpsc::{UnboundedSender, unbounded};
 use gpui_kit::{App, KeyBinding, Menu, MenuItem, QuitMode, actions};
 use keyseal_core::doctor::Report;
-use keyseal_core::flow::{DigestConfirm, JobView, PinPrompt, Ui};
+use keyseal_core::flow::{DigestConfirm, JobView, PinPrompt, Progress, Step, Ui};
 use keyseal_core::origin::Origin;
 use keyseal_core::protocol::{Kind, plain};
 use zeroize::Zeroizing;
@@ -195,7 +197,9 @@ pub fn launch(
         cx.spawn(async move |cx| {
             while let Some(event) = incoming.next().await {
                 cx.update(|cx| match event {
-                    Event::Link(link) if jobs.start() => start_job(link, events.clone(), log, job),
+                    Event::Link(link) if jobs.start() => {
+                        start_job(link, windows.job_closed(), events.clone(), log, job)
+                    }
                     Event::Link(_) => windows.busy(cx),
                     Event::NoLink if jobs.idle() => {
                         settings_only(config_dir.clone(), log, probe, events.clone(), cx)
@@ -227,8 +231,11 @@ pub fn launch(
     std::process::exit(0)
 }
 
+/// Runs `link` on a thread of its own; `cancelled` is set when the signer
+/// cancels the job or closes its window.
 fn start_job(
     link: String,
+    cancelled: Arc<AtomicBool>,
     events: UnboundedSender<Event>,
     log: fn(&str),
     job: fn(&str, &mut dyn Ui) -> i32,
@@ -236,6 +243,8 @@ fn start_job(
     std::thread::spawn(move || {
         let mut ui = WindowUi {
             events: events.clone(),
+            log,
+            cancelled,
         };
         let code = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| job(&link, &mut ui)))
             .unwrap_or(1);
@@ -286,6 +295,9 @@ pub(crate) struct Job {
     insecure: bool,
     brand: Option<Brand>,
     kind: Kind,
+    /// The job is claimed: the title, signer and documents are its own.
+    /// Before the claim they're empty and the window shows the host only.
+    claimed: bool,
     title: String,
     signer: String,
     /// A sign job's document titles, in order; empty for enrol.
@@ -318,6 +330,7 @@ impl Job {
                 translucent: branding.manifest.translucent != Some(false),
             }),
             kind: view.kind,
+            claimed: true,
             title: view.title.to_owned(),
             signer: view.signer.to_owned(),
             documents: view
@@ -325,6 +338,21 @@ impl Job {
                 .iter()
                 .map(|document| plain(&document.title))
                 .collect(),
+        }
+    }
+
+    /// The job a link asks for, before it's claimed: never branding, which
+    /// comes with the claimed job.
+    fn unclaimed(origin: &Origin, kind: Kind) -> Self {
+        Self {
+            host: host(origin),
+            insecure: origin.insecure,
+            brand: None,
+            kind,
+            claimed: false,
+            title: String::new(),
+            signer: String::new(),
+            documents: Vec::new(),
         }
     }
 
@@ -410,13 +438,19 @@ pub(crate) enum Stage {
     },
     /// Enrol through CNG: the job before the certificate store is read.
     Enrol { reply: mpsc::Sender<bool> },
-    /// Answered; the flow is working.
+    /// Answered; the flow is working until its next step or prompt.
     Busy,
+    /// The flow is at this step.
+    Progress(Step),
 }
 
 /// The flow's [`Ui`] on the background thread.
 pub struct WindowUi {
     events: UnboundedSender<Event>,
+    /// Records each step in `keyseal.log`; never given the link or the PIN.
+    log: fn(&str),
+    /// The signer cancelled the job or closed its window.
+    cancelled: Arc<AtomicBool>,
 }
 
 impl WindowUi {
@@ -427,11 +461,20 @@ impl WindowUi {
             .ok()?;
         answer.recv().ok()
     }
+
+    /// A prompt the job waits on the signer for; Cancel once they cancelled.
+    fn ask_signer<T>(&self, request: impl FnOnce(mpsc::Sender<T>) -> Request) -> Option<T> {
+        if self.cancelled.load(Ordering::Relaxed) {
+            return None;
+        }
+        (self.log)("Waiting for the signer.");
+        self.ask(request)
+    }
 }
 
 impl Ui for WindowUi {
     fn confirm_origin(&mut self, origin: &Origin) -> bool {
-        self.ask(|reply| Request::Trust {
+        self.ask_signer(|reply| Request::Trust {
             host: host(origin),
             insecure: origin.insecure,
             reply,
@@ -441,7 +484,7 @@ impl Ui for WindowUi {
 
     fn choose_certificate(&mut self, job: &JobView, subjects: &[String]) -> Option<usize> {
         let subjects = subjects.iter().map(|subject| plain(subject)).collect();
-        self.ask(|reply| Request::Job {
+        self.ask_signer(|reply| Request::Job {
             job: Job::of(job),
             stage: Stage::Choose { subjects, reply },
         })
@@ -449,7 +492,7 @@ impl Ui for WindowUi {
     }
 
     fn prompt_pin(&mut self, prompt: &PinPrompt) -> Option<Zeroizing<String>> {
-        self.ask(|reply| Request::Job {
+        self.ask_signer(|reply| Request::Job {
             job: Job::of(prompt.job),
             stage: Stage::Pin {
                 certificate: prompt.certificate.as_deref().map(plain),
@@ -463,7 +506,7 @@ impl Ui for WindowUi {
     }
 
     fn confirm_digest(&mut self, confirm: &DigestConfirm) -> bool {
-        self.ask(|reply| Request::Job {
+        self.ask_signer(|reply| Request::Job {
             job: Job::of(confirm.job),
             stage: Stage::Confirm {
                 certificate: plain(&confirm.certificate),
@@ -475,7 +518,7 @@ impl Ui for WindowUi {
     }
 
     fn confirm_enrol(&mut self, job: &JobView) -> bool {
-        self.ask(|reply| Request::Job {
+        self.ask_signer(|reply| Request::Job {
             job: Job::of(job),
             stage: Stage::Enrol { reply },
         })
@@ -483,6 +526,11 @@ impl Ui for WindowUi {
     }
 
     fn show_error(&mut self, message: &str) {
+        // A job the signer cancelled opens no more windows; the error is in
+        // the log.
+        if self.cancelled.load(Ordering::Relaxed) {
+            return;
+        }
         self.ask(|reply| Request::Message {
             heading: strings::ERROR_HEADING,
             message: plain(message),
@@ -496,6 +544,30 @@ impl Ui for WindowUi {
             message: plain(message),
             reply,
         });
+    }
+
+    fn progress(&mut self, progress: Progress) -> bool {
+        if self.cancelled.load(Ordering::Relaxed) {
+            return false;
+        }
+        // Each step's time also ends the one before.
+        (self.log)(match progress.step {
+            Step::Connecting => "Connecting.",
+            Step::OpeningToken => "Claimed. Opening the token.",
+            Step::CheckingCertificate => "Checking the certificate.",
+            Step::Downloading => "Certificate checked. Downloading the documents.",
+            Step::Signing => "Signing.",
+            Step::Sending => "Signed. Sending the signatures.",
+        });
+        let job = match progress.job {
+            Some(view) => Job::of(view),
+            None => Job::unclaimed(progress.origin, progress.kind),
+        };
+        let _ = self.events.unbounded_send(Event::Ui(Box::new(Request::Job {
+            job,
+            stage: Stage::Progress(progress.step),
+        })));
+        true
     }
 
     #[cfg(windows)]

@@ -139,13 +139,15 @@ Call it straight from the click handler, since browsers want a recent user gestu
 
 ## 5. Install the helper
 
-Signers install the helper once from the release page:
+Signers install the helper once. Each release carries its downloads under fixed names too, so link to the latest release's and never update the links:
 
-| Platform | Download | Registers `keyseal://` |
+| Platform | Download link | Registers `keyseal://` |
 | --- | --- | --- |
-| macOS | `.dmg` with the universal app | When the app is first opened |
-| Windows | `.zip` with `keyseal.exe` and `install.cmd` | `install.cmd` |
-| Linux | `.deb`, `.AppImage` or `.tar.gz` | The deb on install; `keyseal install` for the AppImage and tarball |
+| macOS | `https://github.com/somus/keyseal/releases/latest/download/keyseal-macos-universal.dmg`, the universal app | When the app is first opened |
+| Windows | `https://github.com/somus/keyseal/releases/latest/download/keyseal-windows-x64.zip`, with `keyseal.exe` and `install.cmd` | `install.cmd` |
+| Linux | `https://github.com/somus/keyseal/releases/latest/download/keyseal-linux-x64.AppImage` or `keyseal_amd64.deb`; the tarball is on the release page | The deb on install; `keyseal install` for the AppImage and tarball |
+
+`helperDownloadFor(navigator.userAgent)` from `@keyseal/browser` says which one suits the signer's platform.
 
 The helper updates itself. Raising `minHelperVersion` makes older helpers update before they can sign, so raise it only once that release exists.
 

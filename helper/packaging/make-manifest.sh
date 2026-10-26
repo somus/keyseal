@@ -18,6 +18,14 @@ hash() { sha256sum "$1" | cut -d' ' -f1; }
 mac="keyseal-helper-$version-macos-universal.zip"
 win="keyseal-helper-$version-windows-x64.exe"
 linux="keyseal-helper-$version-linux-x64.AppImage"
+# Each download under a name without the version, so a site can link to
+# releases/latest/download/<name> once: copies of the versioned files.
+fixed=(
+  "keyseal-macos-universal.dmg=keyseal-helper-$version-macos-universal.dmg"
+  "keyseal-windows-x64.zip=keyseal-helper-$version-windows-x64.zip"
+  "keyseal-linux-x64.AppImage=$linux"
+  "keyseal_amd64.deb=keyseal_${version}_amd64.deb"
+)
 # Everything the release publishes besides SHA256SUMS and the signatures.
 assets=(
   BUILDINFO
@@ -30,7 +38,14 @@ assets=(
   "keyseal-helper-$version-windows-x64.zip"
   keyseal-update.json
   "keyseal_${version}_amd64.deb"
+  "${fixed[@]%%=*}"
 )
+for pair in "${fixed[@]}"; do
+  cmp "$dir/${pair%%=*}" "$dir/${pair#*=}" || {
+    echo "${pair%%=*} isn't a copy of ${pair#*=}." >&2
+    exit 1
+  }
+done
 
 # Assigned first, so a missing asset stops the script.
 mac_sha="$(hash "$dir/$mac")"

@@ -61,6 +61,9 @@ maintainer, and a manual publish. The signing rules are in
      its binary, and the helper leaves the AppImage in its config
      directory with one notice per version.
    - `keyseal-update.json`, `SHA256SUMS`, `SHA256SUMS-unsigned`, `BUILDINFO`
+   - the downloads again without the version, for fixed links:
+     `keyseal-macos-universal.dmg`, `keyseal-windows-x64.zip`,
+     `keyseal-linux-x64.AppImage` and `keyseal_amd64.deb`
 4. Check, sign and publish with one script on a Mac, with Bitwarden
    unlocked and Docker running:
 

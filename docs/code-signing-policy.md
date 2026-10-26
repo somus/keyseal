@@ -30,8 +30,8 @@ change to this file and, for release keys, to `RELEASE_KEYS` in
 
 | Maintainer | Key | keyId (SHA-256 of the raw public key) |
 | --- | --- | --- |
-| _to be filled when the first keys are made_ | primary, in Bitwarden | |
-| | backup, offline | |
+| Somasundaram Ayyappan (@somus) | primary, in Bitwarden | `c54378c08218e18d1cfd7c305303a89acb244acf0fdd0f05baa440854c328f68` |
+| | backup, offline | `76a04142473ace19b4446a2242562e7824b047f3debcf5f59698cf33859b9177` |
 
 ## Key custody
 

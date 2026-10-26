@@ -80,17 +80,20 @@ def router(settings):
 
 ## Docker
 
+Released images are published as `ghcr.io/somus/keyseal-service`, for linux/amd64 and linux/arm64, tagged with the full version and with major.minor; pin the digest for an image that can't change ([docs/releasing-service.md](../docs/releasing-service.md)).
+
 ```bash
-docker build -t keyseal-service service
 docker run --rm -p 8080:8080 \
   -e SIGNING_SERVICE_TOKEN="$(openssl rand -base64 32)" \
-  keyseal-service
+  ghcr.io/somus/keyseal-service:0.1
 ```
+
+To build it from a checkout instead, run `docker build -t keyseal-service service` and use `keyseal-service` as the image.
 
 A derived image adds plugins and, if needed, its own roots:
 
 ```dockerfile
-FROM keyseal-service
+FROM ghcr.io/somus/keyseal-service:0.1
 USER root
 RUN uv pip install --python /app/.venv/bin/python acme-keyseal
 USER signing

@@ -17,10 +17,9 @@ This guide adds token signing to a web application. The pieces are the signing s
 Run the service image where only your backend can reach it, with a strong bearer token:
 
 ```sh
-docker build -t keyseal-service service
 docker run -p 127.0.0.1:8090:8080 \
   -e SIGNING_SERVICE_TOKEN="$(openssl rand -base64 32)" \
-  keyseal-service
+  ghcr.io/somus/keyseal-service:0.1
 ```
 
 It trusts the CCA India roots by default. [service/README.md](../service/README.md) covers its routes, environment, timestamp authority and plugins (extra stamp styles and routes in a derived image).

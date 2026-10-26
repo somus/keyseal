@@ -11,7 +11,7 @@ key and is outside this policy.
 | --- | --- | --- | --- |
 | `keyseal-update.json` | Ed25519, threshold of pinned keys | Maintainers | Each maintainer's Bitwarden vault, with an offline backup key |
 | `SHA256SUMS` | Ed25519, the same keys and threshold | Maintainers | The same keys |
-| macOS `KeySeal.app` (with the token worker inside) and disk image | Apple Developer ID, notarized | The release workflow | Apple certificate in the `release-macos` GitHub environment |
+| macOS `KeySeal.app` (with the token worker inside) and disk image | Apple Developer ID, notarized; ad-hoc signed until the project has a Developer ID | The release workflow | Apple certificate in the `release-macos` GitHub environment |
 | Windows `keyseal.exe` | Authenticode via SignPath Foundation (after release one) | SignPath, on a maintainer's approval | SignPath's HSM |
 | Linux binaries, tarball, deb, AppImage | none in release one | | |
 

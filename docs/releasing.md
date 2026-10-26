@@ -23,6 +23,9 @@ maintainer, and a manual publish. The signing rules are in
   `APPLE_API_KEY_P8` (the App Store Connect API key file's contents),
   `APPLE_API_KEY_ID` and `APPLE_API_ISSUER`, and the variable
   `APPLE_SIGNING_IDENTITY` ("Developer ID Application: Name (TEAMID)").
+  Without `APPLE_SIGNING_IDENTITY` the workflow ad-hoc signs the macOS app
+  and disk image instead of notarizing them, and Mac users approve the app
+  once in System Settings, Privacy & Security, Open Anyway.
 - Create the `release` environment with a maintainer as required reviewer.
 - Protect `main` (changes only through reviewed pull requests) and add a
   tag ruleset for `helper-v*` (Settings, Rules, Rulesets, New tag ruleset,

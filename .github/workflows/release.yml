@@ -189,7 +189,11 @@ jobs:
         with:
           name: unsigned-macos-universal
           path: unsigned
+      # Without the Developer ID (APPLE_SIGNING_IDENTITY unset) the app and
+      # disk image are ad-hoc signed and not notarized: signers approve the
+      # app once in System Settings (docs/code-signing-policy.md).
       - name: Developer ID certificate in a temporary keychain
+        if: vars.APPLE_SIGNING_IDENTITY != ''
         env:
           P12: ${{ secrets.APPLE_DEVELOPER_ID_P12 }}
           P12_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_P12_PASSWORD }}
@@ -205,6 +209,7 @@ jobs:
           security list-keychains -d user -s "$keychain"
           rm "$RUNNER_TEMP/developer-id.p12"
       - name: Sign, notarize and staple
+        if: vars.APPLE_SIGNING_IDENTITY != ''
         env:
           KEYSEAL_CODESIGN_IDENTITY: ${{ vars.APPLE_SIGNING_IDENTITY }}
           NOTARIZE: "1"
@@ -219,6 +224,13 @@ jobs:
           helper/packaging/macos/build-dmg.sh "unsigned/keyseal-helper-$version-macos-universal" signed \
             "unsigned/keyseal-token-worker-$version-macos-x86_64"
           rm -rf signed/KeySeal.app "$APPLE_API_KEY"
+      - name: Ad-hoc sign
+        if: vars.APPLE_SIGNING_IDENTITY == ''
+        run: |
+          version="${{ needs.check.outputs.version }}"
+          helper/packaging/macos/build-dmg.sh "unsigned/keyseal-helper-$version-macos-universal" signed \
+            "unsigned/keyseal-token-worker-$version-macos-x86_64"
+          rm -rf signed/KeySeal.app
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: signed-macos-universal

@@ -5,7 +5,6 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime};
 
 use base64::Engine;
@@ -18,11 +17,22 @@ use ureq::tls::{RootCerts, TlsConfig};
 
 use crate::update::key_id;
 
-/// Public keys that may sign the catalogue, as raw Ed25519 bytes.
-/// Placeholder: replace before release with the catalogue key held on the
-/// maintainer's YubiKey. Until then only the embedded catalogue is used and
-/// [`refresh`] downloads nothing.
-pub const CATALOGUE_KEYS: &[[u8; 32]] = &[[0; 32]];
+/// Public keys that may sign the catalogue, as raw Ed25519 bytes
+/// (catalogue/README.md, Signing).
+pub const CATALOGUE_KEYS: &[[u8; 32]] = &[
+    // Somasundaram Ayyappan, primary catalogue key, in Bitwarden.
+    [
+        0xb7, 0x93, 0xd9, 0x31, 0xc9, 0xc9, 0x0f, 0x2d, 0x49, 0x99, 0xce, 0x34, 0xe3, 0x44, 0xa4,
+        0xf0, 0xbd, 0xd2, 0x50, 0x59, 0xd1, 0x9d, 0xef, 0xdb, 0xb3, 0xbd, 0x75, 0x2b, 0xc0, 0x5c,
+        0xfb, 0x10,
+    ],
+    // Somasundaram Ayyappan, backup catalogue key, offline.
+    [
+        0x6e, 0xa0, 0x41, 0x94, 0x57, 0x42, 0x01, 0x14, 0x70, 0x94, 0xd8, 0x00, 0x52, 0xf0, 0x70,
+        0x75, 0xbb, 0xd3, 0x0a, 0x73, 0xd5, 0x8d, 0x64, 0xfc, 0xa6, 0x5c, 0x95, 0x5c, 0xf2, 0xce,
+        0xdc, 0x1e,
+    ],
+];
 
 /// Where the catalogue is published; the signature is at the same URL with
 /// `.sig` appended: the asset of the KeySeal GitHub release tagged
@@ -209,16 +219,8 @@ pub fn fetch(url: &str) -> Result<Catalogue, String> {
 }
 
 /// [`fetch`]es [`CATALOGUE_URL`] unless it was tried in the last day.
-/// `None` when it wasn't due. While [`CATALOGUE_KEYS`] is the placeholder
-/// nothing is fetched, so the helper never contacts a URL the project may
-/// not own, and that is reported once per process.
+/// `None` when it wasn't due.
 pub fn refresh() -> Option<Result<Catalogue, String>> {
-    static UNPINNED_REPORTED: AtomicBool = AtomicBool::new(false);
-    if CATALOGUE_KEYS == [[0; 32]] {
-        return (!UNPINNED_REPORTED.swap(true, Ordering::Relaxed)).then(|| {
-            Err("no catalogue key is pinned in this build, so nothing was downloaded.".into())
-        });
-    }
     let stamp = cache_dir()?.join("checked");
     let due = std::fs::metadata(&stamp)
         .and_then(|meta| meta.modified())
@@ -416,13 +418,5 @@ mod tests {
             embedded.token_for(&device(0x096e, 0x080a)).unwrap().name,
             "ePass2003"
         );
-    }
-
-    /// Every job refreshes; an unpinned build says why once per process.
-    #[test]
-    fn reports_the_unpinned_key_once() {
-        assert_eq!(CATALOGUE_KEYS, [[0; 32]]);
-        assert!(refresh().is_some_and(|result| result.is_err()));
-        assert!(refresh().is_none());
     }
 }

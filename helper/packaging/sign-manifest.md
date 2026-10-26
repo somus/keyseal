@@ -5,8 +5,9 @@ Ed25519 signatures from at least `THRESHOLD` distinct keys in
 `RELEASE_KEYS` (`helper/crates/keyseal-core/src/update.rs`). First installs
 are downloads, so maintainers sign the release's `SHA256SUMS`, which lists
 every asset, with the same keys and the same threshold, and the release
-workflow publishes only when both verify. Each signature is made offline on
-a maintainer's YubiKey. CI never holds a release key.
+workflow publishes only when both verify. Each signature is made on a
+maintainer's machine with `sign-file.sh`, the key coming from their
+Bitwarden vault. CI never holds a release key.
 
 The format is in `spec/protocol-v1.md` section 13. The policy around it is
 in `docs/code-signing-policy.md`; the full release sequence is in
@@ -14,29 +15,28 @@ in `docs/code-signing-policy.md`; the full release sequence is in
 
 ## Tools
 
-- A YubiKey 5 with firmware 5.7 or later, the first with Ed25519 in the
-  PIV applet.
-- `yubico-piv-tool` 2.5.0 or later (Ed25519 support; 2.7.3 is current).
-- `openssl`, `jq`, `sha256sum` (`shasum -a 256` on macOS) and `base64`.
+- OpenSSL 3 or later (`brew install openssl@3` on macOS, whose own
+  `openssl` is LibreSSL), `jq`, `xxd`, `sha256sum` (`shasum -a 256` on
+  macOS) and `base64`.
+- The Bitwarden CLI, `bw`, logged in to the maintainer's vault.
 
-## Once per YubiKey: make a key and pin it
+## Once per maintainer: make the keys and pin them
 
-Each maintainer keeps two YubiKeys, a daily one and a backup in a separate
-place, and both keys are pinned. The private key is generated on the device
-and never leaves it.
+Each maintainer makes two release keys: a primary in Bitwarden and a backup
+encrypted with a passphrase for offline keeping. The unencrypted key is
+never written to disk.
 
 ```sh
-yubico-piv-tool -a generate -s 9c -A ED25519 -o release-key.pem
-# The raw 32-byte public key and its keyId:
-openssl pkey -pubin -in release-key.pem -outform DER | tail -c 32 > release-key.raw
-sha256sum release-key.raw              # the keyId
-xxd -i release-key.raw                 # bytes for RELEASE_KEYS
+export BW_SESSION="$(bw unlock --raw)"
+helper/packaging/new-key.sh bitwarden "KeySeal release key"
+helper/packaging/new-key.sh offline /Volumes/<backup drive>/keyseal-release-backup.pem
 ```
 
-Add the bytes to `RELEASE_KEYS` in a reviewed commit, with a comment naming
-the maintainer and which of their keys it is, and add the keyId to the key
-table in `docs/code-signing-policy.md`. A key reaches users only in a
-release signed by keys they already trust.
+Each prints the key's `keyId` and its bytes. Add the bytes to
+`RELEASE_KEYS` in a reviewed commit, with a comment naming the maintainer
+and which of their keys it is, and add the keyId to the key table in
+`docs/code-signing-policy.md`. A key reaches users only in a release signed
+by keys they already trust.
 
 ## Every release: check, then sign
 
@@ -100,24 +100,20 @@ the unsigned binaries you build in step 2.
      cmp squashfs-root/usr/bin/keyseal "$b"
      ```
 
-5. Sign the exact bytes of both files. Each must be under 3072 bytes, the
-   limit `yubico-piv-tool` signs in one piece; both are far smaller.
+5. Sign the exact bytes of both files with your primary key. Use the
+   backup only if the primary is lost, with `offline <file.pem>` in place
+   of `bitwarden "KeySeal release key"`.
 
    ```sh
-   key_id="$(sha256sum release-key.raw | cut -d' ' -f1)"
+   export BW_SESSION="$(bw unlock --raw)"
    for file in keyseal-update.json SHA256SUMS; do
-     test "$(wc -c < "draft/$file")" -lt 3072
-     yubico-piv-tool -a verify-pin --sign -s 9c -A ED25519 \
-       -i "draft/$file" -o "$file.raw"
-     test "$(wc -c < "$file.raw")" -eq 64
-     jq -cn --arg keyId "$key_id" \
-       --arg signature "$(base64 < "$file.raw" | tr -d '\n')" \
-       '{keyId: $keyId, signature: $signature}' > "$file-<your name>.json"
+     helper/packaging/sign-file.sh bitwarden "KeySeal release key" "draft/$file" \
+       > "$file-<your name>.json"
    done
    ```
 
-   PureEdDSA signs the message itself, so `-i` takes the file, not a
-   digest of it. The PIN is asked for each file.
+   PureEdDSA signs the message itself, so the script signs the file, not a
+   digest of it.
 6. Send `keyseal-update.json-<your name>.json` and
    `SHA256SUMS-<your name>.json` to whoever publishes. They combine the
    entries and check them: the manifest with the helper's own verifier,

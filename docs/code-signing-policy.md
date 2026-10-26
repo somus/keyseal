@@ -9,8 +9,8 @@ key and is outside this policy.
 
 | Artifact | Signature | Who signs | Where the key lives |
 | --- | --- | --- | --- |
-| `keyseal-update.json` | Ed25519, threshold of pinned keys | Maintainers | Each maintainer's YubiKeys |
-| `SHA256SUMS` | Ed25519, the same keys and threshold | Maintainers | Each maintainer's YubiKeys |
+| `keyseal-update.json` | Ed25519, threshold of pinned keys | Maintainers | Each maintainer's Bitwarden vault, with an offline backup key |
+| `SHA256SUMS` | Ed25519, the same keys and threshold | Maintainers | The same keys |
 | macOS `KeySeal.app` (with the token worker inside) and disk image | Apple Developer ID, notarized | The release workflow | Apple certificate in the `release-macos` GitHub environment |
 | Windows `keyseal.exe` | Authenticode via SignPath Foundation (after release one) | SignPath, on a maintainer's approval | SignPath's HSM |
 | Linux binaries, tarball, deb, AppImage | none in release one | | |
@@ -30,18 +30,24 @@ change to this file and, for release keys, to `RELEASE_KEYS` in
 
 | Maintainer | Key | keyId (SHA-256 of the raw public key) |
 | --- | --- | --- |
-| _to be filled when the first keys are made_ | daily YubiKey | |
-| | backup YubiKey | |
+| Somasundaram Ayyappan (@somus) | primary, in Bitwarden | `c54378c08218e18d1cfd7c305303a89acb244acf0fdd0f05baa440854c328f68` |
+| | backup, offline | `76a04142473ace19b4446a2242562e7824b047f3debcf5f59698cf33859b9177` |
 
 ## Key custody
 
-- Release keys are Ed25519 keys generated on YubiKeys (firmware 5.7 or
-  later, PIV slot 9c) and are never exported. Cloud KMSs lack Ed25519, so
-  there is no cloud copy.
-- Each maintainer has two YubiKeys, both pinned: a daily key and a backup
-  kept in a separate place. Losing one key is not an emergency.
-- The PIV PIN and PUK are changed from their defaults before a key is
-  pinned. The YubiKey is plugged in only to sign.
+- Release keys are Ed25519 keys made with `helper/packaging/new-key.sh`.
+  Each maintainer has two, both pinned: a primary kept as a secure note in
+  their Bitwarden vault, and a backup encrypted with a passphrase and kept
+  offline, away from the vault. Losing one key, or access to the vault, is
+  not an emergency.
+- The unencrypted key is never written to disk: `new-key.sh` and
+  `helper/packaging/sign-file.sh` pass it to OpenSSL through a pipe. The
+  vault is protected by two-factor authentication.
+- A software key is exposed on the machine that signs with it, and to
+  anyone who gets into the vault. Moving to YubiKeys (firmware 5.7 or later,
+  Ed25519 in PIV slot 9c) removes that. The move is a normal key rotation:
+  a release signed by the current keys pins the YubiKey keys, and the next
+  release drops the software keys.
 - CI never holds a release key. The Apple Developer ID certificate and App
   Store Connect API key are GitHub environment secrets usable only by the
   release workflow after a maintainer approves the run.
@@ -56,7 +62,7 @@ distinct pinned keys verify (spec section 13). The release workflow holds
   maintainer's two keys.
 - When a second maintainer exists, the threshold becomes 2 of N in the
   same release that pins their keys. From then on no single maintainer, and
-  no single stolen YubiKey, can ship an update.
+  no single stolen key, can ship an update.
 
 ## Which commits are released
 

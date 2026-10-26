@@ -1,4 +1,4 @@
-// Development signing only. Production signatures come from the catalogue key on a YubiKey.
+// Development signing only. Production signatures come from helper/packaging/sign-file.sh (catalogue/README.md).
 // Usage: bun tools/sign.ts <private-key.pem> [catalogue.json]
 import { signCatalogue } from "./catalogue.ts";
 

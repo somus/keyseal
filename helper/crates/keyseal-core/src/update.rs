@@ -26,10 +26,22 @@ use crate::token::sha256_hex;
 /// this names the repository it runs in.
 pub const RELEASES: &str = "https://github.com/somus/keyseal/releases/latest/download";
 
-/// The maintainers' Ed25519 public keys, raw. The placeholder below matches
-/// no key, so every update fails until the real keys are pinned (see
+/// The maintainers' Ed25519 public keys, raw (see
 /// `helper/packaging/sign-manifest.md`).
-pub const RELEASE_KEYS: &[[u8; 32]] = &[[0; 32]];
+pub const RELEASE_KEYS: &[[u8; 32]] = &[
+    // Somasundaram Ayyappan, primary release key, in Bitwarden.
+    [
+        0x9e, 0xe5, 0x9b, 0xca, 0x59, 0xea, 0xc0, 0xe9, 0xb7, 0x55, 0xf3, 0xb4, 0x5a, 0x0b, 0x72,
+        0x68, 0xe2, 0x7a, 0x9d, 0x77, 0x0f, 0x89, 0x58, 0xa3, 0x33, 0x6c, 0xaf, 0x14, 0x83, 0xed,
+        0x4b, 0xb3,
+    ],
+    // Somasundaram Ayyappan, backup release key, offline.
+    [
+        0x2f, 0x78, 0xac, 0x1e, 0xbc, 0x38, 0x59, 0x26, 0xa9, 0xbb, 0x3a, 0x91, 0x8e, 0x1f, 0xa3,
+        0x11, 0xf6, 0x7b, 0xe5, 0xa1, 0x9e, 0xb7, 0x47, 0x7c, 0x94, 0x55, 0xa4, 0xec, 0x4e, 0xf5,
+        0x73, 0x04,
+    ],
+];
 
 /// Distinct pinned keys that must sign a manifest. This becomes 2 when a
 /// second maintainer exists.
@@ -925,15 +937,15 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// The all-zero placeholder decodes to a point of order 4, for which a
+    /// The all-zero key decodes to a point of order 4, for which a
     /// signature with the identity as R and s = 0 passes a cofactorless
     /// check for about one message in four. Strict verification refuses
     /// every one.
     #[test]
-    fn the_placeholder_key_refuses_a_forged_signature() {
+    fn a_small_order_key_refuses_a_forged_signature() {
         use ed25519_dalek::Verifier;
-        assert_eq!(RELEASE_KEYS, [[0; 32]]);
-        let placeholder = VerifyingKey::from_bytes(&RELEASE_KEYS[0]).unwrap();
+        let keys: &[[u8; 32]] = &[[0; 32]];
+        let placeholder = VerifyingKey::from_bytes(&keys[0]).unwrap();
         let mut forged = [0; 64];
         forged[0] = 1;
         let signature = Signature::from_bytes(&forged);
@@ -947,11 +959,11 @@ mod tests {
             .unwrap();
             weak += usize::from(placeholder.verify(&manifest, &signature).is_ok());
             let signed = serde_json::to_vec(&json!({ "signatures": [{
-                "keyId": key_id(&RELEASE_KEYS[0]),
+                "keyId": key_id(&keys[0]),
                 "signature": STANDARD.encode(forged),
             }]}))
             .unwrap();
-            assert!(verify_threshold(&manifest, &signed, RELEASE_KEYS, THRESHOLD).is_err());
+            assert!(verify_threshold(&manifest, &signed, keys, THRESHOLD).is_err());
         }
         assert!(weak > 0, "the forgery never passes a weak check");
     }

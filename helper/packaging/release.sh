@@ -2,7 +2,7 @@
 # Checks a draft helper release, signs it and starts the publish run, on a
 # maintainer's Mac (docs/releasing.md, steps 4 to 6):
 #
-#   helper/packaging/release.sh <version> [--skip-rebuild]
+#   helper/packaging/release.sh <version> [--skip-rebuild | --rebuild-host <ssh host>]
 #
 # 1. Downloads the draft and clones its tag, so every check runs the
 #    tagged scripts.
@@ -12,8 +12,12 @@
 #    ID or ad-hoc signature.
 # 3. Rebuilds the Linux binary in the pinned container and requires it to
 #    equal SHA256SUMS-unsigned and the binary in the tarball, deb and
-#    AppImage. --skip-rebuild skips this, accepting that CI built what the
-#    tag holds; it takes about 15 minutes under emulation on Apple silicon.
+#    AppImage. It takes about 15 minutes under emulation on Apple silicon;
+#    --rebuild-host runs it natively on an x86_64 Linux machine with Docker
+#    instead, streaming the source and the Linux packages to a throwaway
+#    container there over SSH, so nothing is written on that machine but
+#    Docker's image cache. --skip-rebuild skips it, accepting that CI built
+#    what the tag holds.
 # 4. Signs both files with the release key in Bitwarden
 #    ($KEYSEAL_RELEASE_KEY, by default "KeySeal release key"), verifies the
 #    signatures with the draft's own helper and verify-signatures.sh, and,
@@ -29,11 +33,20 @@
 # /tmp/keyseal-release-<version>, which must not hold a space.
 set -euo pipefail
 
+usage() {
+  echo "usage: $0 <version> [--skip-rebuild | --rebuild-host <ssh host>]" >&2
+  exit 2
+}
 version="${1:-}"
 skip_rebuild=false
-[ "${2:-}" = --skip-rebuild ] && skip_rebuild=true
-[[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] \
-  || { echo "usage: $0 <version> [--skip-rebuild]" >&2; exit 2; }
+rebuild_host=""
+case "${2:-}" in
+  "") ;;
+  --skip-rebuild) skip_rebuild=true ;;
+  --rebuild-host) rebuild_host="${3:-}"; [ -n "$rebuild_host" ] || usage ;;
+  *) usage ;;
+esac
+[[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || usage
 
 tag="helper-v$version"
 repo="$(gh repo view --json nameWithOwner --jq .nameWithOwner)"
@@ -51,7 +64,7 @@ esac
   || fail "$tag is not a draft release in $repo"
 
 step "Downloading the draft and the tagged source into $work"
-rm -rf "$work/draft" "$work/src" "$work/ci-unsigned" "$work/mine" "$work/unzipped" "$work/rebuilt"
+rm -rf "$work/draft" "$work/src" "$work/ci-unsigned" "$work/mine" "$work/unzipped" "$work/rebuilt" "$work/rebuild.sh"
 mkdir -p "$work"
 gh release download "$tag" --repo "$repo" --dir "$work/draft"
 git clone -q --branch "$tag" --depth 1 "https://github.com/$repo.git" "$work/src"
@@ -103,27 +116,39 @@ step "Linux"
 if $skip_rebuild; then
   echo "Skipped the rebuild (--skip-rebuild)."
 else
-  # The same image and rustup-init as release.yml and docs/releasing.md.
-  docker run --rm --platform linux/amd64 -v "$work":/w -w /w/src \
-    ubuntu:22.04@sha256:0a9887931b0e38af2e3487ed39e29436b0535c4f3f52e57745baaf79d1898956 sh -c '
-    set -e
-    apt-get update -qq && apt-get install -y -qq --no-install-recommends build-essential ca-certificates curl file git \
-      pkg-config libasound2-dev libfontconfig-dev libvulkan1 libwayland-dev libx11-xcb-dev libxkbcommon-x11-dev >/dev/null
-    curl -fsSLo /tmp/rustup-init https://static.rust-lang.org/rustup/archive/1.29.2/x86_64-unknown-linux-gnu/rustup-init
-    echo "5be191e8c70a5007074254cb74d78dbfdd25cd5a61c27de7b8e5410122ec24f4  /tmp/rustup-init" | sha256sum -c -
-    chmod +x /tmp/rustup-init && /tmp/rustup-init -y -q --profile minimal --default-toolchain none
-    . "$HOME/.cargo/env" && git config --global --add safe.directory /w/src
-    (cd helper && rustup toolchain install)
-    helper/packaging/build-release.sh linux-x64 /w/rebuilt >/dev/null
-    binary=/w/rebuilt/keyseal-helper-'"$version"'-linux-x64
-    draft=/w/draft
-    tar -xzOf "$draft/keyseal-helper-'"$version"'-linux-x64.tar.gz" keyseal-helper-'"$version"'-linux-x64/keyseal | cmp - "$binary"
-    dpkg-deb --fsys-tarfile "$draft/keyseal_'"$version"'_amd64.deb" | tar -xO ./usr/bin/keyseal | cmp - "$binary"
-    cd /tmp && cp "$draft/keyseal-helper-'"$version"'-linux-x64.AppImage" a.AppImage && chmod +x a.AppImage
-    ./a.AppImage --appimage-extract >/dev/null && cmp squashfs-root/usr/bin/keyseal "$binary"' \
-    || fail "the Linux rebuild or its packages"
-  [ "$(shasum -a 256 "$work/rebuilt/keyseal-helper-$version-linux-x64" | cut -d' ' -f1)" \
-    = "$(unsigned_hash "keyseal-helper-$version-linux-x64")" ] || fail "the Linux rebuild differs from the release"
+  # The same image and rustup-init as release.yml and docs/releasing.md. The
+  # container finds the source in /w/src and the packages in /w/draft, and
+  # its last line is the rebuilt binary's SHA-256.
+  image=ubuntu:22.04@sha256:0a9887931b0e38af2e3487ed39e29436b0535c4f3f52e57745baaf79d1898956
+  linux="keyseal-helper-$version-linux-x64"
+  cat >"$work/rebuild.sh" <<SCRIPT
+set -e
+apt-get update -qq && apt-get install -y -qq --no-install-recommends build-essential ca-certificates curl file git \\
+  pkg-config libasound2-dev libfontconfig-dev libvulkan1 libwayland-dev libx11-xcb-dev libxkbcommon-x11-dev >/dev/null
+curl -fsSLo /tmp/rustup-init https://static.rust-lang.org/rustup/archive/1.29.2/x86_64-unknown-linux-gnu/rustup-init
+echo "5be191e8c70a5007074254cb74d78dbfdd25cd5a61c27de7b8e5410122ec24f4  /tmp/rustup-init" | sha256sum -c -
+chmod +x /tmp/rustup-init && /tmp/rustup-init -y -q --profile minimal --default-toolchain none
+. "\$HOME/.cargo/env" && git config --global --add safe.directory /w/src
+cd /w/src && (cd helper && rustup toolchain install)
+helper/packaging/build-release.sh linux-x64 /w/rebuilt >/dev/null
+binary=/w/rebuilt/$linux
+tar -xzOf /w/draft/$linux.tar.gz $linux/keyseal | cmp - "\$binary"
+dpkg-deb --fsys-tarfile /w/draft/keyseal_${version}_amd64.deb | tar -xO ./usr/bin/keyseal | cmp - "\$binary"
+cd /tmp && cp /w/draft/$linux.AppImage a.AppImage && chmod +x a.AppImage
+./a.AppImage --appimage-extract >/dev/null && cmp squashfs-root/usr/bin/keyseal "\$binary"
+sha256sum "\$binary"
+SCRIPT
+  if [ -n "$rebuild_host" ]; then
+    echo "Rebuilding on $rebuild_host."
+    rebuilt="$(tar -C "$work" -cf - src rebuild.sh "draft/$linux.tar.gz" "draft/keyseal_${version}_amd64.deb" \
+      "draft/$linux.AppImage" \
+      | ssh "$rebuild_host" "docker run -i --rm --platform linux/amd64 $image sh -c 'mkdir /w && tar -xf - -C /w && sh /w/rebuild.sh'" \
+      | tail -1)" || fail "the Linux rebuild or its packages on $rebuild_host"
+  else
+    rebuilt="$(docker run --rm --platform linux/amd64 -v "$work":/w "$image" sh /w/rebuild.sh | tail -1)" \
+      || fail "the Linux rebuild or its packages"
+  fi
+  [ "${rebuilt%% *}" = "$(unsigned_hash "$linux")" ] || fail "the Linux rebuild differs from the release"
   echo "The rebuild equals the release binary, and the tarball, deb and AppImage hold it."
 fi
 

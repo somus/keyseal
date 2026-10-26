@@ -22,34 +22,27 @@ publishes it with provenance.
 ## One-time setup
 
 The workflow authenticates with trusted publishing (OIDC), so no npm token is
-kept in GitHub once it's set up. npm only lets you add a trusted publisher to
-a package that already exists, so the first publish of each package uses a
-token:
+kept in GitHub. npm only lets you add a trusted publisher to a package that
+already exists, so a new package's first version is published by hand:
 
-1. Create the `keyseal` organisation on npmjs.com, and turn on two-factor
-   authentication for your account.
-2. Create a granular access token that can read and write packages in the
-   `keyseal` scope, valid for a day, and add it to the repository's `npm`
-   environment:
+1. Turn on two-factor authentication for your npm account, and be a member of
+   the `keyseal` organisation.
+2. Publish the first version from a clean checkout of main, answering the 2FA
+   prompt:
 
    ```sh
-   gh secret set NPM_TOKEN --env npm
+   cd packages/server && bun run build && npm publish --access public
    ```
 
-3. Push `server-v0.1.0` and `browser-v0.1.0` as in the steps above.
-4. Add the trusted publisher for each package, either from the package's
-   Settings page on npmjs.com (repository `somus/keyseal`, workflow
-   `npm.yml`, environment `npm`) or with npm 11.15 or later:
+3. Add the trusted publisher, either from the package's Settings page on
+   npmjs.com (repository `somus/keyseal`, workflow `npm.yml`, environment
+   `npm`) or with npm 11.15 or later:
 
    ```sh
    npm trust github @keyseal/server --repo somus/keyseal --file npm.yml --env npm --allow-publish
-   npm trust github @keyseal/browser --repo somus/keyseal --file npm.yml --env npm --allow-publish
    ```
 
-5. On each package's Settings page, set Publishing access to "Require
+4. On the package's Settings page, set Publishing access to "Require
    two-factor authentication and disallow tokens".
-6. Delete the secret and revoke the token:
 
-   ```sh
-   gh secret delete NPM_TOKEN --env npm
-   ```
+Every later version goes through the steps above.

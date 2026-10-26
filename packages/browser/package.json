@@ -1,6 +1,6 @@
 {
   "name": "@keyseal/browser",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Opens keyseal:// links and watches KeySeal jobs from the browser page.",
   "homepage": "https://github.com/somus/keyseal/tree/main/packages/browser#readme",
   "bugs": "https://github.com/somus/keyseal/issues",

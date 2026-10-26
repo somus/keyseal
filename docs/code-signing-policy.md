@@ -20,6 +20,28 @@ Every published asset is listed with its SHA-256 in the release's signed
 in the signed `keyseal-update.json`. The release workflow publishes only when
 both carry enough signatures and every asset matches `SHA256SUMS`.
 
+## Team roles
+
+Every role is held by the maintainers in the table below, and only they
+can merge to `main` (the repository's ruleset requires a pull request with
+every check passing).
+
+- **Authors** (trusted committers): the maintainers. They may push branches
+  and merge pull requests.
+- **Reviewers**: the maintainers review every change from someone who isn't
+  one before it is merged.
+- **Approvers**: the maintainers approve every signing request: the
+  `release-macos` and `release` environments, and each SignPath request.
+
+Every maintainer uses multi-factor authentication on GitHub and SignPath.
+
+## Privacy
+
+The helper sends no data to the KeySeal project. It talks to the site
+that opened a job, and once a day fetches the update manifest and the
+driver catalogue from this repository's GitHub releases. The README's
+[Privacy](../README.md#privacy) section says what it sends to the site.
+
 ## Who may sign
 
 Maintainers are listed in the table below. Only they hold release keys, and

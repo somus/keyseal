@@ -266,6 +266,12 @@ jobs:
           # The AppImage is also the Linux update asset.
           cp artifacts/unsigned-linux-x64/keyseal-helper-*.AppImage artifacts/unsigned-linux-x64/keyseal-helper-*.tar.gz \
             artifacts/unsigned-linux-x64/keyseal_* dist/
+          # The downloads again without the version, for links to
+          # releases/latest/download/<name> (make-manifest.sh lists them).
+          cp "dist/keyseal-helper-$version-macos-universal.dmg" dist/keyseal-macos-universal.dmg
+          cp "dist/keyseal-helper-$version-windows-x64.zip" dist/keyseal-windows-x64.zip
+          cp "dist/keyseal-helper-$version-linux-x64.AppImage" dist/keyseal-linux-x64.AppImage
+          cp "dist/keyseal_${version}_amd64.deb" dist/keyseal_amd64.deb
           helper/packaging/make-manifest.sh "$version" dist
           cat dist/SHA256SUMS-unsigned dist/SHA256SUMS dist/keyseal-update.json
       - name: Draft release
@@ -328,6 +334,12 @@ jobs:
           # what make-manifest.sh makes of them.
           diff <(cut -c67- dist/SHA256SUMS | sort) \
             <(find dist -type f ! -name SHA256SUMS -printf '%P\n' | sort)
+          # The downloads again without the version, for links to
+          # releases/latest/download/<name> (make-manifest.sh lists them).
+          cp "dist/keyseal-helper-$version-macos-universal.dmg" dist/keyseal-macos-universal.dmg
+          cp "dist/keyseal-helper-$version-windows-x64.zip" dist/keyseal-windows-x64.zip
+          cp "dist/keyseal-helper-$version-linux-x64.AppImage" dist/keyseal-linux-x64.AppImage
+          cp "dist/keyseal_${version}_amd64.deb" dist/keyseal_amd64.deb
           helper/packaging/make-manifest.sh "$version" dist expected
           cmp expected/keyseal-update.json dist/keyseal-update.json
           cmp expected/SHA256SUMS dist/SHA256SUMS

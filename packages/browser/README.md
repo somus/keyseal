@@ -16,7 +16,7 @@ signWithHelper(options: WatchOptions & { link: string; allowInsecureOrigins?: bo
 helperDownloadFor(userAgent: string): "macos" | "windows" | "linux" | "unsupported";
 ```
 
-`launchHelper` throws a `TypeError` unless the link is `keyseal://sign?job=...` or `keyseal://enrol?job=...` with an `https` job URL on a domain name (not an IP address or `localhost`) of the form `<base>/v1/jobs/<token>`, without empty path segments (spec sections 3 and 4). `allowInsecureOrigins` also accepts `http://localhost` and `http://127.0.0.1`, for use with the helper's `KEYSEAL_ALLOW_INSECURE_ORIGINS=1` development override. The link opens in a hidden iframe, so an unregistered scheme cannot replace the page with an error page. Call it soon after the click that starts the job, since Chrome wants a recent user gesture before launching an app.
+`launchHelper` throws a `TypeError` unless the link is `keyseal://sign?job=...` or `keyseal://enrol?job=...` with an `https` job URL on a domain name (not an IP address or `localhost`) of the form `<base>/v1/jobs/<token>`, without empty path segments (spec sections 3 and 4). `allowInsecureOrigins` also accepts `http://localhost` and `http://127.0.0.1`, for use with the helper's `KEYSEAL_ALLOW_INSECURE_ORIGINS=1` development override. The link opens in a hidden iframe, so an unregistered scheme cannot replace the page with an error page. Call it soon after the click that starts the job, since Chrome wants a recent user gesture before launching an app. A Content-Security-Policy must allow that frame: add `keyseal:` to `frame-src` (or to `child-src` or `default-src`, whichever applies), such as `frame-src 'self' keyseal:`. Otherwise the browser blocks the link without an error, and the helper never opens.
 
 `WatchOptions`:
 

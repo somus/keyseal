@@ -135,7 +135,7 @@ const status = await signWithHelper({
 });
 ```
 
-Call it straight from the click handler, since browsers want a recent user gesture before opening an app. When no helper claims the job within about five seconds, show the download link; the job stays open, so a fresh install can still pick it up. [packages/browser/README.md](../packages/browser/README.md) has the full options and a React example.
+Call it straight from the click handler, since browsers want a recent user gesture before opening an app. The link opens in a hidden iframe, so if your site sends a Content-Security-Policy, add `keyseal:` to `frame-src`. Otherwise browsers block the link silently and the helper never opens. When no helper claims the job within about five seconds, show the download link; the job stays open, so a fresh install can still pick it up. [packages/browser/README.md](../packages/browser/README.md) has the full options and a React example.
 
 ## 5. Install the helper
 
@@ -154,6 +154,7 @@ If a signer's token isn't found, opening KeySeal on its own shows Settings, wher
 ## Before going live
 
 - Serve the job endpoint over HTTPS on a domain name. `allowInsecureOrigin` and the helper's `KEYSEAL_ALLOW_INSECURE_ORIGINS=1` are for development only.
+- If you send a Content-Security-Policy, allow `keyseal:` in `frame-src`. Development servers often send no CSP, so this only shows up in production.
 - Keep the signing service off the public internet.
 - Pin `expectedCertificateSha256` on sign jobs, and set `certificatePolicy` where you can't pin yet.
 - Pass `rateLimit` to `createKeySeal` if the job endpoint isn't rate limited at your edge.

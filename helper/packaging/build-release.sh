@@ -34,6 +34,11 @@ case "$helper$cargo_home" in
 esac
 export SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-$(git -C "$helper" log -1 --format=%ct)}"
 export CARGO_INCREMENTAL=0
+# On Linux, GPUI's X11 input method client turns on ahash's compile-time-rng,
+# which bakes random seeds into the binary through const-random unless this
+# is set. ahash still mixes in runtime randomness, so a fixed seed costs
+# nothing.
+export CONST_RANDOM_SEED=keyseal
 export CARGO_TARGET_DIR="$target_dir"
 rustflags=(
   -C strip=symbols

@@ -234,13 +234,25 @@ async def certificate_trusted(
     """Whether a certificate chains to a configured root and has the key usage
     validation requires of a PDF signer (the DSC enrolment check), so an
     encryption certificate on the same token isn't enrolled."""
-    validator = CertificateValidator(
-        cert, intermediate_certs=chain, validation_context=settings.context()
-    )
     try:
-        path = await validator.async_validate_path()
+        try:
+            path = await CertificateValidator(
+                cert, intermediate_certs=chain, validation_context=settings.context()
+            ).async_validate_path()
+        except TimeoutError:
+            # As for signatures: a revocation responder that never answers,
+            # as Indian CAs' do outside India, leaves the data unavailable,
+            # so check without fetching.
+            if not settings.allow_fetching:
+                raise
+            log.warning("Revocation fetch timed out for a certificate; checking without fetching")
+            unfetched = replace(settings, allow_fetching=False)
+            path = await CertificateValidator(
+                cert, intermediate_certs=chain, validation_context=unfetched.context()
+            ).async_validate_path()
         PdfSignatureStatus.default_usage_constraints().validate(cert)
-    except Exception:  # noqa: BLE001 - any path failure means untrusted
+    except Exception as error:  # noqa: BLE001 - any path failure means untrusted
+        log.info("Certificate refused: %s: %s", type(error).__name__, error)
         return False
     return settings.is_configured_root(path)
 

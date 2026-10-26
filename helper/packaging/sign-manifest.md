@@ -78,6 +78,14 @@ the unsigned binaries you build in step 2.
      spctl -a -vv -t open --context context:primary-signature draft/keyseal-helper-<v>-macos-universal.dmg
      ```
 
+     A release made without the Developer ID is ad-hoc signed: `spctl`
+     rejects it, and `codesign -dv unzipped/KeySeal.app` shows
+     `Signature=adhoc`. Check that instead.
+
+     ```sh
+     codesign -dv unzipped/KeySeal.app 2>&1 | grep Signature=adhoc
+     ```
+
    - Windows: the update exe is the unsigned binary, and the zip holds it
      and `install.cmd`:
 

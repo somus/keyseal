@@ -16,7 +16,7 @@ from keyseal_service.app import MAX_BODY_BYTES
 from keyseal_service.fetching import public_fetch_session
 from keyseal_service.validate import ValidationSettings, load_trust_roots, validate_pdf
 
-from .conftest import AUTH, TOKEN, Pki, blank_pdf, client_for, sign
+from .conftest import AUTH, TOKEN, Pki, _asn1, blank_pdf, client_for, sign
 from .test_remote_sign import b64
 
 
@@ -133,6 +133,33 @@ def test_a_revocation_fetch_that_times_out_is_checked_without_fetching(
     assert signature["intact"] is True
     assert signature["trusted"] is True
     assert "error" not in signature
+
+
+def test_a_certificate_whose_revocation_fetch_times_out_is_checked_without_fetching(
+    pki: Pki, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real = validate.CertificateValidator
+
+    class UnreachableResponder(real):  # type: ignore[misc, valid-type]
+        async def async_validate_path(self) -> Any:
+            if self._context.fetching_allowed:
+                raise TimeoutError
+            return await super().async_validate_path()
+
+    monkeypatch.setattr(validate, "CertificateValidator", UnreachableResponder)
+
+    async def run() -> bool:
+        async with public_fetch_session() as session:
+            settings = replace(
+                settings_with(pki),
+                allow_fetching=True,
+                fetcher_backend=AIOHttpFetcherBackend(session=session),
+            )
+            return await validate.certificate_trusted(
+                _asn1(pki.signer_cert), [pki.ca_asn1], settings
+            )
+
+    assert asyncio.run(run()) is True
 
 
 def test_fetching_without_the_managed_session_is_refused(pki: Pki) -> None:

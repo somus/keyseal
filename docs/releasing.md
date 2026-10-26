@@ -4,7 +4,7 @@ The npm packages release on their own: see [releasing-npm.md](releasing-npm.md).
 
 A helper release is a tag, a draft made by CI, an offline signature by each
 maintainer, and a manual publish. The signing rules are in
-`docs/code-signing-policy.md`; the YubiKey steps are in
+`docs/code-signing-policy.md`; the signing steps are in
 `helper/packaging/sign-manifest.md`.
 
 ## Before the first release

@@ -19,8 +19,8 @@ use ureq::tls::{RootCerts, TlsConfig};
 use crate::update::key_id;
 
 /// Public keys that may sign the catalogue, as raw Ed25519 bytes.
-/// Placeholder: replace before release with the catalogue key held on the
-/// maintainer's YubiKey. Until then only the embedded catalogue is used and
+/// Placeholder: replace before release with the maintainer's catalogue keys
+/// (catalogue/README.md, Signing). Until then only the embedded catalogue is used and
 /// [`refresh`] downloads nothing.
 pub const CATALOGUE_KEYS: &[[u8; 32]] = &[[0; 32]];
 

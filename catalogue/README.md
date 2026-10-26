@@ -68,13 +68,20 @@ Every path must be absolute and live under a system or vendor directory: `/usr/l
    cd catalogue && bun install && bun test
    ```
 
-4. Sign and attach `catalogue.json` and `catalogue.json.sig` to a KeySeal GitHub release.
+4. Sign with the catalogue key, check the signature, then attach `catalogue.json` and `catalogue.json.sig` to a KeySeal GitHub release:
+
+   ```sh
+   export BW_SESSION="$(bw unlock --raw)"
+   helper/packaging/sign-file.sh bitwarden "KeySeal catalogue key" catalogue/catalogue.json > catalogue/catalogue.json.sig
+   bw get notes "KeySeal catalogue key" | openssl pkey -pubout > /tmp/catalogue.pub.pem
+   (cd catalogue && bun tools/verify.ts /tmp/catalogue.pub.pem)
+   ```
 
 ## Signing
 
 The signature file is `{ "keyId": <hex SHA-256 of the raw 32-byte Ed25519 public key>, "signature": <base64 Ed25519 over the exact bytes of catalogue.json> }`. `sign.ts` validates the catalogue before signing and `verify.ts` checks the key id, the signature and the schema.
 
-Production signing uses the single-maintainer catalogue key on a YubiKey, separate from the release manifest keys (see `docs/design.md`, Release and updates). The private key never touches disk. `tools/sign.ts` takes a key file and exists for development and tests only.
+Production signing uses the maintainer's catalogue keys, separate from the release keys (see `docs/design.md`, Release and updates). As with the release keys, there are two, both pinned in `CATALOGUE_KEYS` (`helper/crates/keyseal-core/src/catalogue.rs`): a primary in Bitwarden and a backup encrypted and kept offline. Both are made with `helper/packaging/new-key.sh`, and `helper/packaging/sign-file.sh` signs with either without writing the unencrypted key to disk. When the maintainer moves to YubiKeys, the catalogue key goes in PIV slot 9d, beside the release key in 9c. `tools/sign.ts` takes a key file and exists for development and tests only.
 
 Throwaway dev key, kept outside the repository and never committed:
 

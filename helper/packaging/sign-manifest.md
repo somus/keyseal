@@ -93,7 +93,8 @@ the unsigned binaries you build in step 2.
      cmp draft/keyseal-helper-<v>-windows-x64.exe rebuilt/keyseal-helper-<v>-windows-x64.exe
      unzip -l draft/keyseal-helper-<v>-windows-x64.zip   # keyseal.exe and install.cmd only
      unzip -p draft/keyseal-helper-<v>-windows-x64.zip keyseal.exe | cmp - rebuilt/keyseal-helper-<v>-windows-x64.exe
-     unzip -p draft/keyseal-helper-<v>-windows-x64.zip install.cmd | cmp - helper/packaging/windows/install.cmd
+     # The Windows checkout gives install.cmd CRLF line endings.
+     unzip -p draft/keyseal-helper-<v>-windows-x64.zip install.cmd | tr -d '\r' | cmp - helper/packaging/windows/install.cmd
      ```
 
    - Linux: the tarball, deb and AppImage, which is also the update

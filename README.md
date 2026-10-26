@@ -52,11 +52,11 @@ The helper loads PKCS#11 drivers from system and vendor directories only, matche
 
 Signers install the helper from the [latest release](https://github.com/somus/keyseal/releases/latest): the disk image on macOS, the zip with `install.cmd` on Windows, and the AppImage, deb or tarball on Linux. It updates itself after that. Each release lists every file's SHA-256 in `SHA256SUMS`, signed by the maintainers.
 
-The macOS app isn't notarized yet, so macOS asks once to allow it in System Settings, Privacy & Security, Open Anyway. The Windows exe isn't Authenticode signed yet either; its signing through SignPath Foundation is planned.
+The macOS app isn't notarized yet, so macOS asks once to allow it in System Settings, Privacy & Security, Open Anyway. The Windows exe isn't Authenticode signed either, so SmartScreen warns that it protected your PC; choose More info, then Run anyway. Every download is still listed in the maintainers' signed `SHA256SUMS`.
 
 ## Code signing policy
 
-What is signed, by whom and with which keys, and how a release is checked before it is signed: [docs/code-signing-policy.md](docs/code-signing-policy.md). Free code signing for Windows is to be provided by [SignPath.io](https://about.signpath.io), with a certificate by the [SignPath Foundation](https://signpath.org).
+What is signed, by whom and with which keys, and how a release is checked before it is signed: [docs/code-signing-policy.md](docs/code-signing-policy.md). Windows builds are unsigned for now; SignPath Foundation declined the project's first application in October 2026, and it will apply again once the helper has a record of use.
 
 ## Privacy
 

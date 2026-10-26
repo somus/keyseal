@@ -48,9 +48,23 @@ The helper never talks to the signing service, and the PIN never leaves the sign
 
 The helper loads PKCS#11 drivers from system and vendor directories only, matched to the plugged-in token through the driver catalogue, and falls back to the Windows certificate store (CNG) for keys on hardware. It signs with RSA (PKCS#1 v1.5 or PSS) and ECDSA P-256 or P-384 keys. Signatures are PAdES B-T, with B-LTA available from the service.
 
+## Download
+
+Signers install the helper from the [latest release](https://github.com/somus/keyseal/releases/latest): the disk image on macOS, the zip with `install.cmd` on Windows, and the AppImage, deb or tarball on Linux. It updates itself after that. Each release lists every file's SHA-256 in `SHA256SUMS`, signed by the maintainers.
+
+The macOS app isn't notarized yet, so macOS asks once to allow it in System Settings, Privacy & Security, Open Anyway. The Windows exe isn't Authenticode signed yet either; its signing through SignPath Foundation is planned.
+
+## Code signing policy
+
+What is signed, by whom and with which keys, and how a release is checked before it is signed: [docs/code-signing-policy.md](docs/code-signing-policy.md). Free code signing for Windows is to be provided by [SignPath.io](https://about.signpath.io), with a certificate by the [SignPath Foundation](https://signpath.org).
+
+## Privacy
+
+The helper sends nothing about you or your computer to the KeySeal project. It talks to the site that opened a job: it fetches the job, its documents and the site's `/.well-known/keyseal.json`, and sends back the certificate you chose, the signature and, when a job fails, the reason. Once a day it fetches the update manifest and the driver catalogue from this repository's GitHub releases, which GitHub sees as ordinary downloads. Your PIN stays on your computer, and the private key never leaves the token. The sites you trusted, your settings and the logs stay on your computer.
+
 ## Status
 
-Pre-release. The helper, both packages, the signing service and the catalogue work end to end, including signing with a real HYP2003 token on macOS, CNG signing on Windows 11 and an automated end-to-end test with SoftHSM. Before the first release, the repository needs its release and catalogue signing keys, notarization for macOS, and published packages and service image; [docs/releasing.md](docs/releasing.md) lists the steps.
+Released. The helper, both packages, the signing service and the catalogue work end to end, including signing with real DSC tokens on macOS, CNG signing on Windows 11 and an automated end-to-end test with SoftHSM. Still to come: macOS notarization and Windows code signing ([docs/releasing.md](docs/releasing.md)).
 
 ## Security
 

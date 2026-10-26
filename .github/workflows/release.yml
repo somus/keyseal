@@ -273,7 +273,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft --verify-tag \
-            --title "KeySeal helper ${{ needs.check.outputs.version }}" --generate-notes dist/*
+            --title "KeySeal helper ${{ needs.check.outputs.version }}" \
+            --notes "Code signing policy: https://github.com/$GITHUB_REPOSITORY/blob/main/docs/code-signing-policy.md" \
+            --generate-notes dist/*
 
   publish:
     if: github.event_name == 'workflow_dispatch'

@@ -61,18 +61,32 @@ maintainer, and a manual publish. The signing rules are in
      its binary, and the helper leaves the AppImage in its config
      directory with one notice per version.
    - `keyseal-update.json`, `SHA256SUMS`, `SHA256SUMS-unsigned`, `BUILDINFO`
-4. Each signing maintainer reproduces the unsigned binaries (below),
-   checks every asset against them, signs `keyseal-update.json` and
-   `SHA256SUMS`, and sends their two signature entries (`sign-manifest.md`).
-5. Combine the entries into `keyseal-update.json.sig` and `SHA256SUMS.sig`
-   and check them (`sign-manifest.md`, step 6).
-6. Run the `release` workflow by hand (Actions, release, Run workflow) with
-   the tag and the contents of `keyseal-update.json.sig` and
-   `SHA256SUMS.sig`. After approval of the `release` environment it checks
-   the tag again, verifies both files' signatures with the pinned keys and
-   threshold, checks every asset against `SHA256SUMS` and the update assets
-   against the manifest, uploads the signatures and publishes the release
-   as latest.
+4. Check, sign and publish with one script on a Mac, with Bitwarden
+   unlocked and Docker running:
+
+   ```sh
+   export BW_SESSION="$(bw unlock --raw)"
+   helper/packaging/release.sh 1.4.0
+   ```
+
+   It downloads the draft and clones the tag. It checks every asset the
+   way `sign-manifest.md` describes, rebuilds the Linux binary in the
+   pinned container, and stops at the first difference. Then it signs
+   `keyseal-update.json` and `SHA256SUMS` with your release key, verifies
+   the signatures with the draft's own helper and `verify-signatures.sh`,
+   and, once you confirm, starts the publish run. `--skip-rebuild` skips
+   the Linux rebuild. macOS and Windows aren't rebuilt: they need the
+   Xcode, or the Visual Studio and Windows SDK, that `BUILDINFO` names
+   (below).
+5. Approve the `release` environment. The publish run checks the tag again,
+   verifies both files' signatures with the pinned keys and threshold,
+   checks every asset against `SHA256SUMS` and the update assets against
+   the manifest, uploads the signatures and publishes the release as
+   latest.
+6. With a `THRESHOLD` above 1, each other maintainer runs the script with
+   `KEYSEAL_SIGN_ONLY=1` and sends the two `.json` entries it writes;
+   whoever publishes copies them into the work directory before running
+   it.
 7. Installed helpers find the release within a day, or at once after a
    server refuses them with `426`.
 

@@ -247,10 +247,15 @@ fn open<V: Render>(
         native::follow_appearance(window, cx);
         build(window, cx)
     };
-    gpui_kit::open_window(options, cx, build).unwrap_or_else(|error| {
+    let opened = gpui_kit::open_window(options, cx, build).unwrap_or_else(|error| {
         log(&format!("{} {error}", strings::NO_GPU));
         std::process::exit(1)
-    })
+    });
+    // A window opens after the link's network round trip, or in a helper
+    // already running from an earlier job, so the browser is usually still in
+    // front; without this the window can sit behind it or on another desktop.
+    cx.activate(true);
+    opened
 }
 
 fn job_title(job: &Job) -> &'static str {

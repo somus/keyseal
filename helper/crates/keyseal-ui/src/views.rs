@@ -5,6 +5,7 @@
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
+use std::time::Duration;
 
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
@@ -700,12 +701,64 @@ fn progress_line(text: SharedString, cx: &App) -> impl IntoElement {
         .test_support()
 }
 
+/// How long a window's confirming button stays disabled after the window
+/// shows or comes forward, as browsers do for permission prompts: the window
+/// takes focus as it opens, so Tab and Enter or Space typed for another
+/// window could otherwise press it.
+const INPUT_DELAY: Duration = Duration::from_millis(700);
+
+/// Whether [`INPUT_DELAY`] has passed since the window last showed or came
+/// forward.
+struct InputDelay {
+    ready: bool,
+    _timer: Task<()>,
+    _activation: Subscription,
+}
+
+impl InputDelay {
+    /// Starts the delay now and again whenever the window becomes active.
+    /// `field` is where the view keeps it.
+    fn new<T: 'static>(
+        field: fn(&mut T) -> &mut InputDelay,
+        window: &mut Window,
+        cx: &mut Context<T>,
+    ) -> Self {
+        let activation = cx.observe_window_activation(window, move |this, window, cx| {
+            if window.is_window_active() {
+                field(this).restart(field, cx);
+            }
+        });
+        Self {
+            ready: false,
+            _timer: Self::timer(field, cx),
+            _activation: activation,
+        }
+    }
+
+    fn restart<T: 'static>(&mut self, field: fn(&mut T) -> &mut InputDelay, cx: &mut Context<T>) {
+        self.ready = false;
+        self._timer = Self::timer(field, cx);
+        cx.notify();
+    }
+
+    fn timer<T: 'static>(field: fn(&mut T) -> &mut InputDelay, cx: &mut Context<T>) -> Task<()> {
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(INPUT_DELAY).await;
+            let _ = this.update(cx, |this, cx| {
+                field(this).ready = true;
+                cx.notify();
+            });
+        })
+    }
+}
+
 /// The first-contact prompt (section 5): the host only, never branding.
 struct TrustWindow {
     host: SharedString,
     insecure: bool,
     reply: Option<mpsc::Sender<bool>>,
     focus: FocusHandle,
+    delay: InputDelay,
 }
 
 impl TrustWindow {
@@ -723,6 +776,7 @@ impl TrustWindow {
             insecure,
             reply: Some(reply),
             focus,
+            delay: InputDelay::new(|this: &mut Self| &mut this.delay, window, cx),
         }
     }
 
@@ -766,6 +820,7 @@ impl Render for TrustWindow {
                 // deliberate choice.
                 secondary(Button::new("trust"), cx)
                     .label(strings::TRUST)
+                    .disabled(!self.delay.ready)
                     .on_click(cx.listener(|this, _, window, _| this.answer(true, window))),
                 cx,
             ))
@@ -788,6 +843,7 @@ pub(crate) struct JobWindow {
     closed: Arc<AtomicBool>,
     log: fn(&str),
     focus: FocusHandle,
+    delay: InputDelay,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -821,6 +877,7 @@ impl JobWindow {
             closed,
             log,
             focus: cx.focus_handle(),
+            delay: InputDelay::new(|this: &mut Self| &mut this.delay, window, cx),
             _subscriptions: vec![subscription],
         };
         this.show(job, stage, window, cx);
@@ -851,6 +908,8 @@ impl JobWindow {
         self.job = job;
         self.stage = stage;
         self.selected = 0;
+        // Each stage's button asks for something new.
+        self.delay.restart(|this: &mut Self| &mut this.delay, cx);
         if matches!(self.stage, Stage::Pin { pin_pad: false, .. }) {
             self.pin.update(cx, |pin, cx| pin.focus(window, cx));
         } else {
@@ -1229,7 +1288,7 @@ impl Render for JobWindow {
                 Button::new("submit")
                     .primary()
                     .label(submit)
-                    .disabled(busy || self.pin_missing(cx))
+                    .disabled(busy || self.pin_missing(cx) || !self.delay.ready)
                     .on_click(cx.listener(|this, _, window, cx| this.submit(window, cx))),
                 cx,
             ))
@@ -2072,7 +2131,7 @@ mod tests {
     use keyseal_core::flow::Step;
     use keyseal_core::preferences::Preferences;
 
-    use super::{Windows, key_bindings, open_settings, sample_report};
+    use super::{INPUT_DELAY, Windows, key_bindings, open_settings, sample_report};
     use crate::{Brand, Job, Request, Stage, strings};
 
     const DIGEST: &str = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
@@ -2117,6 +2176,12 @@ mod tests {
 
     fn open_windows(cx: &mut TestAppContext) -> Vec<AnyWindowHandle> {
         cx.update(|cx| cx.windows())
+    }
+
+    /// Lets [`INPUT_DELAY`] pass, after which confirming buttons respond.
+    fn pass_input_delay(cx: &mut TestAppContext) {
+        cx.executor().advance_clock(INPUT_DELAY);
+        cx.run_until_parked();
     }
 
     #[gpui_kit::test]
@@ -2223,6 +2288,15 @@ mod tests {
         cx.update_window(handle, |_, window, cx| {
             window.render_frame(cx);
             assert!(window.try_find("insecure").is_none());
+            // Keys typed for another window as this one opens can't trust.
+            assert_eq!(window.find("trust").disabled(), Some(true));
+            window.click("trust", cx);
+        })
+        .unwrap();
+        assert_eq!(answer.try_recv(), Err(mpsc::TryRecvError::Empty));
+        pass_input_delay(cx);
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
             window.click("trust", cx);
         })
         .unwrap();
@@ -2305,6 +2379,7 @@ mod tests {
         })
         .unwrap();
         assert_eq!(answer.try_recv(), Err(mpsc::TryRecvError::Empty));
+        pass_input_delay(cx);
         cx.update_window(handle, |_, window, cx| window.click("submit", cx))
             .unwrap();
         assert_eq!(answer.recv(), Ok(true));
@@ -2328,6 +2403,7 @@ mod tests {
         })
         .unwrap();
         assert_eq!(answer.try_recv(), Err(mpsc::TryRecvError::Empty));
+        pass_input_delay(cx);
         cx.update_window(handle, |_, window, cx| window.click("submit", cx))
             .unwrap();
         assert_eq!(answer.recv(), Ok(Some(0)));
@@ -2407,6 +2483,7 @@ mod tests {
         })
         .unwrap();
         assert_eq!(answer.try_recv(), Err(mpsc::TryRecvError::Empty));
+        pass_input_delay(cx);
         cx.update_window(handle, |_, window, cx| window.click("submit", cx))
             .unwrap();
         assert_eq!(answer.recv(), Ok(true));
@@ -2436,6 +2513,7 @@ mod tests {
         cx.update(|cx| windows.handle(choose(reply), cx));
         let open = open_windows(cx);
         assert_eq!(open.len(), 1);
+        pass_input_delay(cx);
         cx.update_window(open[0], |_, window, cx| {
             window.render_frame(cx);
             window.click("submit", cx);
@@ -2673,6 +2751,7 @@ mod tests {
             )
         });
         let handle = open_windows(cx)[0];
+        pass_input_delay(cx);
         cx.update_window(handle, |_, window, cx| {
             window.render_frame(cx);
             assert_eq!(
@@ -2789,6 +2868,7 @@ mod tests {
             )
         });
         assert_eq!(open_windows(cx), [handle]);
+        pass_input_delay(cx);
         cx.update_window(handle, |_, window, cx| {
             window.render_frame(cx);
             assert!(window.try_find("progress").is_none());

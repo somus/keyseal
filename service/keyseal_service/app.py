@@ -11,16 +11,17 @@ reads it.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import binascii
 import logging
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from collections.abc import Callable, Coroutine
 from dataclasses import replace
 from importlib.metadata import entry_points
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal, TypeVar
 
 from fastapi import FastAPI, HTTPException, Query, Request, Response
+from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field, StringConstraints
 from pyhanko.sign import timestamps
 from pyhanko_certvalidator.fetchers.aiohttp_fetchers import AIOHttpFetcherBackend
@@ -31,9 +32,11 @@ from .fetching import public_fetch_session
 from .prepare import MAX_FIELDS, FieldRequest, PrepareError, prepare_fields
 from .request_guard import RequestGuard
 from .settings import Settings, TrustRootsError, WeakTokenError, check_token
-from .validate import certificate_trusted, validate_pdf_async
+from .validate import ValidationSettings, certificate_trusted, validate_pdf_async
 
 log = logging.getLogger(__name__)
+
+T = TypeVar("T")
 
 MAX_PDF_BYTES = 25 * 1024 * 1024
 #: Base64 of a PDF of MAX_PDF_BYTES.
@@ -119,26 +122,26 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     validation = resolved.validation
 
-    @asynccontextmanager
-    async def lifespan(_: FastAPI) -> AsyncIterator[None]:
-        # Routes see the shared public-only fetcher while the app runs; the
-        # settings without it refuse to build a fetching context.
-        nonlocal validation
-        if not validation.allow_fetching:
-            yield
-            return
-        async with public_fetch_session() as session:
-            validation = replace(
-                resolved.validation, fetcher_backend=AIOHttpFetcherBackend(session=session)
-            )
-            try:
-                yield
-            finally:
-                validation = resolved.validation
+    async def _in_thread(work: Callable[[], Coroutine[Any, Any, T]]) -> T:
+        # pyHanko hashes and parses inline between its awaits, so its work
+        # runs on a worker thread's own event loop, leaving this one free.
+        return await run_in_threadpool(lambda: asyncio.run(work()))
 
-    app = FastAPI(
-        title="KeySeal signing service", docs_url=None, redoc_url=None, lifespan=lifespan
-    )
+    async def _validating(work: Callable[[ValidationSettings], Coroutine[Any, Any, T]]) -> T:
+        # A fetch session belongs to the loop that opened it, so each run
+        # opens its own; the settings without one refuse to build a fetching
+        # context.
+        async def run() -> T:
+            if not validation.allow_fetching:
+                return await work(validation)
+            async with public_fetch_session() as session:
+                return await work(
+                    replace(validation, fetcher_backend=AIOHttpFetcherBackend(session=session))
+                )
+
+        return await _in_thread(run)
+
+    app = FastAPI(title="KeySeal signing service", docs_url=None, redoc_url=None)
     app.add_middleware(
         RequestGuard,
         token=resolved.token,
@@ -183,7 +186,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             default=None, ge=1, description="Bytes of the copy the signer was given"
         ),
     ) -> dict[str, object]:
-        return await validate_pdf_async(await _read_pdf(request), validation, base)
+        pdf = await _read_pdf(request)
+        return await _validating(lambda settings: validate_pdf_async(pdf, settings, base))
 
     @app.post("/certificate")
     async def certificate(body: CertificateRequest) -> dict[str, bool]:
@@ -193,7 +197,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             remote_sign.algorithms(cert)
         except remote_sign.RemoteSignError as error:
             raise HTTPException(400, str(error)) from error
-        trusted, revocation_checked = await certificate_trusted(cert, chain, validation)
+        trusted, revocation_checked = await _validating(
+            lambda settings: certificate_trusted(cert, chain, settings)
+        )
         return {"revocationChecked": revocation_checked, "trusted": trusted}
 
     @app.post("/sign/start")
@@ -203,16 +209,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if stamp_style is None:
             raise HTTPException(400, f"Unknown stamp style {body.stampStyle}")
         try:
-            result = await remote_sign.start(
-                pdf,
-                body.fieldName,
-                body.certificate,
-                body.chain,
-                stamp_style(),
-                body.rsaPadding,
-                remote_sign.SignatureDetails(
-                    reason=body.reason, location=body.location, contact_info=body.contactInfo
-                ),
+            result = await _in_thread(
+                lambda: remote_sign.start(
+                    pdf,
+                    body.fieldName,
+                    body.certificate,
+                    body.chain,
+                    stamp_style(),
+                    body.rsaPadding,
+                    remote_sign.SignatureDetails(
+                        reason=body.reason, location=body.location, contact_info=body.contactInfo
+                    ),
+                )
             )
         except remote_sign.UnsupportedKeyError as error:
             raise HTTPException(400, str(error)) from error
@@ -229,7 +237,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def sign_finish(body: SignFinishRequest) -> Response:
         try:
             state = remote_sign.open_state(state_key, body.state)
-            pdf = await remote_sign.finish(state, _b64(body.signature, "signature"), tsa)
+            signature = _b64(body.signature, "signature")
+            pdf = await _in_thread(lambda: remote_sign.finish(state, signature, tsa))
         except remote_sign.RemoteSignError as error:
             raise HTTPException(422, str(error)) from error
         return Response(content=pdf, media_type="application/pdf")
@@ -240,7 +249,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(503, "No timestamp authority is configured")
         pdf = await _read_pdf(request)
         try:
-            out = await remote_sign.finalize(pdf, tsa, validation.context())
+            out = await _validating(
+                lambda settings: remote_sign.finalize(pdf, tsa, settings.context())
+            )
         except Exception as error:  # noqa: BLE001 - reported, the PDF stays as it was
             log.exception("Couldn't finalise")
             raise HTTPException(422, f"Couldn't finalise: {type(error).__name__}") from error
@@ -252,7 +263,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(503, "No timestamp authority is configured")
         pdf = await _read_pdf(request)
         try:
-            out = await remote_sign.retimestamp(pdf, tsa, validation.context())
+            out = await _validating(
+                lambda settings: remote_sign.retimestamp(pdf, tsa, settings.context())
+            )
         except Exception as error:  # noqa: BLE001 - reported, the PDF stays as it was
             log.exception("Couldn't timestamp")
             raise HTTPException(422, f"Couldn't timestamp: {type(error).__name__}") from error

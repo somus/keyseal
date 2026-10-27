@@ -192,8 +192,8 @@ class ValidationSettings:
     #: CA certificates between a signer and a root, for building paths when a
     #: PDF doesn't carry them. Never trust anchors.
     intermediates: list[x509.Certificate] = field(default_factory=list)
-    #: The app's public-only fetcher (`fetching.public_fetch_session`),
-    #: shared by every context. Fetching is refused without it: pyHanko's own
+    #: A public-only fetcher (`fetching.public_fetch_session`), which the app
+    #: opens for each request. Fetching is refused without it: pyHanko's own
     #: would follow certificate URLs to private addresses.
     fetcher_backend: FetcherBackend | None = None
 
@@ -204,7 +204,7 @@ class ValidationSettings:
         revocation_mode: str = "soft-fail",
     ) -> ValidationContext:
         if self.allow_fetching and self.fetcher_backend is None:
-            raise RuntimeError("Certificate fetching requires the managed public fetch session")
+            raise RuntimeError("Certificate fetching requires a public fetch session")
         # The system's roots (the TSA's DigiCert chain, Adobe-trusted CAs)
         # plus the configured ones (the CCA India roots behind every DSC),
         # passed explicitly: pyHanko's fallback to the system's is deprecated.

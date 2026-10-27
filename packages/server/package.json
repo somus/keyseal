@@ -1,6 +1,6 @@
 {
   "name": "@keyseal/server",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Fetch-API handlers for the KeySeal job protocol.",
   "homepage": "https://github.com/somus/keyseal/tree/main/packages/server#readme",
   "bugs": "https://github.com/somus/keyseal/issues",

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -11,6 +12,7 @@ from cryptography.hazmat.primitives import serialization
 from pyhanko_certvalidator import ValidationContext
 from pyhanko_certvalidator.fetchers.aiohttp_fetchers import AIOHttpFetcherBackend
 
+from keyseal_service import app as app_module
 from keyseal_service import validate
 from keyseal_service.app import MAX_BODY_BYTES
 from keyseal_service.fetching import public_fetch_session
@@ -181,7 +183,7 @@ def test_a_certificate_whose_revocation_fetch_times_out_is_checked_without_fetch
 
 def test_fetching_without_the_managed_session_is_refused(pki: Pki) -> None:
     settings = replace(settings_with(pki), allow_fetching=True)
-    with pytest.raises(RuntimeError, match="managed public fetch session"):
+    with pytest.raises(RuntimeError, match="public fetch session"):
         settings.context()
 
 
@@ -591,3 +593,29 @@ def test_the_token_needs_the_bearer_scheme_and_bodies_a_size(pki: Pki) -> None:
         json={"pdf": b64(blank_pdf()), "fields": [{"name": "a", "page": 0, "box": [0, 0, 1e300, 1]}]},
     )
     assert huge.status_code == 422
+
+
+def test_a_validation_does_not_hold_up_other_requests(
+    pki: Pki, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    started, release = threading.Event(), threading.Event()
+    released: list[bool] = []
+
+    async def busy(*_: Any) -> dict[str, Any]:
+        # Blocks the way pyHanko's inline hashing does, until /health answers.
+        started.set()
+        released.append(release.wait(timeout=5))
+        return {}
+
+    monkeypatch.setattr(app_module, "validate_pdf_async", busy)
+    # Inside `with`, every request runs on the client's one event loop.
+    with client_for(settings_with(pki)) as client:
+        validating = threading.Thread(
+            target=lambda: client.post("/validate", content=blank_pdf(), headers=AUTH)
+        )
+        validating.start()
+        assert started.wait(timeout=5)
+        assert client.get("/health").status_code == 200
+        release.set()
+        validating.join()
+    assert released == [True]

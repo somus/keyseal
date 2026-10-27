@@ -72,8 +72,11 @@ maintainer, and a manual publish. The signing rules are in
    helper/packaging/release.sh 1.4.0
    ```
 
-   It downloads the draft and clones the tag. It checks every asset the
-   way `sign-manifest.md` describes, rebuilds the Linux binary in the
+   Run it from an up-to-date checkout of `main`. It downloads the draft and
+   clones the tag, and stops unless the tagged commit is on `main`, pins
+   `main`'s keys and is the commit the release run built. It checks every
+   asset the way `sign-manifest.md` describes, the Windows and macOS ones
+   against that run's unsigned binaries, rebuilds the Linux binary in the
    pinned container, and stops at the first difference. Then it signs
    `keyseal-update.json` and `SHA256SUMS` with your release key, verifies
    the signatures with the draft's own helper and `verify-signatures.sh`,
@@ -90,8 +93,9 @@ maintainer, and a manual publish. The signing rules are in
    latest.
 6. With a `THRESHOLD` above 1, each other maintainer runs the script with
    `KEYSEAL_SIGN_ONLY=1` and sends the two `.json` entries it writes;
-   whoever publishes copies them into the work directory before running
-   it.
+   whoever publishes runs it with `KEYSEAL_RELEASE_DIR` set to a directory
+   of their own and copies the entries into it first. Without it the script
+   works in a new private directory each run.
 7. Installed helpers find the release within a day, or at once after a
    server refuses them with `426`.
 

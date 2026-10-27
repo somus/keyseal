@@ -99,13 +99,17 @@ the unsigned binaries you build in step 2.
 
    - Linux: the tarball, deb and AppImage, which is also the update
      asset, hold the unsigned binary as `keyseal`. Run these on Linux, in the
-     build container for instance, where `dpkg-deb` and the AppImage run:
+     build container for instance, with `dpkg-deb` and `unsquashfs`
+     (squashfs-tools). The AppImage is unpacked where its runtime's ELF ends,
+     not run: it is the file under check.
 
      ```sh
      b=rebuilt/keyseal-helper-<v>-linux-x64
      tar -xzOf draft/keyseal-helper-<v>-linux-x64.tar.gz keyseal-helper-<v>-linux-x64/keyseal | cmp - "$b"
      dpkg-deb --fsys-tarfile draft/keyseal_<v>_amd64.deb | tar -xO ./usr/bin/keyseal | cmp - "$b"
-     draft/keyseal-helper-<v>-linux-x64.AppImage --appimage-extract >/dev/null   # into squashfs-root
+     a=draft/keyseal-helper-<v>-linux-x64.AppImage
+     end=$(( $(od -An -t u8 -j 40 -N 8 "$a") + $(od -An -t u2 -j 58 -N 2 "$a") * $(od -An -t u2 -j 60 -N 2 "$a") ))
+     unsquashfs -q -n -o "$end" -d squashfs-root "$a" usr/bin/keyseal
      cmp squashfs-root/usr/bin/keyseal "$b"
      ```
 

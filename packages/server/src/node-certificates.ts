@@ -121,13 +121,27 @@ function policyOids(der: Uint8Array): string[] {
   return [];
 }
 
+/**
+ * The certificate `der` holds, only if it is exactly one DER certificate.
+ * `X509Certificate` also reads PEM, skipping any bytes before the BEGIN line,
+ * so DER with a PEM certificate appended would parse as the appended one while
+ * the policy walk and the signing service read the leading DER.
+ */
+function parse(der: Uint8Array): X509Certificate {
+  const certificate = new X509Certificate(der);
+  if (!certificate.raw.equals(der)) {
+    throw new TypeError("Not a single DER certificate");
+  }
+  return certificate;
+}
+
 /** The default inspector, on `node:crypto` (Node, Bun, Workers with nodejs_compat). */
 export const nodeCertificateInspector: CertificateInspector = {
   inspect(der) {
     let certificate: X509Certificate;
     let policies: string[];
     try {
-      certificate = new X509Certificate(der);
+      certificate = parse(der);
       policies = policyOids(der);
     } catch {
       return null;
@@ -149,7 +163,7 @@ export const nodeCertificateInspector: CertificateInspector = {
   },
   verify(der, data, signature, algorithm, digest) {
     try {
-      const key = new X509Certificate(der).publicKey;
+      const key = parse(der).publicKey;
       const isEc = key.asymmetricKeyType === "ec";
       if (isEc !== (algorithm === "ecdsa")) {
         return false;

@@ -167,7 +167,8 @@ with yours using `helper/packaging/macos/compare-bundle.sh`
   glibc 2.35 or later. The container installs GPUI's build packages, the
   same list as `checks.yml`.
 - The AppImage is built with appimagetool and runtime versions pinned by
-  SHA-256 in the workflow.
+  SHA-256 in the workflow, and `build-appimage.sh` fails unless the
+  AppImage starts with that runtime.
 - Every action in `release.yml` is pinned by commit SHA with its version in
   a comment, the `ubuntu:22.04` image by digest, and rustup-init by version
   and SHA-256. Update a pin by resolving the new tag yourself

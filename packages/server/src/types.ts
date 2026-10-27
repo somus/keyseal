@@ -114,6 +114,13 @@ export interface CertificateFacts {
   notBefore: Date;
   notAfter: Date;
   key: { type: "rsa"; bits: number } | { type: "ec"; curve: "P-256" | "P-384" };
+  /**
+   * Whether the signing service found revocation data that checked out for
+   * the certificate and every CA on its path that names a CRL or OCSP
+   * responder. False means trusted without a revocation check, as always with
+   * the service's default of no fetching.
+   */
+  revocationChecked: boolean;
 }
 
 export type CompletedResult =

@@ -54,6 +54,21 @@ def test_signed_pdf_is_valid_and_trusted(pki: Pki) -> None:
     assert signature["fieldName"] == "Signature1"
 
 
+def test_revocation_counts_as_checked_only_with_data_for_the_signer(
+    pki: Pki, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    signed = sign(blank_pdf(), pki)
+    # The signer's certificate names a CRL, and without fetching none is found.
+    [unchecked] = validate_pdf(signed, settings_with(pki))["signatures"]
+    assert unchecked["trusted"] is True
+    assert unchecked["revocationChecked"] is False
+
+    with_crl(monkeypatch, pki.crl())
+    [checked] = validate_pdf(signed, settings_with(pki))["signatures"]
+    assert checked["trusted"] is True
+    assert checked["revocationChecked"] is True
+
+
 def test_unknown_root_is_valid_but_untrusted(pki: Pki) -> None:
     report = validate_pdf(sign(blank_pdf(), pki), ValidationSettings(trust_roots=[]))
     assert report["status"] == "valid"
@@ -75,16 +90,18 @@ def test_a_revoked_signature_stays_trusted_only_with_a_timestamp_before_it(
     stamped = sign(blank_pdf(), pki, timestamper=pki.timestamper(now - timedelta(hours=2)))
 
     def revoked_at(at: datetime) -> None:
-        with_crl(monkeypatch, pki.crl_revoking_signer(at))
+        with_crl(monkeypatch, pki.crl(at))
 
     revoked_at(now - timedelta(hours=1))
     [untimed] = validate_pdf(plain, settings_with(pki))["signatures"]
     assert untimed["intact"] is True
     assert untimed["trusted"] is False
+    assert untimed["revocationChecked"] is False
     # The timestamp proves the signature was made before the revocation.
     [older] = validate_pdf(stamped, settings_with(pki))["signatures"]
     assert older["timestamped"] is True
     assert older["trusted"] is True
+    assert older["revocationChecked"] is True
 
     revoked_at(now - timedelta(hours=3))
     [after] = validate_pdf(stamped, settings_with(pki))["signatures"]
@@ -99,7 +116,7 @@ def test_a_revocation_found_now_counts_when_checking_at_the_timestamp(
     stamped = sign(blank_pdf(), pki, timestamper=pki.timestamper(now - timedelta(hours=2)))
     # Only the check at the present finds the CRL; the fetch at the
     # timestamp's time fails.
-    with_crl(monkeypatch, pki.crl_revoking_signer(now - timedelta(hours=3)), historical=False)
+    with_crl(monkeypatch, pki.crl(now - timedelta(hours=3)), historical=False)
     [signature] = validate_pdf(stamped, settings_with(pki))["signatures"]
     assert signature["timestamped"] is True
     assert signature["trusted"] is False
@@ -159,7 +176,7 @@ def test_a_certificate_whose_revocation_fetch_times_out_is_checked_without_fetch
                 _asn1(pki.signer_cert), [pki.ca_asn1], settings
             )
 
-    assert asyncio.run(run()) is True
+    assert asyncio.run(run()) == (True, False)
 
 
 def test_fetching_without_the_managed_session_is_refused(pki: Pki) -> None:
@@ -261,19 +278,24 @@ def test_certificate_check_needs_a_configured_root(pki: Pki) -> None:
     auth = AUTH
     other = Pki()
 
-    def check(owner: Pki) -> bool:
+    def check(owner: Pki, trailing: bytes = b"") -> dict[str, bool]:
         der = owner.signer_cert.public_bytes(serialization.Encoding.DER)
         ca = owner.ca.public_bytes(serialization.Encoding.DER)
         response = client.post(
             "/certificate",
             headers=auth,
-            json={"certificate": b64(der), "chain": [b64(ca)]},
+            json={"certificate": b64(der + trailing), "chain": [b64(ca)]},
         )
         assert response.status_code == 200
-        return response.json()["trusted"]
+        return response.json()
 
-    assert check(pki) is True
-    assert check(other) is False
+    assert check(pki) == {"revocationChecked": False, "trusted": True}
+    assert check(other) == {"revocationChecked": False, "trusted": False}
+    # Bytes after the certificate, such as another one in PEM, are refused
+    # rather than ignored.
+    pem = other.signer_cert.public_bytes(serialization.Encoding.PEM)
+    with pytest.raises(AssertionError):
+        check(pki, b"\n" + pem)
     # Chains to the root, but may only encrypt, so it can't sign for us.
     encryption = client.post(
         "/certificate",
@@ -356,6 +378,30 @@ def test_still_refuses_other_digest_info_encodings(pki: Pki) -> None:
         with pytest.raises(InvalidSignature):
             _check(pki, signature, data)
         assert name
+
+
+def test_an_oversized_rsa_key_never_reaches_the_exponentiation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from asn1crypto import algos, keys
+    from pyhanko_certvalidator.sig_validate import DEFAULT_VALIDATION_CONTEXT
+
+    def refuse(*_: object) -> int:
+        raise AssertionError("pow() ran on an oversized key")
+
+    monkeypatch.setattr(validate, "pow", refuse, raising=False)
+    algorithm = algos.SignedDigestAlgorithm({"algorithm": "sha256_rsa"})
+    for n, e in [((1 << 20000) | 1, 65537), ((1 << 4095) | 1, (1 << 4000) | 1)]:
+        spki = keys.PublicKeyInfo(
+            {
+                "algorithm": {"algorithm": "rsa"},
+                "public_key": keys.RSAPublicKey({"modulus": n, "public_exponent": e}),
+            }
+        )
+        signature = b"\x01" * ((n.bit_length() + 7) // 8)
+        assert not validate._pkcs1_without_null(
+            signature, b"data", spki, algorithm, DEFAULT_VALIDATION_CONTEXT
+        )
 
 
 def test_intermediates_complete_a_chain_the_pdf_leaves_out(tmp_path: Path) -> None:
@@ -475,6 +521,40 @@ def test_a_looping_field_tree_counts_as_changed_instead_of_hanging(pki: Pki) -> 
 
     base = sign(blank_pdf(), pki)
     report = validate_pdf(_with_looping_widget(base), settings_with(pki), len(base))
+    assert report["changesSinceBase"] == "OTHER"
+
+
+def test_a_widget_sharing_objects_is_digested_once_per_object(pki: Pki) -> None:
+    import io
+
+    from pyhanko.pdf_utils import generic
+    from pyhanko.pdf_utils.incremental_writer import IncrementalPdfFileWriter
+
+    base = sign(blank_pdf(), pki)
+    writer = IncrementalPdfFileWriter(io.BytesIO(base))
+    # Each array refers twice to the next: 2**60 paths, 60 objects.
+    node = writer.add_object(generic.ArrayObject())
+    for _ in range(60):
+        node = writer.add_object(generic.ArrayObject([node, node]))
+    widget = generic.DictionaryObject(
+        {
+            generic.NameObject("/Type"): generic.NameObject("/Annot"),
+            generic.NameObject("/Subtype"): generic.NameObject("/Widget"),
+            generic.NameObject("/Rect"): generic.ArrayObject(
+                [generic.NumberObject(n) for n in (0, 0, 10, 10)]
+            ),
+            generic.NameObject("/T"): generic.TextStringObject("shared"),
+            generic.NameObject("/MK"): node,
+        }
+    )
+    page = writer.find_page_for_modification(0)[0].get_object()
+    annots = list(page["/Annots"]) if "/Annots" in page else []
+    page[generic.NameObject("/Annots")] = generic.ArrayObject([*annots, writer.add_object(widget)])
+    writer.update_container(page)
+    out = io.BytesIO()
+    writer.write(out)
+
+    report = validate_pdf(out.getvalue(), settings_with(pki), len(base))
     assert report["changesSinceBase"] == "OTHER"
 
 

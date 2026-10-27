@@ -8,7 +8,7 @@ Every route except `GET /health`, plugin routes included, needs `Authorization: 
 |---|---|
 | `GET /health` | Liveness and the number of trust roots loaded |
 | `POST /validate?base=<bytes>` | Validation report for a PDF body; `base` adds what changed since the copy the signer was given |
-| `POST /certificate` | Whether a certificate chains to a configured root and may sign |
+| `POST /certificate` | Whether a certificate chains to a configured root and may sign (`trusted`), and whether its revocation status was checked (`revocationChecked`) |
 | `POST /prepare` | Adds empty signature fields as one incremental update |
 | `POST /sign/start` | Reserves the signature and returns `toSign`, `digestAlgorithm` (`sha256` or `sha384`), `signatureAlgorithm` (`rsa-pkcs1-v1_5`, `rsa-pss` or `ecdsa`) and an opaque `state`; optional `stampStyle`, `rsaPadding` (`pkcs1` or `pss`), `reason`, `location` and `contactInfo` |
 | `POST /sign/finish` | Builds the CMS around the token's signature and returns the signed PDF (PAdES B-T) |
@@ -46,6 +46,8 @@ The service refuses to start, logging which rule failed and exiting 1, when the 
 | `SIGNING_TRUST_ROOTS_DIR` | bundled CCA India roots and intermediates | Directory of `.pem`, `.cer`, `.crt` or `.der` certificates replacing the bundled ones; self-signed ones are roots, the rest intermediates |
 | `SIGNING_ALLOW_FETCHING` | off | `true` lets validation fetch issuer certificates, OCSP and CRL data |
 | `TZ` | container's (UTC) | Time zone of the date in the built-in stamp, for example `Asia/Kolkata`; a zone name, since pyHanko refuses POSIX zones such as `IST-5:30` |
+
+Revocation is checked soft-fail: a certificate whose CRL or OCSP data is missing or unreachable is still `trusted`. With fetching off, the default, no revocation data is fetched at all, so a revoked certificate is trusted unless a PDF carries the data that revokes it. `revocationChecked`, on `/certificate` and on each signature `/validate` reports, is true only when every certificate on the trusted path that names a CRL or OCSP responder had data that checked out; treat `trusted` without it as "chains to a configured root", not "not revoked".
 
 With `SIGNING_ALLOW_FETCHING=true`, the URLs fetched come from the certificates being checked, so the service only connects to public IP addresses, over direct HTTP or HTTPS: every DNS answer and the address actually connected to must be public, each redirect is checked again, and proxies, proxy environment variables and cookies are not used.
 

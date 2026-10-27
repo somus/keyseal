@@ -114,7 +114,9 @@ def algorithms(cert: x509.Certificate, rsa_padding: RsaPadding = "pkcs1") -> Alg
 
 def load_cert(der_b64: str) -> x509.Certificate:
     try:
-        return x509.Certificate.load(base64.b64decode(der_b64, validate=True))
+        # Strict: bytes after the certificate are refused, not ignored, so the
+        # certificate checked here is all the caller sent.
+        return x509.Certificate.load(base64.b64decode(der_b64, validate=True), strict=True)
     except Exception as error:  # noqa: BLE001
         raise RemoteSignError("Certificate is not DER in base64") from error
 

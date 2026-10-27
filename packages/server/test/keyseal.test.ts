@@ -892,6 +892,27 @@ describe("batch", () => {
 });
 
 describe("node certificate inspector", () => {
+  test("refuses DER with another certificate appended as PEM", () => {
+    const rsa = Buffer.from(CERTS.rsa, "base64");
+    const pem = `\n-----BEGIN CERTIFICATE-----\n${CERTS.p256}\n-----END CERTIFICATE-----\n`;
+    const blob = Buffer.concat([rsa, Buffer.from(pem)]);
+    expect(nodeCertificateInspector.inspect(rsa)?.subjectCommonName).toBe(
+      "Test Signer rsa"
+    );
+    expect(nodeCertificateInspector.inspect(blob)).toBeNull();
+    const data = Buffer.from("signed attributes");
+    const signature = signWith("rsa", data.toString("base64"));
+    expect(
+      nodeCertificateInspector.verify(
+        blob,
+        data,
+        Buffer.from(signature, "base64"),
+        "rsa-pkcs1-v1_5",
+        "sha256"
+      )
+    ).toBe(false);
+  });
+
   test("verifies each scheme with the certificate's key and refuses the rest", () => {
     const data = Buffer.from("signed attributes");
     const der = (name: keyof typeof CERTS) =>

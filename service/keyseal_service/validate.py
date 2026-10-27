@@ -50,6 +50,7 @@ from pyhanko_certvalidator.sig_validate import (
     DefaultSignatureValidator,
     SignatureValidationContext,
 )
+from pyhanko_certvalidator.validate import async_validate_path
 
 log = logging.getLogger(__name__)
 
@@ -140,6 +141,10 @@ def _pkcs1_without_null(
         n, e = key["modulus"].native, key["public_exponent"].native
     except (KeyError, ValueError):
         return False
+    # OpenSSL's own limits, which refuse such a key before this fallback runs:
+    # past them, pow() in Python takes seconds to hours on the event loop.
+    if n.bit_length() > 16384 or e.bit_length() > 64:
+        return False
     size = (n.bit_length() + 7) // 8
     value = int.from_bytes(signature, "big")
     if len(signature) != size or value >= n:
@@ -193,7 +198,10 @@ class ValidationSettings:
     fetcher_backend: FetcherBackend | None = None
 
     def context(
-        self, moment: datetime | None = None, known: ValidationContext | None = None
+        self,
+        moment: datetime | None = None,
+        known: ValidationContext | None = None,
+        revocation_mode: str = "soft-fail",
     ) -> ValidationContext:
         if self.allow_fetching and self.fetcher_backend is None:
             raise RuntimeError("Certificate fetching requires the managed public fetch session")
@@ -210,7 +218,7 @@ class ValidationSettings:
             signature_validator=SIGNATURE_VALIDATOR,
             allow_fetching=self.allow_fetching,
             fetcher_backend=self.fetcher_backend,
-            revocation_mode="soft-fail",
+            revocation_mode=revocation_mode,
             moment=moment,
             retroactive_revinfo=moment is not None,
             crls=known.crls if known is not None else None,
@@ -228,16 +236,40 @@ class ValidationSettings:
         )
 
 
+async def _revocation_checked(
+    path: ValidationPath,
+    settings: ValidationSettings,
+    known: ValidationContext,
+    moment: datetime | None = None,
+) -> bool:
+    """Whether every certificate on a trusted path that names a CRL or OCSP
+    responder has revocation data that checked out, among what `known` (the
+    context that trusted it) holds. The soft-fail check trusts a certificate
+    whose data is missing, as it always is with fetching off, so a revoked
+    certificate passes it; this re-checks the path in hard-fail mode without
+    fetching anything."""
+    context = replace(settings, allow_fetching=False).context(
+        moment=moment, known=known, revocation_mode="hard-fail"
+    )
+    try:
+        await async_validate_path(context, path)
+    except Exception:  # noqa: BLE001 - any failure means not checked
+        return False
+    return True
+
+
 async def certificate_trusted(
     cert: x509.Certificate, chain: list[x509.Certificate], settings: ValidationSettings
-) -> bool:
+) -> tuple[bool, bool]:
     """Whether a certificate chains to a configured root and has the key usage
     validation requires of a PDF signer (the DSC enrolment check), so an
-    encryption certificate on the same token isn't enrolled."""
+    encryption certificate on the same token isn't enrolled, and whether its
+    revocation status was checked (`_revocation_checked`)."""
+    context = settings.context()
     try:
         try:
             path = await CertificateValidator(
-                cert, intermediate_certs=chain, validation_context=settings.context()
+                cert, intermediate_certs=chain, validation_context=context
             ).async_validate_path()
         except TimeoutError:
             # As for signatures: a revocation responder that never answers,
@@ -246,15 +278,17 @@ async def certificate_trusted(
             if not settings.allow_fetching:
                 raise
             log.warning("Revocation fetch timed out for a certificate; checking without fetching")
-            unfetched = replace(settings, allow_fetching=False)
+            context = replace(settings, allow_fetching=False).context()
             path = await CertificateValidator(
-                cert, intermediate_certs=chain, validation_context=unfetched.context()
+                cert, intermediate_certs=chain, validation_context=context
             ).async_validate_path()
         PdfSignatureStatus.default_usage_constraints().validate(cert)
     except Exception as error:  # noqa: BLE001 - any path failure means untrusted
         log.info("Certificate refused: %s: %s", type(error).__name__, error)
-        return False
-    return settings.is_configured_root(path)
+        return False, False
+    if not settings.is_configured_root(path):
+        return False, False
+    return True, await _revocation_checked(path, settings, context)
 
 
 async def _signer_trusted(
@@ -262,9 +296,10 @@ async def _signer_trusted(
     status: PdfSignatureStatus,
     settings: ValidationSettings,
     now: ValidationContext,
-) -> bool:
+) -> tuple[bool, bool]:
     """Whether the signer's certificate chains to a configured root, now or
-    when the signature's trusted timestamp says it was made.
+    when the signature's trusted timestamp says it was made, and whether its
+    revocation status was checked then (`_revocation_checked`).
 
     pyHanko checks the certificate at the context's moment, which is now; the
     signature timestamp is reported beside it and doesn't move that time. A
@@ -273,27 +308,29 @@ async def _signer_trusted(
     context) found, so a signature proven older than its revocation stands.
     """
     if status.trusted and settings.is_configured_root(status.validation_path):
-        return True
+        return True, await _revocation_checked(status.validation_path, settings, now)
     ts = status.timestamp_validity
     if ts is None or not (ts.intact and ts.valid and ts.trusted):
-        return False
+        return False, False
+    context = settings.context(moment=ts.timestamp, known=now)
     then = await async_validate_pdf_signature(
-        sig,
-        signer_validation_context=settings.context(moment=ts.timestamp, known=now),
-        diff_policy=DIFF_POLICY,
-        skip_diff=True,
+        sig, signer_validation_context=context, diff_policy=DIFF_POLICY, skip_diff=True
     )
-    return bool(then.trusted) and settings.is_configured_root(then.validation_path)
+    if not (then.trusted and settings.is_configured_root(then.validation_path)):
+        return False, False
+    return True, await _revocation_checked(
+        then.validation_path, settings, context, moment=ts.timestamp
+    )
 
 
 async def _check_signature(
     sig: EmbeddedPdfSignature, settings: ValidationSettings
-) -> tuple[PdfSignatureStatus, bool]:
+) -> tuple[PdfSignatureStatus, bool, bool]:
     context = settings.context()
     status = await async_validate_pdf_signature(
         sig, signer_validation_context=context, diff_policy=DIFF_POLICY
     )
-    return status, await _signer_trusted(sig, status, settings, context)
+    return status, *await _signer_trusted(sig, status, settings, context)
 
 
 def _locks(sig: EmbeddedPdfSignature) -> list[dict[str, Any]]:
@@ -409,20 +446,30 @@ SIGNING_KEYS = {"/V", "/AP"}
 
 
 def _digest_object(
-    obj: generic.PdfObject, digest: Any, path: frozenset[tuple[int, int]]
+    obj: generic.PdfObject,
+    digest: Any,
+    path: frozenset[tuple[int, int]],
+    digests: dict[tuple[int, int], bytes],
 ) -> None:
-    """Feeds an object's resolved content to the digest, whatever objects hold it."""
+    """Feeds an object's resolved content to the digest, whatever objects hold
+    it. Each indirect object is resolved once, its digest kept in `digests`:
+    expanded again wherever it is shared, objects that each refer twice to the
+    next would take exponential time."""
     if isinstance(obj, generic.IndirectObject):
         ref = (obj.idnum, obj.generation)
         if ref in path:
             digest.update(b"<cycle>")
-        else:
-            _digest_object(obj.get_object(), digest, path | {ref})
+            return
+        if ref not in digests:
+            inner = hashlib.sha256()
+            _digest_object(obj.get_object(), inner, path | {ref}, digests)
+            digests[ref] = inner.digest()
+        digest.update(digests[ref])
     elif isinstance(obj, generic.DictionaryObject):
         digest.update(b"<<")
         for key in sorted(obj):
             digest.update(repr(key).encode())
-            _digest_object(obj.raw_get(key), digest, path)
+            _digest_object(obj.raw_get(key), digest, path, digests)
         digest.update(b">>")
         if isinstance(obj, generic.StreamObject):
             digest.update(b"stream")
@@ -430,13 +477,17 @@ def _digest_object(
     elif isinstance(obj, generic.ArrayObject):
         digest.update(b"[")
         for index in range(len(obj)):
-            _digest_object(obj.raw_get(index), digest, path)
+            _digest_object(obj.raw_get(index), digest, path, digests)
         digest.update(b"]")
     else:
         digest.update(f"{type(obj).__name__}:{obj!r};".encode())
 
 
-def _rendering(widget: generic.DictionaryObject, signed: bool) -> str:
+def _rendering(
+    widget: generic.DictionaryObject,
+    signed: bool,
+    digests: dict[tuple[int, int], bytes],
+) -> str:
     """A digest of everything about a widget and its field that decides how it
     shows: flags, rect, appearance streams and their resources, /MK, /DA, /Ff
     and the rest. A field signed since may change only its value and appearance."""
@@ -445,7 +496,7 @@ def _rendering(widget: generic.DictionaryObject, signed: bool) -> str:
     for node in _field_chain(widget):
         for key in sorted(k for k in node if k not in skipped):
             digest.update(repr(key).encode())
-            _digest_object(node.raw_get(key), digest, frozenset())
+            _digest_object(node.raw_get(key), digest, frozenset(), digests)
         digest.update(b"|")
     return digest.hexdigest()
 
@@ -456,6 +507,7 @@ def _widgets(
     """Every form field widget on a page: field name, 0-based page, /Rect
     (normalised) and a digest of how it renders (`signed` fields aside)."""
     found: list[tuple[str, int, tuple[float, ...], str]] = []
+    digests: dict[tuple[int, int], bytes] = {}
     for index in range(int(reader.root["/Pages"]["/Count"])):
         page = reader.find_page_for_modification(index)[0].get_object()
         for ref in page["/Annots"] if "/Annots" in page else ():
@@ -465,7 +517,7 @@ def _widgets(
             x1, y1, x2, y2 = (float(v) for v in annot["/Rect"])
             rect = (min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2))
             name = _field_name(annot)
-            found.append((name, index, rect, _rendering(annot, name in signed)))
+            found.append((name, index, rect, _rendering(annot, name in signed, digests)))
     return found
 
 
@@ -588,7 +640,7 @@ async def validate_pdf_async(
             continue
         try:
             try:
-                status, trusted = await _check_signature(sig, settings)
+                status, trusted, revocation_checked = await _check_signature(sig, settings)
             except TimeoutError:
                 # pyHanko's soft-fail covers a responder that refuses the
                 # connection but not one that never answers, as Indian CAs'
@@ -597,7 +649,7 @@ async def validate_pdf_async(
                 if not settings.allow_fetching:
                     raise
                 log.warning("Revocation fetch timed out for %s; checking without fetching", sig.field_name)
-                status, trusted = await _check_signature(
+                status, trusted, revocation_checked = await _check_signature(
                     sig, replace(settings, allow_fetching=False)
                 )
         except Exception as error:  # noqa: BLE001 - report, don't crash
@@ -614,6 +666,7 @@ async def validate_pdf_async(
                     "modificationLevel": None,
                     "notAfter": None,
                     "notBefore": None,
+                    "revocationChecked": False,
                     "serial": "",
                     "sha256Fingerprint": "",
                     "signerName": None,
@@ -645,6 +698,7 @@ async def validate_pdf_async(
                     if status.modification_level is not None
                     else None
                 ),
+                "revocationChecked": revocation_checked,
                 "signingTime": _iso(status.signer_reported_dt),
                 "timestamped": status.timestamp_validity is not None,
                 "trusted": trusted,

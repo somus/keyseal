@@ -193,7 +193,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             remote_sign.algorithms(cert)
         except remote_sign.RemoteSignError as error:
             raise HTTPException(400, str(error)) from error
-        return {"trusted": await certificate_trusted(cert, chain, validation)}
+        trusted, revocation_checked = await certificate_trusted(cert, chain, validation)
+        return {"revocationChecked": revocation_checked, "trusted": trusted}
 
     @app.post("/sign/start")
     async def sign_start(body: SignStartRequest) -> dict[str, str]:

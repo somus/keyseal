@@ -105,6 +105,8 @@ function fakeService() {
     /** Answers every call with this response when set. */
     answer: null as (() => Response) | null,
     untrusted: new Set<string>(),
+    /** /certificate says these were trusted without a revocation check. */
+    revocationUnchecked: new Set<string>(),
     /** Overrides the signature algorithm /sign/start names. */
     signatureAlgorithm: null as string | null,
     /** /sign/finish awaits `finishGate` only for this field, when set. */
@@ -133,6 +135,9 @@ function fakeService() {
       fake.calls.push({ body, path: input.pathname });
       if (input.pathname === "/certificate") {
         return Response.json({
+          revocationChecked: !fake.revocationUnchecked.has(
+            body.certificate as string
+          ),
           trusted: !fake.untrusted.has(body.certificate as string),
         });
       }
@@ -440,6 +445,7 @@ describe("sign flow", () => {
       key: { bits: 2048, type: "rsa" },
       notAfter: new Date("2036-01-01T00:00:00Z"),
       notBefore: new Date("2026-01-01T00:00:00Z"),
+      revocationChecked: true,
       sha256: expected,
       subjectCommonName: "Test Signer rsa",
     });
@@ -989,6 +995,7 @@ describe("enrol flow", () => {
     expect(t.completed[0]?.result).toMatchObject({
       certificate: {
         key: { curve: "P-384", type: "ec" },
+        revocationChecked: true,
         sha256: sha256(CERTS.p384),
       },
       kind: "enrol",
@@ -1371,6 +1378,33 @@ describe("status codes", () => {
     );
     t.advance(10 * 365 * 24 * 60 * 60 * 1000);
     expect(await refuse(CERTS.rsa)).toContain("not valid now");
+  });
+
+  test("checks the certificate again in round 2 and refuses it if no longer trusted", async () => {
+    const t = setup();
+    const unchecked = await t.preparedJob();
+    t.fake.revocationUnchecked.add(CERTS.rsa);
+    const accepted = await t.post(unchecked.token, "signature", {
+      claimNonce: unchecked.claimNonce,
+      signatures: [GOOD_SIGNATURE],
+    });
+    expect(accepted.status).toBe(200);
+    expect(t.completed[0]?.result.certificate.revocationChecked).toBe(false);
+
+    const revoked = await t.preparedJob();
+    t.fake.untrusted.add(CERTS.rsa);
+    const finishes = t.fake.calls.filter(
+      (call) => call.path === "/sign/finish"
+    ).length;
+    const refused = await t.post(revoked.token, "signature", {
+      claimNonce: revoked.claimNonce,
+      signatures: [GOOD_SIGNATURE],
+    });
+    expect(refused.status).toBe(422);
+    expect((await t.keyseal.status(revoked.id))?.message).toContain("trusted");
+    expect(
+      t.fake.calls.filter((call) => call.path === "/sign/finish").length
+    ).toBe(finishes);
   });
 
   test("422 for a refused signature fails the job", async () => {

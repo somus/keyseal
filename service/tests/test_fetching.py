@@ -141,7 +141,7 @@ def test_an_issuer_url_cannot_reach_loopback(
     pki: Pki, network: dict[str, Any], allow_fetching: bool
 ) -> None:
     result = check_certificate(pki, "http://127.0.0.1/issuer", allow_fetching)
-    assert result == {"trusted": False}
+    assert result == {"revocationChecked": False, "trusted": False}
     assert network["requests"] == network["connected"] == []
 
 
@@ -174,7 +174,7 @@ def test_a_public_redirect_cannot_reach_an_internal_address(
 ) -> None:
     url = "https://ca.example/issuer"
     network["responses"][url] = (302, {"Location": destination}, b"")
-    assert check_certificate(pki, url) == {"trusted": False}
+    assert check_certificate(pki, url) == {"revocationChecked": False, "trusted": False}
     assert network["requests"] == [url]
     assert network["connected"] == [PUBLIC_IP]
 

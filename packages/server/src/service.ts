@@ -63,6 +63,8 @@ export interface ValidatedSignature {
   fieldName: string;
   intact: boolean;
   trusted: boolean;
+  /** Whether revocation data for the signer's path checked out; see `CertificateFacts.revocationChecked`. */
+  revocationChecked: boolean;
   coversWholeRevision: boolean;
   timestamped: boolean;
   sha256Fingerprint: string;
@@ -186,13 +188,19 @@ export class ServiceClient {
     return parsed as Record<string, unknown>;
   }
 
-  /** Whether the certificate chains to a configured root and may sign. */
+  /**
+   * Whether the certificate chains to a configured root and may sign, and
+   * whether its revocation status was checked.
+   */
   async certificate(input: {
     certificate: string;
     chain: string[];
-  }): Promise<{ trusted: boolean }> {
+  }): Promise<{ trusted: boolean; revocationChecked: boolean }> {
     const body = await this.#postJson("/certificate", input);
-    return { trusted: body.trusted === true };
+    return {
+      revocationChecked: body.revocationChecked === true,
+      trusted: body.trusted === true,
+    };
   }
 
   /** Adds empty signature fields to a PDF. */

@@ -187,24 +187,24 @@ class Pki:
             fixed_dt=at,
         )
 
-    def crl_revoking_signer(self, at: datetime) -> bytes:
-        """The root's CRL, issued now, listing the signer's certificate as revoked at `at`."""
+    def crl(self, signer_revoked_at: datetime | None = None) -> bytes:
+        """The root's CRL, issued now, listing the signer's certificate as
+        revoked at `signer_revoked_at`, or nothing without it."""
         now = datetime.now(UTC)
-        revoked = (
-            x509.RevokedCertificateBuilder()
-            .serial_number(self.signer_cert.serial_number)
-            .revocation_date(at)
-            .build()
-        )
         crl = (
             x509.CertificateRevocationListBuilder()
             .issuer_name(self.ca.subject)
             .last_update(now - timedelta(minutes=1))
             .next_update(now + timedelta(days=1))
-            .add_revoked_certificate(revoked)
-            .sign(self.ca_key, hashes.SHA256())
         )
-        return crl.public_bytes(serialization.Encoding.DER)
+        if signer_revoked_at is not None:
+            crl = crl.add_revoked_certificate(
+                x509.RevokedCertificateBuilder()
+                .serial_number(self.signer_cert.serial_number)
+                .revocation_date(signer_revoked_at)
+                .build()
+            )
+        return crl.sign(self.ca_key, hashes.SHA256()).public_bytes(serialization.Encoding.DER)
 
     @property
     def ca_asn1(self) -> asn1_x509.Certificate:

@@ -295,7 +295,10 @@ function checkPolicy(policy: unknown): CertificatePolicy {
  * the CA that signed it.
  */
 function satisfies(
-  facts: CertificateFacts,
+  facts: Pick<
+    CertificateFacts,
+    "policyOids" | "issuerCommonName" | "subjectOrganization"
+  >,
   policy: CertificatePolicy
 ): boolean {
   return (
@@ -741,7 +744,7 @@ export function createKeySeal(options: KeySealOptions): KeySeal {
   async function inspect(
     der: string,
     chain: string[]
-  ): Promise<CertificateFacts | string> {
+  ): Promise<Omit<CertificateFacts, "revocationChecked"> | string> {
     const bytes = fromBase64(der);
     const inspected = inspector.inspect(bytes);
     if (!inspected) {
@@ -785,11 +788,21 @@ export function createKeySeal(options: KeySealOptions): KeySeal {
     if (job.digestAlgorithm && digestFor(facts.key) !== job.digestAlgorithm) {
       return "The certificate's key does not match the digest this job announced.";
     }
-    const { trusted } = await service.certificate({ certificate: der, chain });
+    return await trustCertificate(facts);
+  }
+
+  /** The signing service's chain and revocation check, as both rounds ask it. */
+  async function trustCertificate(
+    facts: Omit<CertificateFacts, "revocationChecked">
+  ): Promise<CertificateFacts | string> {
+    const { trusted, revocationChecked } = await service.certificate({
+      certificate: facts.der,
+      chain: facts.chain,
+    });
     if (!trusted) {
       return "The certificate is not from a trusted certifying authority, or may not sign.";
     }
-    return facts;
+    return { ...facts, revocationChecked };
   }
 
   async function claim(job: Job, token: string): Promise<Response> {
@@ -923,13 +936,13 @@ export function createKeySeal(options: KeySealOptions): KeySeal {
     signatures: string[],
     lease: Date
   ): Promise<Response> {
-    const facts = await inspect(job.certificate ?? "", job.chain ?? []);
-    if (!job.stateKey || typeof facts === "string") {
+    const inspected = await inspect(job.certificate ?? "", job.chain ?? []);
+    if (!job.stateKey || typeof inspected === "string") {
       throw new Error(`The signing state of job ${job.id} is missing`);
     }
-    const certificate = fromBase64(facts.der);
-    const algorithm = schemeFor(facts.key, job.rsaPadding);
-    const digest = digestFor(facts.key);
+    const certificate = fromBase64(inspected.der);
+    const algorithm = schemeFor(inspected.key, job.rsaPadding);
+    const digest = digestFor(inspected.key);
     for (const [index, signature] of signatures.entries()) {
       const toSign = job.documents[index]?.toSign;
       if (!toSign) {
@@ -949,6 +962,12 @@ export function createKeySeal(options: KeySealOptions): KeySeal {
           "The signature doesn't match the certificate: was the right token used?"
         );
       }
+    }
+    // Again, for the facts the integrator gets: the round 1 answer isn't kept,
+    // and a revocation found since refuses the certificate now.
+    const facts = await trustCertificate(inspected);
+    if (typeof facts === "string") {
+      return await refuse(job, lease, facts);
     }
     // Read up front: a request that takes over the lease deletes them when it completes.
     const states: string[] = [];

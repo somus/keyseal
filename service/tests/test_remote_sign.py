@@ -6,6 +6,7 @@ import io
 import json
 import os
 from collections.abc import Callable
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
@@ -16,8 +17,10 @@ from pyhanko.pdf_utils.reader import PdfFileReader
 from fastapi.testclient import TestClient
 from pyhanko.sign import timestamps
 
+from keyseal_service import app as app_module
 from keyseal_service.prepare import FieldRequest, prepare_fields
 from keyseal_service.remote_sign import (
+    TIMESTAMP_MISMATCH,
     RemoteSignError,
     UnsupportedKeyError,
     finalize,
@@ -29,7 +32,7 @@ from keyseal_service.appearance import SignedByStamp, SignedByStampStyle, reason
 from keyseal_service.settings import Settings
 from keyseal_service.validate import ValidationSettings, validate_pdf
 
-from .conftest import AUTH, Pki, blank_pdf, client_for
+from .conftest import AUTH, Pki, blank_pdf, client_for, misstamping
 
 
 def b64(data: bytes) -> str:
@@ -179,6 +182,44 @@ def test_timestamped_signature_and_long_term_finalisation(pki: Pki) -> None:
     final = asyncio.run(finalize(signed, tsa, settings.context()))
     assert final.startswith(signed)
     assert validate_pdf(final, settings)["status"] == "valid"
+
+
+def test_a_signature_timestamp_is_embedded_and_valid(pki: Pki) -> None:
+    started = asyncio.run(begin(prepared(), "Signer_a", cert_b64(pki), [ca_b64(pki)]))
+    tsa = pki.timestamper(datetime.now(UTC))
+    signed = asyncio.run(finish(started.state, token_sign(pki, started.to_sign), tsa))
+    report = validate_pdf(signed, ValidationSettings(trust_roots=[pki.ca_asn1]))
+    assert report["status"] == "valid"
+    [sig] = report["signatures"]
+    assert sig["timestamped"] is True
+    assert sig["timestampValid"] is True
+
+
+def test_a_timestamp_for_another_digest_is_refused(
+    pki: Pki, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    started = asyncio.run(begin(prepared(), "Signer_a", cert_b64(pki), [ca_b64(pki)]))
+    tsa = misstamping(pki.timestamper(datetime.now(UTC)))
+    with pytest.raises(RemoteSignError, match=TIMESTAMP_MISMATCH):
+        asyncio.run(finish(started.state, token_sign(pki, started.to_sign), tsa))
+
+    monkeypatch.setattr(
+        app_module.timestamps,
+        "HTTPTimeStamper",
+        lambda _url: misstamping(pki.timestamper(datetime.now(UTC))),
+    )
+    client = client_for(ValidationSettings(trust_roots=[pki.ca_asn1]), "https://tsa.invalid")
+    body = _start_with(client, pki).json()
+    finished = client.post(
+        "/sign/finish",
+        headers=AUTH,
+        json={
+            "signature": b64(token_sign(pki, base64.b64decode(body["toSign"]))),
+            "state": body["state"],
+        },
+    )
+    assert finished.status_code == 422
+    assert finished.json() == {"detail": TIMESTAMP_MISMATCH}
 
 
 def test_api_signs_in_two_steps(pki: Pki) -> None:

@@ -7,11 +7,11 @@ Every route except `GET /health`, plugin routes included, needs `Authorization: 
 | Route | Does |
 |---|---|
 | `GET /health` | Liveness and the number of trust roots loaded |
-| `POST /validate?base=<bytes>` | Validation report for a PDF body; `base` adds what changed since the copy the signer was given |
+| `POST /validate?base=<bytes>` | Validation report for a PDF body; `base` adds what changed since the copy the signer was given. Each signature's `timestampValid` is whether its signature timestamp is intact and matches the signature, `null` without one; a signature with an invalid timestamp makes the report `invalid` |
 | `POST /certificate` | Whether a certificate chains to a configured root and may sign (`trusted`), and whether its revocation status was checked (`revocationChecked`) |
 | `POST /prepare` | Adds empty signature fields as one incremental update |
 | `POST /sign/start` | Reserves the signature and returns `toSign`, `digestAlgorithm` (`sha256` or `sha384`), `signatureAlgorithm` (`rsa-pkcs1-v1_5`, `rsa-pss` or `ecdsa`) and an opaque `state`; optional `stampStyle`, `rsaPadding` (`pkcs1` or `pss`), `reason`, `location` and `contactInfo` |
-| `POST /sign/finish` | Builds the CMS around the token's signature and returns the signed PDF (PAdES B-T) |
+| `POST /sign/finish` | Builds the CMS around the token's signature and returns the signed PDF (PAdES B-T); a 422 when the TSA's token doesn't stamp the digest of that signature |
 | `POST /finalize` | Revocation data for every signature and a document timestamp (PAdES B-LTA) |
 | `POST /retimestamp` | Another document timestamp before the last one's certificate expires |
 

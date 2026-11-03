@@ -32,6 +32,8 @@ from pyhanko.sign import fields, signers, timestamps
 from pyhanko.sign.signers.pdf_byterange import PreparedByteRangeDigest
 from pyhanko.sign.signers.pdf_signer import PdfTBSDocument
 from pyhanko.sign.validation import async_add_validation_info
+from pyhanko.sign.validation.errors import TSTDigestNotAvailableError
+from pyhanko.sign.validation.generic_cms import extract_tst_data_iter, message_imprint_checker
 from pyhanko_certvalidator import ValidationContext
 from pyhanko.stamp import BaseStampStyle
 from pyhanko_certvalidator.registry import SimpleCertificateStore
@@ -40,6 +42,9 @@ from pyhanko_certvalidator.registry import SimpleCertificateStore
 #: An Indian DSC chain with a TSA token already needs about 13 KB.
 BYTES_RESERVED = 65_536
 MD = "sha256"
+
+#: Why `finish` refuses a signature timestamp that stamps something else.
+TIMESTAMP_MISMATCH = "The timestamp authority's token doesn't match the signature"
 
 #: What the key that authenticates signing states is derived under.
 STATE_KEY_LABEL = b"keyseal-service sign state v1"
@@ -278,10 +283,30 @@ async def finish(
     signature_cms = await ext.async_sign_prescribed_attributes(
         digest_algorithm, signed_attrs=signed_attrs, timestamper=timestamper
     )
+    if timestamper is not None:
+        _check_timestamp_imprint(signature_cms["content"]["signer_infos"][0])
     await PdfTBSDocument.async_finish_signing(
         output, prepared_digest=prep, signature_cms=signature_cms
     )
     return output.getvalue()
+
+
+def _check_timestamp_imprint(signer_info: cms.SignerInfo) -> None:
+    """Refuses a signature timestamp whose message imprint isn't the digest
+    of the signature value. pyHanko checks the TSA's status and nonce when it
+    embeds the token but only logs a wrong imprint."""
+    expected = message_imprint_checker(signer_info)
+    tokens = list(extract_tst_data_iter(signer_info, signed=False))
+    if not tokens:
+        raise RemoteSignError(TIMESTAMP_MISMATCH)
+    for token in tokens:
+        imprint = token["encap_content_info"]["content"].parsed["message_imprint"]
+        try:
+            digest = expected(imprint["hash_algorithm"]["algorithm"].native)
+        except TSTDigestNotAvailableError as error:
+            raise RemoteSignError(TIMESTAMP_MISMATCH) from error
+        if not hmac.compare_digest(digest, imprint["hashed_message"].native):
+            raise RemoteSignError(TIMESTAMP_MISMATCH)
 
 
 def _verify_signature(

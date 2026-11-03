@@ -10,7 +10,8 @@ build provenance attestation. No `latest` tag is pushed.
 ## Steps
 
 1. Bump `version` in `service/pyproject.toml`, run `uv lock` in `service/`,
-   and merge the change in a pull request.
+   move the service's Unreleased entries in `CHANGELOG.md` under the new
+   version and date, and merge the change in a pull request.
 2. Tag the merge commit and push the tag:
 
    ```sh

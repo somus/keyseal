@@ -67,7 +67,7 @@ RSA PKCS#1 v1.5, RSA-PSS, ECDSA P-256 and ECDSA P-384. RSA-PSS uses MGF1 with th
 - Server origins must be HTTPS on a domain name. IP literals, `localhost` and private address ranges are refused, on every connection, which also blocks DNS rebinding. Cross-origin redirects are not followed.
 - For development and CI, `KEYSEAL_ALLOW_INSECURE_ORIGINS=1` in the helper's environment admits `http://localhost` and `http://127.0.0.1`. Those origins are never stored, so they prompt on every job, and the windows show an insecure-origin banner. Nothing else relaxes the origin rules.
 - Manifests may never name driver paths; choosing a module is the helper's decision alone.
-- HTTPS proxies are not supported, because the resolved-address check can't run through a proxy. The helper ignores proxy environment variables and `keyseal doctor` says so.
+- The job connection never uses a proxy, because the resolved-address check can't run through one. Update and catalogue downloads honour the usual proxy environment variables, since both are signature-checked, and `keyseal doctor` says which connections use the proxy.
 - The catalogue and the directory scan load modules only from system and vendor library directories. A path in the helper's own `config.json` may point anywhere, since writing that file is explicit consent. `/usr/local/lib` counts as a vendor directory on macOS because token installers write there.
 - Known limit: on macOS, admin users can write to `/Applications`, and Intel Homebrew makes `/usr/local` user-owned, so the directory rule is weaker there than on Linux and Windows. The helper does not check file ownership, because vendor installers vary.
 - SoftHSM is never in the default scan; CI and developers point `KEYSEAL_PKCS11_MODULE` at it.

@@ -37,6 +37,8 @@ bun run format:check
 bun run test
 ```
 
+The `node` job packs `@keyseal/server` and `@keyseal/browser`, installs the tarballs into an empty project and imports them under Node 22; `scripts/ci/node-smoke.sh` runs the same locally with Node 22 or later.
+
 Service:
 
 ```sh

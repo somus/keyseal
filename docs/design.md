@@ -41,7 +41,7 @@ A branded, origin-locked helper build is a parameterised build option, published
 
 A sign job carries 1 to 20 documents; one document is a list of one. A batch is all or nothing: a document that fails any check stops the job before the PIN, one signature that doesn't verify fails the job before anything is finished, and the integrator never receives part of a batch.
 
-Enrol, capturing a certificate without signing, is a single round: `GET` the job, then `POST` the certificate and chain. What the integrator stores from it is their policy.
+Enrol, capturing a certificate without signing, is a single round: `GET` the job, then `POST` the certificate and chain. What the integrator stores from it is their policy. Enrol has no proof of possession, so it shows which certificate the user submitted, not that they hold its key or are its subject; it is not identity verification.
 
 ### Job token and lifecycle
 
@@ -127,5 +127,5 @@ English only, with every string in one table (`helper/crates/keyseal-ui/src/stri
 
 ## TS packages
 
-- `@keyseal/server` is framework-neutral and runs anywhere `Request` and `Response` exist (Bun, Node 22+, Cloudflare Workers).
+- `@keyseal/server` is framework-neutral, written against `Request` and `Response`, and tested on Bun and Node 22+. Cloudflare Workers is untested and fits small documents at most, since a job's PDFs are held in memory several times over as bytes and base64 JSON, against an isolate's 128 MB.
 - `@keyseal/browser` has no runtime dependencies. It polls the integrator's status endpoint by default; server-sent events are optional.

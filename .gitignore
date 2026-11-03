@@ -35,3 +35,6 @@ build/
 
 # Reference server output
 examples/reference-server/out/
+
+# Copied from the repository root by the packages' prepack
+packages/*/LICENSE

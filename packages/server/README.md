@@ -1,6 +1,8 @@
 # @keyseal/server
 
-Server side of the KeySeal job protocol ([spec/protocol-v1.md](../../spec/protocol-v1.md)), written against the Fetch API `Request` and `Response`, so it runs on Bun, Node 22+ and Cloudflare Workers. It serves the manifest and the job endpoint the helper talks to, creates jobs, and calls the signing service in [`service/`](../../service). You supply an adapter for job storage, blobs and the completion callback.
+Server side of the KeySeal job protocol ([spec/protocol-v1.md](../../spec/protocol-v1.md)), written against the Fetch API `Request` and `Response`, and tested on Bun and Node 22+. Cloudflare Workers is untested and suits small documents at most: the server holds a job's PDFs in memory, as bytes and as base64 JSON, so a 25 MiB document needs several times its size, more than a Workers isolate's 128 MB. It serves the manifest and the job endpoint the helper talks to, creates jobs, and calls the signing service in [`service/`](../../service). You supply an adapter for job storage, blobs and the completion callback.
+
+The type declarations use `Uint8Array<ArrayBuffer>`, so type-checking against them needs TypeScript 5.7 or later.
 
 ## Use
 
@@ -60,7 +62,7 @@ const status = await keyseal.status(id); // { state, message?, kind, reference, 
 
 A batch is all or nothing. Round 1 prepares every document with the service and stores one state per document; if any fails, it keeps none. Round 2 verifies every signature over its document's SignedAttributes with the certificate's key (through `certificateInspector.verify`) before the service finishes any document, and one that doesn't verify fails the job with 422. It then asks the service again whether the certificate is trusted, failing the job with 422 if it no longer is. Every document is then finished in memory, and only when all are does `onCompleted` run, so a refusal, a service failure or a lease takeover mid-batch never hands over part of one.
 
-`createEnrolJob({ title, signer, expectedCertificateSha256?, certificatePolicy?, reference? })` captures a certificate without signing.
+`createEnrolJob({ title, signer, expectedCertificateSha256?, certificatePolicy?, reference? })` captures a certificate without signing. Enrolment has no proof of possession: the helper signs nothing, so the job accepts any certificate that passes the checks, including one copied out of a signed PDF someone published. That cannot produce a signature in the signer's name, since a sign job still needs the token's key, but an enrolled certificate shows only what the user chose to submit. Don't treat enrolment as identity verification or KYC; use it to learn which certificate to pass as `expectedCertificateSha256` to the user's later sign jobs.
 
 `createKeySeal` throws unless `origin` is a bare `https` origin whose host is a domain name, not an IP address or `localhost` (spec section 4). For development and CI, `allowInsecureOrigin: true` also accepts `http://localhost` and `http://127.0.0.1` on any port, the origins the helper allows under `KEYSEAL_ALLOW_INSECURE_ORIGINS=1`. `title`, `signer`, `branding.name` and failure messages are measured in Unicode code points.
 
@@ -84,12 +86,31 @@ interface Adapter {
 
 - `id` is the SHA-256 of the job token; the raw token is never stored, and the claim nonce is stored hashed too.
 - `transition` must be atomic: apply the patch only if the job's state and `leaseStartedAt` (compared by time) still equal `expected`. In SQL this is one `UPDATE ... WHERE id = ? AND state = ? AND lease_started_at IS NOT DISTINCT FROM ?`.
-- `expireOlderThan` runs when a job is created; it marks open jobs created before `cutoff` `expired` and returns them so their blobs are deleted. It must skip jobs whose `leaseStartedAt` is at or after `leaseCutoff`, since a request holding a live settle lease may still finish.
+- `leaseStartedAt` must keep millisecond precision. The server releases a lease by comparing against the `Date` it took the lease with, so a column that drops milliseconds, such as MySQL `DATETIME` without a fractional part, makes every settle's compare-and-swap fail and no job can finish. Use `DATETIME(3)`, Postgres `timestamptz`, or an integer of milliseconds.
+- `expireOlderThan` runs when a job is created; it marks open jobs (`pending`, `claimed`, `prepared`) created before `cutoff` `expired` and returns them so their blobs are deleted. It must skip jobs whose `leaseStartedAt` is at or after `leaseCutoff`, since a request holding a live settle lease may still finish. It must be one atomic update, such as `UPDATE ... SET state = 'expired' WHERE state IN (...) AND created_at < ? AND (lease_started_at IS NULL OR lease_started_at < ?) RETURNING ...`: reading the jobs first and then writing them lets a request take the lease in between and have its job expired under it, and lets two concurrent job creations return the same job. The server uses the returned jobs' `id`, `documents` and `stateKey`.
 - Blobs hold each document's PDF until round 1 (`<id>/pdf/<index>`), then the signing service's state for each document until the job ends (`<stateKey>/<index>`), one blob per document of up to about 35 MB, and about 330 MB for the largest job. A store with a smaller object limit still fits, since no blob holds more than one document.
 - `onCompleted` receives the signed PDFs as `result.pdfs`, in the order of `job.documents`, and the certificate facts (sign), or the certificate facts (enrol). `certificate.revocationChecked` is false when the signing service trusted the certificate without revocation data, as it does by default (see the service's README); decide whether to accept that. The PDFs of a batch arrive together, all of them or none, and round 2 holds them all in memory at once. It runs before the job is marked completed: if it throws, the job stays open and the helper can retry. Keep it idempotent on `job.id`, since a retry that takes over a lapsed settle lease may call it again. To refuse the result, for example a certificate not in the signer's name, throw `new JobRefused(message)`: the job fails with `message`, which the helper gets with a 422 and the page in `status`. Any other error answers 500 and leaves the job as it was.
 - `onFailed`, if set, receives the job and `{ message, reportedBy }` when the job fails: `reportedBy` is `helper` for a failure report and `server` for a refused certificate or signature, a `JobRefused`, or an outdated helper (426). Expiry does not call it. Like `onCompleted` it runs under the settle lease, before the job is marked failed, and may run again after a lease takeover; an error from it is logged and the job fails anyway.
 
 `createMemoryAdapter({ onCompleted, onFailed? })` keeps everything in process memory, for tests and the reference server.
+
+### Conformance suite
+
+`@keyseal/server/testing` checks an adapter against the invariants above: a job round-trips unchanged with its `Date` fields as `Date`s, `leaseStartedAt` keeps milliseconds, `transition` applies its patch only on a matching state and lease and lets exactly one of several concurrent callers win, `expireOlderThan` expires exactly the open, unleased jobs before the cutoff and stays atomic against concurrent expiry and lease takeover, and blobs round-trip, overwrite and delete. It has no test-framework dependency, so it runs under Bun, Node and vitest alike.
+
+```ts
+import { adapterConformanceChecks, runAdapterConformance } from "@keyseal/server/testing";
+
+// One test per check, with any runner that takes a name and an async function:
+for (const check of adapterConformanceChecks(() => createMyAdapter())) {
+  test(check.name, check.run);
+}
+
+// Or all in turn, throwing an AdapterConformanceError that names the first failed check:
+await runAdapterConformance(() => createMyAdapter());
+```
+
+`makeAdapter` is called once per check. The checks write jobs dated 2001 under random ids and blobs under those ids, and look only at what they wrote, so they never expire a live job; still, point them at a disposable store, since they leave their rows behind. The concurrency checks start their calls together with `Promise.all`, so they catch a read-then-write implementation but cannot prove an adapter atomic.
 
 ## Certificates
 
@@ -103,4 +124,7 @@ Certificates are parsed, and round 2's signatures verified, with `node:crypto` b
 bun test packages/server
 bun run --filter @keyseal/server build
 scripts/make-test-certificates.sh   # regenerates test/fixtures, with the RSA, P-256 and P-384 keys
+scripts/ci/node-smoke.sh            # packs both packages and imports them under Node
 ```
+
+The `@keyseal/source` export condition points at `src/`, which the reference server runs with `bun --conditions=@keyseal/source` and type-checks with `customConditions`, so it needs no build. The package publishes `src` beside `dist`, so the condition resolves for consumers too; without it they get `dist`.

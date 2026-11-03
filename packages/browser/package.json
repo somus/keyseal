@@ -17,7 +17,6 @@
   "sideEffects": false,
   "exports": {
     ".": {
-      "@keyseal/source": "./src/index.ts",
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     }
@@ -25,7 +24,8 @@
   "scripts": {
     "build": "rm -rf dist && tsc -p tsconfig.build.json",
     "check:types": "tsc --noEmit",
-    "test": "bun test"
+    "test": "bun test",
+    "prepack": "cp ../../LICENSE LICENSE"
   },
   "devDependencies": {
     "@types/bun": "1.4.4",

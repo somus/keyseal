@@ -32,7 +32,12 @@ from .fetching import public_fetch_session
 from .prepare import MAX_FIELDS, FieldRequest, PrepareError, prepare_fields
 from .request_guard import RequestGuard
 from .settings import Settings, TrustRootsError, WeakTokenError, check_token
-from .validate import ValidationSettings, certificate_trusted, validate_pdf_async
+from .validate import (
+    ValidationLimitError,
+    ValidationSettings,
+    certificate_trusted,
+    validate_pdf_async,
+)
 
 log = logging.getLogger(__name__)
 
@@ -187,7 +192,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         ),
     ) -> dict[str, object]:
         pdf = await _read_pdf(request)
-        return await _validating(lambda settings: validate_pdf_async(pdf, settings, base))
+        try:
+            return await _validating(lambda settings: validate_pdf_async(pdf, settings, base))
+        except ValidationLimitError as error:
+            raise HTTPException(422, str(error)) from error
 
     @app.post("/certificate")
     async def certificate(body: CertificateRequest) -> dict[str, bool]:

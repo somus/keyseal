@@ -3,6 +3,7 @@
 Those URLs come from the certificates being checked, so anyone who can send
 one picks them. Every request goes straight to a public address: no proxy,
 no environment settings, no cookies, and each redirect is checked again.
+Response bodies are capped too, so a responder can't fill the memory.
 """
 
 from __future__ import annotations
@@ -18,6 +19,41 @@ import aiohttp
 import certifi
 from aiohttp.abc import AbstractResolver, ResolveResult
 from aiohttp.resolver import DefaultResolver
+
+#: A CRL grows by a few dozen bytes per revoked certificate still unexpired,
+#: so this leaves room for a busy CA's while bounding memory and parse time.
+#: Issuer certificates come over GET too and are far smaller.
+MAX_CRL_BYTES = 8 * 1024 * 1024
+#: An OCSP response covers one certificate and is a few KB even with the
+#: responder's own certificate chain embedded.
+MAX_OCSP_RESPONSE_BYTES = 64 * 1024
+
+
+class ResponseTooLarge(aiohttp.ClientPayloadError):
+    pass
+
+
+class BoundedResponse(aiohttp.ClientResponse):
+    """Reads at most the cap for its request: OCSP is the only POST. The
+    count is of the decoded body, so a compressed one can't expand past it.
+    pyHanko's fetchers take this, like any other client error, as a failed
+    fetch, so the revocation data counts as unavailable."""
+
+    async def read(self) -> bytes:
+        if self._body is None:
+            limit = MAX_OCSP_RESPONSE_BYTES if self.method == "POST" else MAX_CRL_BYTES
+            too_large = ResponseTooLarge(f"Certificate fetch response over {limit} bytes")
+            if (self.content_length or 0) > limit:
+                self.close()
+                raise too_large
+            body = bytearray()
+            while chunk := await self.content.read(limit + 1 - len(body)):
+                body += chunk
+                if len(body) > limit:
+                    self.close()
+                    raise too_large
+            self._body = bytes(body)
+        return await super().read()
 
 
 def _require_public(address: str) -> None:
@@ -79,6 +115,7 @@ async def public_fetch_session() -> AsyncIterator[aiohttp.ClientSession]:
                 ssl=ssl.create_default_context(cafile=certifi.where()),
             ),
             middlewares=(_direct_http_only,),
+            response_class=BoundedResponse,
             trust_env=False,
             cookie_jar=aiohttp.DummyCookieJar(),
         ) as session:

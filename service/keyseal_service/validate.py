@@ -413,6 +413,16 @@ def _text_fields(reader: PdfFileReader) -> dict[str, str]:
 
 #: Deeper field trees than this count as malformed.
 MAX_FIELD_DEPTH = 64
+#: Signatures and document timestamps one validation checks. Each is checked
+#: against every revision after it, so the work grows with the square.
+MAX_SIGNATURES = 50
+#: Wall-clock time one validation may take, fetches included, under the
+#: 60-second request timeout `@keyseal/server` uses by default.
+VALIDATION_BUDGET_SECONDS = 45
+
+
+class ValidationLimitError(ValueError):
+    pass
 
 
 def _field_chain(widget: generic.DictionaryObject) -> list[generic.DictionaryObject]:
@@ -590,7 +600,24 @@ async def validate_pdf_async(
     """Validate every signature in a PDF; `status` sums them up. With
     `base_length`, `changesSinceBase` is the most the revisions appended to
     that many leading bytes (the copy a signer was given) change, and
-    `baseSignatureFields` names the signature fields that copy had."""
+    `baseSignatureFields` names the signature fields that copy had.
+
+    A PDF with more than MAX_SIGNATURES signatures, or a validation that runs
+    past VALIDATION_BUDGET_SECONDS, raises `ValidationLimitError`. The budget
+    stops the work at its next await, so a synchronous step already running
+    (parsing, pyHanko's diff analysis) finishes first."""
+    try:
+        async with asyncio.timeout(VALIDATION_BUDGET_SECONDS):
+            return await _validate_pdf(data, settings, base_length)
+    except TimeoutError as error:
+        raise ValidationLimitError(
+            f"Validation took longer than {VALIDATION_BUDGET_SECONDS} seconds"
+        ) from error
+
+
+async def _validate_pdf(
+    data: bytes, settings: ValidationSettings, base_length: int | None
+) -> dict[str, Any]:
     checked_at = datetime.now(UTC).isoformat()
     try:
         reader = PdfFileReader(io.BytesIO(data), strict=False)
@@ -605,6 +632,9 @@ async def validate_pdf_async(
             "status": "invalid",
             "textFields": {},
         }
+
+    if len(embedded) > MAX_SIGNATURES:
+        raise ValidationLimitError(f"More than {MAX_SIGNATURES} signatures")
 
     if not embedded:
         return {

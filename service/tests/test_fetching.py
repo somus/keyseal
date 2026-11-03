@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import gzip
 import socket
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -17,8 +18,9 @@ from cryptography.x509.oid import AuthorityInformationAccessOID
 from fastapi.testclient import TestClient
 from pyhanko_certvalidator.fetchers.aiohttp_fetchers import AIOHttpFetcherBackend
 
+from keyseal_service import fetching
 from keyseal_service.app import create_app
-from keyseal_service.fetching import public_fetch_session, public_socket
+from keyseal_service.fetching import ResponseTooLarge, public_fetch_session, public_socket
 from keyseal_service.settings import Settings
 from keyseal_service.validate import ValidationSettings
 
@@ -276,3 +278,58 @@ def test_the_socket_refuses_a_non_public_address(address: str) -> None:
     family = socket.AF_INET6 if ":" in address else socket.AF_INET
     with pytest.raises(OSError):
         public_socket((family, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", (address, 80)))
+
+
+@pytest.mark.parametrize("oversized", [False, True])
+def test_a_crl_past_the_cap_leaves_revocation_unchecked(
+    pki: Pki, network: dict[str, Any], monkeypatch: pytest.MonkeyPatch, oversized: bool
+) -> None:
+    crl = pki.crl()
+    network["responses"]["http://crl.invalid/test-root.crl"] = (200, {}, crl)
+    if oversized:
+        monkeypatch.setattr(fetching, "MAX_CRL_BYTES", len(crl) - 1)
+    validation = ValidationSettings(trust_roots=[pki.ca_asn1], allow_fetching=True)
+    app = create_app(Settings(token=TOKEN, tsa_url=None, validation=validation))
+    with TestClient(app) as client:
+        response = client.post(
+            "/certificate",
+            headers=AUTH,
+            json={
+                "certificate": base64.b64encode(
+                    pki.signer_cert.public_bytes(serialization.Encoding.DER)
+                ).decode()
+            },
+        )
+    assert response.json() == {"revocationChecked": not oversized, "trusted": True}
+    assert network["requests"] == ["http://crl.invalid/test-root.crl"]
+
+
+@pytest.mark.parametrize(
+    ("method", "cap"), [("GET", "MAX_CRL_BYTES"), ("POST", "MAX_OCSP_RESPONSE_BYTES")]
+)
+@pytest.mark.parametrize("encoding", ["identity", "gzip"])
+def test_a_body_is_capped_after_decoding(
+    network: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    method: str,
+    cap: str,
+    encoding: str,
+) -> None:
+    monkeypatch.setattr(fetching, cap, 1000)
+    encode = gzip.compress if encoding == "gzip" else bytes
+    for size in (1000, 1001):
+        network["responses"][f"http://ca.example/{size}"] = (
+            200,
+            {"Content-Encoding": encoding},
+            encode(b"\0" * size),
+        )
+
+    async def run() -> None:
+        async with public_fetch_session() as session:
+            async with session.request(method, "http://ca.example/1000") as response:
+                assert len(await response.read()) == 1000
+            async with session.request(method, "http://ca.example/1001") as response:
+                with pytest.raises(ResponseTooLarge):
+                    await response.read()
+
+    asyncio.run(run())

@@ -638,3 +638,39 @@ def test_a_validation_does_not_hold_up_other_requests(
         release.set()
         validating.join()
     assert released == [True]
+
+
+def test_a_pdf_with_too_many_signatures_is_refused(
+    pki: Pki, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    twice = sign(sign(blank_pdf(), pki, "Signer1"), pki, "Signer2")
+    monkeypatch.setattr(validate, "MAX_SIGNATURES", 2)
+    assert validate_pdf(twice, settings_with(pki))["status"] == "valid"
+    monkeypatch.setattr(validate, "MAX_SIGNATURES", 1)
+    with pytest.raises(validate.ValidationLimitError):
+        validate_pdf(twice, settings_with(pki))
+    with client_for(settings_with(pki)) as client:
+        response = client.post("/validate", content=twice, headers=AUTH)
+    assert response.status_code == 422
+    assert response.json() == {"detail": "More than 1 signatures"}
+
+
+def test_a_validation_past_its_budget_is_refused_and_stops(
+    pki: Pki, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stopped = threading.Event()
+
+    async def unanswered_fetch(*_: Any) -> Any:
+        try:
+            await asyncio.sleep(60)
+        finally:
+            stopped.set()
+
+    monkeypatch.setattr(validate, "_check_signature", unanswered_fetch)
+    monkeypatch.setattr(validate, "VALIDATION_BUDGET_SECONDS", 0.1)
+    with client_for(settings_with(pki)) as client:
+        response = client.post("/validate", content=sign(blank_pdf(), pki), headers=AUTH)
+    assert response.status_code == 422
+    assert response.json() == {"detail": "Validation took longer than 0.1 seconds"}
+    # The worker thread's loop cancelled the work rather than leaving it running.
+    assert stopped.is_set()

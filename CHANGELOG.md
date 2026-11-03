@@ -26,6 +26,26 @@ lines under the new version with the release date.
   same update every day. The update is left in the config directory with one
   notice per version, as on Linux, and update failures are written to
   `keyseal.log`.
+- `keyseal doctor` says which connections use a proxy: update and catalogue
+  downloads honour the proxy environment variables, and the job connection
+  never does.
+
+#### Security
+
+- The config directory is created with mode 0700 and the files in it with
+  0600 on macOS and Linux.
+- The certificate chain sent with a signature or enrolment holds only the
+  signing certificate's issuers, not every other certificate on the token.
+- More special-purpose address ranges are refused for site connections,
+  including IPv4 addresses embedded in IPv4-mapped, NAT64 and 6to4 IPv6
+  addresses.
+- On Windows, `reg.exe` is run from the system directory instead of being
+  looked up on `PATH`.
+
+#### Changed
+
+- The .deb recommends `desktop-file-utils`, so the `keyseal://` handler
+  registers on minimal systems.
 
 ### [0.1.3][helper-0.1.3] - 2026-10-27
 
@@ -72,6 +92,13 @@ lines under the new version with the release date.
 ## Signing service
 
 ### [Unreleased][service-unreleased]
+
+#### Security
+
+- Fetched CRLs are capped at 8 MiB and OCSP responses at 64 KiB; a larger
+  body counts as a failed fetch, so revocation is reported as unchecked.
+- `/validate` refuses a PDF with more than 50 signatures and stops after
+  45 seconds, with a 422 in both cases.
 
 ### [0.2.2][service-0.2.2] - 2026-11-03
 
@@ -130,6 +157,21 @@ lines under the new version with the release date.
 
 ### [Unreleased][server-unreleased]
 
+#### Added
+
+- `@keyseal/server/testing` exports `runAdapterConformance` and
+  `adapterConformanceChecks`, a framework-neutral suite to run against your
+  adapter.
+
+#### Changed
+
+- The package ships the repository's LICENSE and its `src`, so the
+  `@keyseal/source` export condition resolves for consumers.
+- The README documents the adapter contract (millisecond `leaseStartedAt`,
+  one atomic `expireOlderThan`), that enrolment has no proof of possession,
+  that the types need TypeScript 5.7 or later, and that Cloudflare Workers is
+  untested and suits small documents at most.
+
 ### [0.2.0][server-0.2.0] - 2026-10-27
 
 #### Added
@@ -157,6 +199,12 @@ lines under the new version with the release date.
 ## @keyseal/browser
 
 ### [Unreleased][browser-unreleased]
+
+#### Changed
+
+- The package ships the repository's LICENSE and its `src`, so the
+  `@keyseal/source` export condition resolves for consumers.
+- The README states that the types need TypeScript 4.7 or later.
 
 ### [0.1.2][browser-0.1.2] - 2026-11-03
 

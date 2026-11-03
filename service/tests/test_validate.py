@@ -18,7 +18,7 @@ from keyseal_service.app import MAX_BODY_BYTES
 from keyseal_service.fetching import public_fetch_session
 from keyseal_service.validate import ValidationSettings, load_trust_roots, validate_pdf
 
-from .conftest import AUTH, TOKEN, Pki, _asn1, blank_pdf, client_for, sign
+from .conftest import AUTH, TOKEN, Pki, _asn1, blank_pdf, client_for, misstamping, sign
 from .test_remote_sign import b64
 
 
@@ -54,6 +54,24 @@ def test_signed_pdf_is_valid_and_trusted(pki: Pki) -> None:
     assert signature["coversWholeRevision"] is True
     assert len(signature["sha256Fingerprint"]) == 64
     assert signature["fieldName"] == "Signature1"
+    assert signature["timestamped"] is False
+    assert signature["timestampValid"] is None
+
+
+def test_a_timestamp_for_another_digest_makes_the_signature_invalid(pki: Pki) -> None:
+    good = pki.timestamper(datetime.now(UTC))
+    [stamped] = validate_pdf(sign(blank_pdf(), pki, timestamper=good), settings_with(pki))[
+        "signatures"
+    ]
+    assert stamped["timestampValid"] is True
+
+    misstamped = sign(blank_pdf(), pki, timestamper=misstamping(pki.timestamper(datetime.now(UTC))))
+    report = validate_pdf(misstamped, settings_with(pki))
+    assert report["status"] == "invalid"
+    [signature] = report["signatures"]
+    assert signature["intact"] is True
+    assert signature["timestamped"] is True
+    assert signature["timestampValid"] is False
 
 
 def test_revocation_counts_as_checked_only_with_data_for_the_signer(
@@ -102,6 +120,7 @@ def test_a_revoked_signature_stays_trusted_only_with_a_timestamp_before_it(
     # The timestamp proves the signature was made before the revocation.
     [older] = validate_pdf(stamped, settings_with(pki))["signatures"]
     assert older["timestamped"] is True
+    assert older["timestampValid"] is True
     assert older["trusted"] is True
     assert older["revocationChecked"] is True
 

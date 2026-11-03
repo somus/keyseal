@@ -673,6 +673,7 @@ async def validate_pdf_async(
                     "signingTime": None,
                     "subject": "",
                     "timestamped": False,
+                    "timestampValid": None,
                     "trusted": False,
                     "error": type(error).__name__,
                 }
@@ -683,7 +684,9 @@ async def validate_pdf_async(
         )
         intact = bool(status.intact and status.valid)
         docmdp_ok = status.docmdp_ok is not False
-        if not (intact and covers and docmdp_ok):
+        ts = status.timestamp_validity
+        timestamp_valid = None if ts is None else bool(ts.intact and ts.valid)
+        if not (intact and covers and docmdp_ok and timestamp_valid is not False):
             all_good = False
         signatures.append(
             {
@@ -700,7 +703,8 @@ async def validate_pdf_async(
                 ),
                 "revocationChecked": revocation_checked,
                 "signingTime": _iso(status.signer_reported_dt),
-                "timestamped": status.timestamp_validity is not None,
+                "timestamped": ts is not None,
+                "timestampValid": timestamp_valid,
                 "trusted": trusted,
             }
         )

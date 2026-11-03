@@ -228,6 +228,17 @@ class Pki:
         return path
 
 
+def misstamping(stamper: timestamps.TimeStamper) -> timestamps.TimeStamper:
+    """`stamper`, made to stamp an all-zero digest instead of the one asked for."""
+    stamp = stamper.async_timestamp
+
+    async def wrong_digest(message_digest: bytes, md_algorithm: str):  # type: ignore[no-untyped-def]
+        return await stamp(bytes(len(message_digest)), md_algorithm)
+
+    stamper.async_timestamp = wrong_digest  # type: ignore[method-assign]
+    return stamper
+
+
 def blank_pdf() -> bytes:
     writer = PdfFileWriter()
     page = generic.DictionaryObject(

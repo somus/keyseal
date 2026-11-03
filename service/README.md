@@ -25,6 +25,8 @@ Supported keys: RSA (PKCS#1 v1.5 or PSS with MGF1 and a 32-byte salt, SHA-256) a
 
 Bodies are capped as they stream in, so a chunked body is held to the same limits as one with a `Content-Length`: 25 MB for the raw PDF that `/validate`, `/finalize` and `/retimestamp` take, and 60 MB plus 16 KB for a JSON body. A larger body is a 413, and a `Content-Length` that isn't a non-negative decimal number is a 400.
 
+`/validate` refuses a PDF with more than 50 signatures and document timestamps with a 422, and gives one validation 45 seconds, fetches included, before answering 422 too; that's under the 60-second request timeout `@keyseal/server` uses by default. The budget cancels the work at its next await, so a synchronous step already running, such as parsing or pyHanko's diff analysis of one signature, finishes on its worker thread first. The 25 MB and 50-signature caps bound how long that can be.
+
 ## Run
 
 ```bash
@@ -47,9 +49,11 @@ The service refuses to start, logging which rule failed and exiting 1, when the 
 | `SIGNING_ALLOW_FETCHING` | off | `true` lets validation fetch issuer certificates, OCSP and CRL data |
 | `TZ` | container's (UTC) | Time zone of the date in the built-in stamp, for example `Asia/Kolkata`; a zone name, since pyHanko refuses POSIX zones such as `IST-5:30` |
 
+The default TSA is plain HTTP, as DigiCert serves no HTTPS endpoint for it. `/sign/finish` refuses a token whose imprint isn't the digest of the signature, but someone on the network path could still answer with a correctly imprinted token from another TSA. That shows up only at validation, and only where the TSA's trust is checked: `timestampValid` says the timestamp is intact and matches, not who issued it, and a token from any TSA chaining to a system root is trusted. Point `SIGNING_TSA_URL` at an HTTPS TSA to close the gap.
+
 Revocation is checked soft-fail: a certificate whose CRL or OCSP data is missing or unreachable is still `trusted`. With fetching off, the default, no revocation data is fetched at all, so a revoked certificate is trusted unless a PDF carries the data that revokes it. `revocationChecked`, on `/certificate` and on each signature `/validate` reports, is true only when every certificate on the trusted path that names a CRL or OCSP responder had data that checked out; treat `trusted` without it as "chains to a configured root", not "not revoked".
 
-With `SIGNING_ALLOW_FETCHING=true`, the URLs fetched come from the certificates being checked, so the service only connects to public IP addresses, over direct HTTP or HTTPS: every DNS answer and the address actually connected to must be public, each redirect is checked again, and proxies, proxy environment variables and cookies are not used.
+With `SIGNING_ALLOW_FETCHING=true`, the URLs fetched come from the certificates being checked, so the service only connects to public IP addresses, over direct HTTP or HTTPS: every DNS answer and the address actually connected to must be public, each redirect is checked again, and proxies, proxy environment variables and cookies are not used. A response body past 8 MiB for a CRL or issuer certificate, or 64 KiB for an OCSP response, counted after decompression, is a failed fetch, so that data counts as unavailable and `revocationChecked` is false.
 
 Setting `SIGNING_TRUST_ROOTS_DIR` replaces both the bundled CCA India roots and the bundled intermediates, so put every root and intermediate the chains need in that directory. The service refuses to start when the directory holds no readable root.
 

@@ -129,15 +129,15 @@ the unsigned binaries you build in step 2.
    digest of it.
 6. Send `keyseal-update.json-<your name>.json` and
    `SHA256SUMS-<your name>.json` to whoever publishes. They combine the
-   entries and check them: the manifest with the helper's own verifier,
-   using a release build of the helper (the pinned keys are compiled in),
-   and `SHA256SUMS` with the same rule against the keys in the tagged
-   source (`verify-signatures.sh` needs OpenSSL 3):
+   entries and check both against the keys in the tagged source with
+   `verify-signatures.sh` (it needs OpenSSL 3). Don't run the draft's own
+   helper binary here, and never with a Bitwarden session in the
+   environment:
 
    ```sh
    jq -cs '{signatures: .}' keyseal-update.json-*.json > keyseal-update.json.sig
    jq -cs '{signatures: .}' SHA256SUMS-*.json > SHA256SUMS.sig
-   keyseal update verify draft/keyseal-update.json keyseal-update.json.sig
+   helper/packaging/verify-signatures.sh draft/keyseal-update.json keyseal-update.json.sig
    helper/packaging/verify-signatures.sh draft/SHA256SUMS SHA256SUMS.sig
    ```
 

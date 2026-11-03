@@ -115,7 +115,7 @@ English only, with every string in one table (`helper/crates/keyseal-ui/src/stri
 - Release manifests are signed offline with maintainers' Ed25519 keys, since cloud KMSs lack Ed25519. The keys are software keys in Bitwarden for now, moving to YubiKeys later (see [code-signing-policy.md](code-signing-policy.md#key-custody)).
 - A manifest carries N signatures, and the helper verifies a threshold over a pinned key set. The threshold is 1-of-N until a second maintainer exists.
 - The driver catalogue is signed by a separate single-maintainer key and hosted in the repository's GitHub releases.
-- Unsigned binaries are reproducible from a pinned toolchain and lockfile, with hashes recorded per release, and maintainers rebuild and compare before signing. See [releasing.md](releasing.md) and [code-signing-policy.md](code-signing-policy.md).
+- Unsigned binaries are reproducible from a pinned toolchain and lockfile, with hashes recorded per release, and before signing maintainers rebuild the Linux binary and compare the macOS and Windows assets with CI's unsigned builds. See [releasing.md](releasing.md) and [code-signing-policy.md](code-signing-policy.md).
 - The helper checks for updates at most daily with a 5 second budget, downloads in the background after a job and applies the update on the next launch. A server's minimum-version refusal still forces an update.
 
 ## Signing service

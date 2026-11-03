@@ -23,9 +23,9 @@
 #    what the tag holds.
 # 4. Signs both files with the release key in Bitwarden
 #    ($KEYSEAL_RELEASE_KEY, by default "KeySeal release key"), verifies the
-#    signatures with the draft's own helper and verify-signatures.sh, and,
-#    once you confirm, starts the publish run, which then waits for approval
-#    of the `release` environment.
+#    signatures with verify-signatures.sh, and, once you confirm, starts
+#    the publish run, which then waits for approval of the `release`
+#    environment.
 #
 # With a THRESHOLD above 1 each maintainer runs it with KEYSEAL_SIGN_ONLY=1
 # and sends their two .json entries; whoever publishes puts every entry in
@@ -93,7 +93,10 @@ unsigned_hash() { awk -v f="$1" '$2 == f { print $1 }' "$draft/SHA256SUMS-unsign
 
 # The release run that built the tagged commit: its unsigned binaries, not the
 # draft's own SHA256SUMS-unsigned, are what the draft's assets must hold.
-run="$(gh run list --repo "$repo" --workflow release.yml --event push --limit 20 \
+# Filtered by tag and commit on GitHub's side, so older runs can't push it
+# out of the page.
+run="$(gh run list --repo "$repo" --workflow release.yml --event push \
+  --branch "$tag" --commit "$commit" --status success \
   --json databaseId,headBranch,headSha,conclusion \
   --jq "map(select(.headBranch == \"$tag\" and .headSha == \"$commit\" and .conclusion == \"success\"))[0].databaseId")"
 [ -n "$run" ] && [ "$run" != null ] || fail "no successful release run for $tag at $commit"
@@ -202,7 +205,10 @@ fi
 step "Verifying the signatures with the pinned keys"
 jq -cs '{signatures: .}' "$work"/keyseal-update.json-*.json >"$work/keyseal-update.json.sig"
 jq -cs '{signatures: .}' "$work"/SHA256SUMS-*.json >"$work/SHA256SUMS.sig"
-"$app/Contents/MacOS/keyseal" update verify "$draft/keyseal-update.json" "$work/keyseal-update.json.sig"
+# Not with the draft's own helper: it is CI's build, and any process run as
+# you can read BW_SESSION from this script's environment (ps -E). The
+# publish run checks the manifest again with a helper built from the tag.
+"$src/helper/packaging/verify-signatures.sh" "$draft/keyseal-update.json" "$work/keyseal-update.json.sig"
 "$src/helper/packaging/verify-signatures.sh" "$draft/SHA256SUMS" "$work/SHA256SUMS.sig"
 
 step "Publishing"

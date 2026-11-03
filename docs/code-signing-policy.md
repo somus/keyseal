@@ -96,17 +96,34 @@ commit can't bring keys of its own. `helper-v*` tags are protected
 
 ## Before signing: reproducibility
 
-A maintainer signs a manifest and `SHA256SUMS` only after rebuilding the
-unsigned binaries from the tagged source with
-`helper/packaging/build-release.sh`, getting the same SHA-256 as the
-release's `SHA256SUMS-unsigned`, and checking that every asset holds those
-binaries (procedure in `helper/packaging/sign-manifest.md`). The macOS zip
-and disk image are signed and notarized and can't be rebuilt bit for bit,
-so for them the maintainer runs `helper/packaging/macos/compare-bundle.sh`,
-which requires the app's executables to equal the rebuilt ones once their
-code signatures are removed, and checks the Developer ID signature and
-notarization. When Windows signing starts, the SignPath request is
-submitted only after the same check passes for the unsigned exe.
+A maintainer signs a manifest and `SHA256SUMS` only after
+`helper/packaging/release.sh` passes on the draft. It requires the tagged
+commit to be on `main`, to pin `main`'s keys and to be the commit the
+release run built, and remakes `keyseal-update.json` and `SHA256SUMS` from
+the assets. Per platform it checks:
+
+- **Linux**: it rebuilds the binary from the tagged source with
+  `helper/packaging/build-release.sh` in the pinned container, requires the
+  same SHA-256 as `SHA256SUMS-unsigned`, and requires the tarball, deb and
+  AppImage to hold that binary. This is the only platform rebuilt
+  independently of CI, and `--skip-rebuild` skips it, leaving the Linux
+  binary and packages with no independent check.
+- **Windows**: not rebuilt. The update exe and the zip's `keyseal.exe`
+  must equal the unsigned exe the release run uploaded and its entry in
+  `SHA256SUMS-unsigned`, so they are checked against CI's build, not an
+  independent one.
+- **macOS**: not rebuilt. The release run's unsigned binaries must match
+  `SHA256SUMS-unsigned`, and `helper/packaging/macos/compare-bundle.sh`
+  requires the app's executables in the zip and disk image to equal them
+  once their code signatures are removed. It also checks the Developer ID
+  signature and notarization, or that the app is ad-hoc signed. As with
+  Windows, this is checked against CI's build.
+
+Anyone can rebuild macOS and Windows by hand with the toolchains `BUILDINFO`
+names and compare with `SHA256SUMS-unsigned` (`docs/releasing.md`,
+Reproducing a release), but signing doesn't wait for it. When Windows
+signing starts, the SignPath request is submitted only after the Windows
+check above passes for the unsigned exe.
 
 ## Revocation
 

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # The Debian package: /usr/bin/keyseal and a desktop entry that hands
-# keyseal:// links to it. dpkg's desktop-file-utils trigger refreshes the
-# handler cache, so no maintainer scripts are needed.
+# keyseal:// links to it. desktop-file-utils' dpkg trigger refreshes the
+# handler cache, so no maintainer scripts are needed; it is recommended,
+# since a minimal system may not have it.
 #
 #   helper/packaging/linux/build-deb.sh <linux binary> <out dir>
 set -euo pipefail
@@ -24,7 +25,7 @@ Version: $version
 Architecture: amd64
 Maintainer: KeySeal maintainers
 Depends: libc6 (>= 2.35)
-Recommends: p11-kit
+Recommends: p11-kit, desktop-file-utils
 Section: utils
 Priority: optional
 Description: KeySeal helper

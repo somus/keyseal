@@ -136,33 +136,65 @@ impl std::fmt::Display for Origin {
     }
 }
 
-/// Loopback, unspecified, private, CGNAT, link-local and ULA addresses,
-/// including IPv4-mapped IPv6 forms (section 4.2).
+/// Addresses that aren't public unicast (section 4.2): loopback,
+/// unspecified, private, CGNAT, link-local, ULA, documentation,
+/// benchmarking, protocol assignments, multicast and reserved ranges from
+/// the IANA special-purpose registries, and IPv6 forms that carry such an
+/// IPv4 address (IPv4-mapped, IPv4-compatible, NAT64 `64:ff9b::/96` and
+/// 6to4).
 pub fn is_private(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(ip) => is_private_v4(ip),
-        IpAddr::V6(ip) => {
-            if let Some(v4) = ip.to_ipv4_mapped() {
-                return is_private_v4(v4);
-            }
-            let first = ip.segments()[0];
-            ip == Ipv6Addr::UNSPECIFIED
-                || ip == Ipv6Addr::LOCALHOST
-                || first & 0xfe00 == 0xfc00
-                || first & 0xffc0 == 0xfe80
-        }
+        IpAddr::V6(ip) => is_private_v6(ip),
     }
 }
 
 fn is_private_v4(ip: Ipv4Addr) -> bool {
-    let [a, b, _, _] = ip.octets();
+    let [a, b, c, _] = ip.octets();
     a == 0
         || a == 10
         || a == 127
+        || a >= 224 // 224.0.0.0/4 multicast, 240.0.0.0/4 reserved and broadcast
         || (a == 100 && b & 0xc0 == 64)
         || (a == 169 && b == 254)
         || (a == 172 && b & 0xf0 == 16)
+        || (a == 192 && b == 0 && c == 0)
+        || (a == 192 && b == 0 && c == 2)
+        || (a == 192 && b == 88 && c == 99)
         || (a == 192 && b == 168)
+        || (a == 198 && b & 0xfe == 18)
+        || (a == 198 && b == 51 && c == 100)
+        || (a == 203 && b == 0 && c == 113)
+}
+
+fn is_private_v6(ip: Ipv6Addr) -> bool {
+    let s = ip.segments();
+    let embedded = |high: u16, low: u16| {
+        let [a, b] = high.to_be_bytes();
+        let [c, d] = low.to_be_bytes();
+        is_private_v4(Ipv4Addr::new(a, b, c, d))
+    };
+    match s {
+        // ::/96: unspecified, loopback and the deprecated IPv4-compatible form.
+        [0, 0, 0, 0, 0, 0, _, _] => true,
+        // ::ffff:0:0/96, IPv4-mapped.
+        [0, 0, 0, 0, 0, 0xffff, high, low] => embedded(high, low),
+        // 64:ff9b::/96, NAT64 with the well-known prefix.
+        [0x64, 0xff9b, 0, 0, 0, 0, high, low] => embedded(high, low),
+        // 64:ff9b:1::/48, NAT64 for local use.
+        [0x64, 0xff9b, 1, ..] => true,
+        // 100::/64, discard only.
+        [0x100, 0, 0, 0, ..] => true,
+        // 2001:2::/48 benchmarking, 2001:db8::/32 documentation.
+        [0x2001, 2, 0, ..] | [0x2001, 0xdb8, ..] => true,
+        // 2002::/16, 6to4, whose next 32 bits are an IPv4 address.
+        [0x2002, high, low, ..] => embedded(high, low),
+        // 3fff::/20 documentation, 5f00::/16 SRv6 SIDs.
+        [first, ..] if first & 0xfff0 == 0x3ff0 || first == 0x5f00 => true,
+        // fc00::/7 ULA, fe80::/10 link-local, fec0::/10 deprecated site-local,
+        // ff00::/8 multicast.
+        [first, ..] => first & 0xfe00 == 0xfc00 || first & 0xff80 == 0xfe80 || first >> 8 == 0xff,
+    }
 }
 
 #[derive(Debug)]
@@ -295,28 +327,70 @@ mod tests {
             "169.254.1.1",
             "172.16.0.1",
             "172.31.255.255",
+            "192.0.0.8",
+            "192.0.2.1",
+            "192.88.99.1",
             "192.168.1.1",
+            "198.18.0.1",
+            "198.19.255.255",
+            "198.51.100.1",
+            "203.0.113.1",
+            "224.0.0.1",
+            "239.255.255.255",
+            "240.0.0.1",
+            "255.255.255.255",
             "::",
             "::1",
+            "::10.0.0.1",
+            "::8.8.8.8",
+            "::ffff:10.0.0.1",
+            "::ffff:127.0.0.1",
+            "::ffff:100.64.0.1",
+            "64:ff9b::10.0.0.1",
+            "64:ff9b::127.0.0.1",
+            "64:ff9b::169.254.169.254",
+            "64:ff9b:1::1",
+            "100::1",
+            "2001:2::1",
+            "2001:db8::1",
+            "2002:0a00:0001::1",
+            "2002:c0a8:0101::1",
+            "3fff::1",
+            "5f00::1",
             "fc00::1",
             "fd12::1",
             "fe80::1",
             "febf::1",
-            "::ffff:10.0.0.1",
-            "::ffff:127.0.0.1",
+            "fec0::1",
+            "ff02::1",
         ] {
             assert!(is_private(ip.parse().unwrap()), "{ip}");
         }
         for ip in [
             "1.1.1.1",
+            "8.8.8.8",
             "100.63.255.255",
             "100.128.0.0",
             "172.15.255.255",
             "172.32.0.0",
-            "192.0.2.1",
-            "2001:db8::1",
-            "fec0::1",
+            "192.0.1.1",
+            "192.0.3.1",
+            "192.169.0.1",
+            "198.17.255.255",
+            "198.20.0.0",
+            "198.51.101.1",
+            "203.0.114.1",
+            "223.255.255.255",
             "::ffff:1.1.1.1",
+            "64:ff9b::1.1.1.1",
+            "64:ff9b:2::1",
+            "100:0:0:1::1",
+            "2001:3::1",
+            "2001:db9::1",
+            "2002:0808:0808::1",
+            "2606:4700:4700::1111",
+            "4000::1",
+            "5f01::1",
         ] {
             assert!(!is_private(ip.parse().unwrap()), "{ip}");
         }

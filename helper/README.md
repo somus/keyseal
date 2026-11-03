@@ -77,7 +77,7 @@ keyseal --version
 | `KEYSEAL_HEADLESS_TRUST_ORIGIN` | A headless run accepts a first contact only with this exact origin, for example `https://dash.example.org`; any other new origin is refused before any request |
 | `KEYSEAL_ALLOW_INSECURE_ORIGINS=1` | Development and CI: also allows `http://localhost` and `http://127.0.0.1` on any port. Such origins skip the private-address check, are never stored as trusted and are flagged as insecure in every prompt |
 | `KEYSEAL_PKCS11_MODULE` | Absolute path of the PKCS#11 module to load instead of the known drivers |
-| `KEYSEAL_CONFIG_DIR` | Replaces the config directory (the platform config directory's `keyseal`, e.g. `~/Library/Application Support/keyseal`), which holds `trust.json`, `preferences.json`, `manifests/` and `keyseal.log` |
+| `KEYSEAL_CONFIG_DIR` | Replaces the config directory (the platform config directory's `keyseal`, e.g. `~/Library/Application Support/keyseal`), which holds `trust.json`, `preferences.json`, `manifests/` and `keyseal.log`. On macOS and Linux the helper makes the directory readable only by the user (0700) and its data files 0600 |
 
 ## Windows and logging
 

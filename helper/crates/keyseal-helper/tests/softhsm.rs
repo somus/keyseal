@@ -438,13 +438,17 @@ fn init_token(dir: &Path, name: &str) -> String {
     conf
 }
 
-/// A self-signed certificate `name.der` and its key; an end-entity
-/// signing certificate unless `ca`.
+/// A certificate `name.der` and its key: with `ca` a self-signed CA,
+/// otherwise an end-entity signing certificate issued by `ca.der`.
 fn make_certificate(dir: &Path, name: &str, newkey: &[&str], ca: bool) {
     let extensions: &[&str] = if ca {
         &[]
     } else {
         &[
+            "-CA",
+            "ca.der",
+            "-CAkey",
+            "ca.pem",
             "-addext",
             "basicConstraints=critical,CA:FALSE",
             "-addext",
@@ -524,10 +528,12 @@ fn runs_jobs_on_softhsm() {
     std::fs::create_dir_all(&dir).unwrap();
     let setup = Setup { dir, module };
 
-    // "public": certificates readable before login, plus a CA certificate
-    // without a key. "private": the certificate is a private object.
+    // "public": certificates readable before login, plus the CA certificate
+    // that issued them, without a key. "private": the certificate is a
+    // private object.
     let public = init_token(&setup.dir, "public");
     let private = init_token(&setup.dir, "private");
+    make_certificate(&setup.dir, "ca", &["-newkey", "rsa:2048"], true);
     make_certificate(&setup.dir, "rsa", &["-newkey", "rsa:2048"], false);
     make_certificate(
         &setup.dir,
@@ -541,7 +547,6 @@ fn runs_jobs_on_softhsm() {
         &["-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-384"],
         false,
     );
-    make_certificate(&setup.dir, "ca", &["-newkey", "rsa:2048"], true);
     make_certificate(&setup.dir, "hidden", &["-newkey", "rsa:2048"], false);
     write_objects(&setup, &public, "rsa", "01", false, false);
     write_objects(&setup, &public, "p256", "02", false, false);
@@ -574,8 +579,8 @@ fn runs_jobs_on_softhsm() {
         );
         assert!(!log.contains("will be shown for confirmation"), "{log}");
         assert_eq!(posted.certificate.as_deref(), Some(&certificate[..]));
-        assert!(posted.chain.contains(&setup.read("ca.der")));
-        assert!(!posted.chain.contains(&certificate));
+        // Only the issuer, never the token's other signing certificates.
+        assert_eq!(posted.chain, [setup.read("ca.der")]);
         assert!(posted.failure.is_none());
         let signatures = posted.signatures.as_ref().unwrap();
         assert_eq!(signatures.len(), 1);
@@ -829,7 +834,7 @@ fn runs_jobs_on_softhsm() {
             .contains("The link asked for a Sign job")
     );
 
-    // Enrol logs in and posts the expected certificate with the rest as chain.
+    // Enrol logs in and posts the expected certificate with its issuer as chain.
     let enrol = Job {
         link_kind: "enrol",
         kind: "enrol",
@@ -840,7 +845,7 @@ fn runs_jobs_on_softhsm() {
     assert!(output.status.success(), "{}", stderr(&output));
     assert!(String::from_utf8_lossy(&output.stdout).contains("Certificate enrolled"));
     assert_eq!(posted.certificate.as_deref(), Some(&p256[..]));
-    assert_eq!(posted.chain.len(), 3);
+    assert_eq!(posted.chain, [setup.read("ca.der")]);
 
     // An untrusted origin gets no request at all.
     let (output, posted) = setup.run_job(

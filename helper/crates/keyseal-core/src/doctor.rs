@@ -315,7 +315,7 @@ fn write(facts: &Facts, lines: &mut Vec<String>) -> Result<Status, String> {
     }
     if !facts.proxies.is_empty() {
         lines.push(format!(
-            "Proxy: {} set, but the helper doesn't use proxies, since the address a server resolves to can't be checked through one",
+            "Proxy: {} set. Updates and the driver catalogue download through it; jobs connect to sites directly, never through a proxy, since the address a site resolves to can't be checked through one",
             facts.proxies.join(", ")
         ));
     }

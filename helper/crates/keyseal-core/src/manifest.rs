@@ -100,12 +100,12 @@ pub fn branding(origin: &Origin, cache_dir: &Path) -> Option<Branding> {
         .and_then(|icon| get(&agent, icon.as_str(), MAX_ICON_BYTES, deadline).ok())
         .filter(|bytes| bytes.starts_with(PNG_SIGNATURE));
     // The cache is a convenience; failing to write it doesn't stop the job.
-    if std::fs::create_dir_all(cache_dir).is_ok()
+    if crate::create_private_dir(cache_dir).is_ok()
         && let Ok(bytes) = serde_json::to_vec(&manifest)
     {
-        let _ = std::fs::write(&manifest_path, bytes);
+        let _ = crate::write_private(&manifest_path, &bytes);
         let _ = match &icon {
-            Some(icon) => std::fs::write(&icon_path, icon),
+            Some(icon) => crate::write_private(&icon_path, icon),
             None => std::fs::remove_file(&icon_path),
         };
     }

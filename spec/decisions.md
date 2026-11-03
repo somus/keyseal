@@ -5,7 +5,7 @@ Details [docs/design.md](../docs/design.md) leaves open, settled with the simple
 - Decision: the job URL path is `<base>/v1/jobs/<token>` with an integrator-chosen `<base>`; endpoints append `/certificate`, `/signature`, `/failure` and `/documents/<index>` (3.2).
 - Decision: job URLs have no userinfo, query or fragment (3.2).
 - Decision: links are at most 2048 bytes, the path after the action may be empty or `/`, exactly one `job` parameter, other parameters ignored (3.3).
-- Decision: "private ranges" means the resolved address of every connection is checked against loopback, unspecified, RFC 1918, CGNAT, link-local and ULA ranges, which also blocks DNS rebinding (4.2).
+- Decision: "private ranges" means the resolved address of every connection is checked against the special-purpose ranges listed in 4.2 (loopback, unspecified, RFC 1918, CGNAT, link-local, ULA, documentation, benchmarking, multicast and reserved, including IPv4 embedded in mapped, NAT64 and 6to4 addresses), which also blocks DNS rebinding (4.2).
 - Decision: same-origin redirects may be followed, at most 5 per request (4.3).
 - Decision: hosts are compared and displayed in A-label (punycode) form (4.1, 12.1).
 - Decision: insecure development origins get the first-contact prompt on every job, since they are never stored (4.4).

@@ -39,10 +39,10 @@ impl Preferences {
     pub fn save(&self, config_dir: &Path) -> Result<(), String> {
         let path = Self::path(config_dir);
         let error = |e: std::io::Error| format!("Couldn't write {}: {e}", path.display());
-        std::fs::create_dir_all(config_dir).map_err(error)?;
+        crate::create_private_dir(config_dir).map_err(error)?;
         let bytes = serde_json::to_vec_pretty(self).map_err(|e| e.to_string())?;
         let temporary = path.with_extension("json.tmp");
-        std::fs::write(&temporary, bytes).map_err(error)?;
+        crate::write_private(&temporary, &bytes).map_err(error)?;
         std::fs::rename(&temporary, &path).map_err(error)
     }
 }

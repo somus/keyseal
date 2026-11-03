@@ -1,6 +1,6 @@
 # @keyseal/browser
 
-Browser-side helper for pages that start a KeySeal job. It opens the `keyseal://` link without leaving the page, watches the job through the integrator's own status endpoint (polling by default, SSE optional), and tells the page when no helper claimed the job within about five seconds so it can show the download link while the job stays open.
+Browser-side helper for pages that start a KeySeal job. It opens the `keyseal://` link without leaving the page, watches the job through the integrator's own status endpoint (polling by default, SSE optional), and tells the page when the helper hasn't picked up the job within about five seconds, so it can offer the download alongside the job's status while the job stays open.
 
 The package has no runtime dependencies. It does not create jobs or talk to the job endpoint; your backend does that (see [`@keyseal/server`](../server/)).
 
@@ -25,23 +25,27 @@ helperDownloadFor(userAgent: string): "macos" | "windows" | "linux" | "unsupport
 | `getStatus` | | `() => Promise<JobStatus>` that asks your backend for the job's state. Polled once at the start, then `intervalMs` after each answer. |
 | `eventSource` | | An `EventSource` that sends `state` events whose `data` is a `JobStatus` as JSON. Use instead of `getStatus`. The watcher closes it when it stops. |
 | `intervalMs` | `2000` | Delay between polls. |
-| `claimTimeoutMs` | `5000` | When to call `onNotClaimed` if the job is still `pending`. |
+| `claimTimeoutMs` | `5000` | How long the job may stay `pending` before `onNotClaimed` is called. |
 | `timeoutMs` | `900000` | Give up after this long (15 minutes, the job TTL). |
 | `signal` | | `AbortSignal` that stops watching. |
 | `onChange` | | Called with each new status. |
-| `onNotClaimed` | | Called once if no helper claimed the job by `claimTimeoutMs`. Watching continues, so a fresh install can still claim the job. |
+| `onNotClaimed` | | Called once if the helper hasn't picked up the job by `claimTimeoutMs`. Watching continues, and `onChange` still reports the claim when it comes. |
 
 `watchJob` resolves with the first `completed`, `failed` or `expired` status. It rejects with the abort reason on abort, with a `DOMException` named `TimeoutError` after `timeoutMs`, with any error `getStatus` throws, and with an `Error` if the event stream closes. Retry transient network errors inside `getStatus` if you want polling to survive them.
+
+`onNotClaimed` means the helper hasn't picked up the job yet, not that it isn't installed. An installed helper can take longer than `claimTimeoutMs`: the browser may ask whether to open KeySeal, and the first time a signer meets your site the helper asks them to trust its origin before it fetches the job (spec section 5), which they may take a while to read. So render a "Didn't open? Download the helper" link next to the job's status, never a screen that only offers the install, and hide the link once `onChange` reports a state other than `pending`.
 
 ## Plain JavaScript
 
 ```js
 import { helperDownloadFor, signWithHelper } from "@keyseal/browser";
 
+// Fixed names on the latest release (docs/integrating.md, section 5).
+const latest = "https://github.com/somus/keyseal/releases/latest/download";
 const downloads = {
-  macos: "https://example.org/keyseal/keyseal-helper.dmg",
-  windows: "https://example.org/keyseal/keyseal-helper.msi",
-  linux: "https://example.org/keyseal/keyseal-helper.AppImage",
+  macos: `${latest}/keyseal-macos-universal.dmg`,
+  windows: `${latest}/keyseal-windows-x64.zip`, // unzip and run install.cmd
+  linux: `${latest}/keyseal-linux-x64.AppImage`,
 };
 
 button.addEventListener("click", async () => {
@@ -50,12 +54,17 @@ button.addEventListener("click", async () => {
   const status = await signWithHelper({
     link,
     getStatus: () => fetch(`/api/sign/${jobId}`).then((r) => r.json()),
-    onChange: ({ state }) => (statusText.textContent = state),
+    onChange: ({ state }) => {
+      statusText.textContent = state;
+      // The helper has the job, so the fallback link is no longer needed.
+      if (state !== "pending") notOpened.hidden = true;
+    },
+    // The helper may still be open on its trust prompt, so keep the status visible.
     onNotClaimed: () => {
       const platform = helperDownloadFor(navigator.userAgent);
       if (platform !== "unsupported") {
         downloadLink.href = downloads[platform];
-        downloadLink.hidden = false;
+        notOpened.hidden = false; // "Didn't open? Download the helper", beside the status
       }
     },
   });
@@ -67,7 +76,7 @@ Chrome's gesture check counts from the click, so keep job creation quick or crea
 
 ## React
 
-The package ships no hook. This one starts a job, exposes the state and stops watching when the component unmounts.
+The package ships no hook. This one starts a job, exposes the state and stops watching when the component unmounts. Show the download link while `notClaimed` is true and `status` is still `pending` (or not yet known), next to the status rather than in place of it.
 
 ```tsx
 import { useEffect, useRef, useState } from "react";

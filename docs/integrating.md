@@ -131,11 +131,12 @@ import { helperDownloadFor, signWithHelper } from "@keyseal/browser";
 const status = await signWithHelper({
   link,
   getStatus: () => fetch(`/api/sign-jobs/${jobId}`).then((r) => r.json()),
-  onNotClaimed: () => showDownload(helperDownloadFor(navigator.userAgent)),
+  onChange: (status) => showStatus(status), // hide the download link once it isn't pending
+  onNotClaimed: () => showDidntOpen(helperDownloadFor(navigator.userAgent)),
 });
 ```
 
-Call it straight from the click handler, since browsers want a recent user gesture before opening an app. The link opens in a hidden iframe, so if your site sends a Content-Security-Policy, add `keyseal:` to `frame-src`. Otherwise browsers block the link silently and the helper never opens. When no helper claims the job within about five seconds, show the download link; the job stays open, so a fresh install can still pick it up. [packages/browser/README.md](../packages/browser/README.md) has the full options and a React example.
+Call it straight from the click handler, since browsers want a recent user gesture before opening an app. The link opens in a hidden iframe, so if your site sends a Content-Security-Policy, add `keyseal:` to `frame-src`. Otherwise browsers block the link silently and the helper never opens. `onNotClaimed` fires when the helper hasn't picked up the job within about five seconds. That doesn't mean it isn't installed: the browser may ask whether to open KeySeal, and the first time a signer meets your site the helper asks them to trust its origin before it fetches the job (spec section 5). So show a "Didn't open? Download the helper" link beside the job's status, never a screen that only offers the install, and hide the link once the status moves past `pending`. The job stays open, so a fresh install can still pick it up. [packages/browser/README.md](../packages/browser/README.md) has the full options and a React example.
 
 ## 5. Install the helper
 
@@ -157,6 +158,7 @@ If a signer's token isn't found, opening KeySeal on its own shows Settings, wher
 
 - Serve the job endpoint over HTTPS on a domain name. `allowInsecureOrigin` and the helper's `KEYSEAL_ALLOW_INSECURE_ORIGINS=1` are for development only.
 - If you send a Content-Security-Policy, allow `keyseal:` in `frame-src`. Development servers often send no CSP, so this only shows up in production.
+- Try a first contact with the helper installed: leave its trust prompt open past five seconds and check that the page keeps the job's status on screen next to the download link.
 - Keep the signing service off the public internet.
 - Pin `expectedCertificateSha256` on sign jobs, and set `certificatePolicy` where you can't pin yet.
 - Pass `rateLimit` to `createKeySeal` if the job endpoint isn't rate limited at your edge.

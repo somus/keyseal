@@ -95,6 +95,8 @@ lines under the new version with the release date.
 
 ### [Unreleased][service-unreleased]
 
+### [0.2.3][service-0.2.3] - 2026-11-04
+
 #### Security
 
 - Fetched CRLs are capped at 8 MiB and OCSP responses at 64 KiB; a larger
@@ -255,7 +257,8 @@ The catalogue is published as the `catalogue` release; its version is the
 [helper-0.1.2]: https://github.com/somus/keyseal/releases/tag/helper-v0.1.2
 [helper-0.1.1]: https://github.com/somus/keyseal/releases/tag/helper-v0.1.1
 [helper-0.1.0]: https://github.com/somus/keyseal/releases/tag/helper-v0.1.0
-[service-unreleased]: https://github.com/somus/keyseal/compare/service-v0.2.2...HEAD
+[service-unreleased]: https://github.com/somus/keyseal/compare/service-v0.2.3...HEAD
+[service-0.2.3]: https://github.com/somus/keyseal/compare/service-v0.2.2...service-v0.2.3
 [service-0.2.2]: https://github.com/somus/keyseal/compare/service-v0.2.1...service-v0.2.2
 [service-0.2.1]: https://github.com/somus/keyseal/compare/service-v0.2.0...service-v0.2.1
 [service-0.2.0]: https://github.com/somus/keyseal/compare/service-v0.1.1...service-v0.2.0

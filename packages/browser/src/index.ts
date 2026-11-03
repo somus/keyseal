@@ -26,11 +26,18 @@ export type JobSource =
 
 export type WatchOptions = JobSource & {
   intervalMs?: number;
+  /** How long the job may stay `pending` before `onNotClaimed` is called. Defaults to 5000. */
   claimTimeoutMs?: number;
   timeoutMs?: number;
   signal?: AbortSignal;
   onChange?: (status: JobStatus) => void;
-  /** Called once if the job is still pending after `claimTimeoutMs`. Watching continues. */
+  /**
+   * Called once if the job is still pending after `claimTimeoutMs`: the helper
+   * hasn't picked it up yet. It may still be installed and waiting on the
+   * browser's open prompt or its own first-contact trust prompt (spec section 5),
+   * so offer the download next to the job's status rather than instead of it.
+   * Watching continues, and `onChange` reports the claim if it comes later.
+   */
   onNotClaimed?: () => void;
 };
 

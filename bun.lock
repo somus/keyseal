@@ -21,7 +21,7 @@
     },
     "packages/browser": {
       "name": "@keyseal/browser",
-      "version": "0.1.2",
+      "version": "0.1.3",
       "devDependencies": {
         "@types/bun": "1.4.4",
         "typescript": "7.0.2",
@@ -29,7 +29,7 @@
     },
     "packages/server": {
       "name": "@keyseal/server",
-      "version": "0.2.0",
+      "version": "0.3.0",
     },
   },
   "packages": {

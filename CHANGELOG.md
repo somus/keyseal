@@ -166,6 +166,8 @@ lines under the new version with the release date.
 
 ### [Unreleased][server-unreleased]
 
+### [0.3.0][server-0.3.0] - 2026-11-04
+
 #### Added
 
 - `@keyseal/server/testing` exports `runAdapterConformance` and
@@ -208,6 +210,8 @@ lines under the new version with the release date.
 ## @keyseal/browser
 
 ### [Unreleased][browser-unreleased]
+
+### [0.1.3][browser-0.1.3] - 2026-11-04
 
 #### Changed
 
@@ -264,10 +268,12 @@ The catalogue is published as the `catalogue` release; its version is the
 [service-0.2.0]: https://github.com/somus/keyseal/compare/service-v0.1.1...service-v0.2.0
 [service-0.1.1]: https://github.com/somus/keyseal/compare/service-v0.1.0...service-v0.1.1
 [service-0.1.0]: https://github.com/somus/keyseal/tree/service-v0.1.0
-[server-unreleased]: https://github.com/somus/keyseal/compare/server-v0.2.0...HEAD
+[server-unreleased]: https://github.com/somus/keyseal/compare/server-v0.3.0...HEAD
+[server-0.3.0]: https://github.com/somus/keyseal/compare/server-v0.2.0...server-v0.3.0
 [server-0.2.0]: https://github.com/somus/keyseal/compare/server-v0.1.1...server-v0.2.0
 [server-0.1.1]: https://github.com/somus/keyseal/tree/server-v0.1.1
-[browser-unreleased]: https://github.com/somus/keyseal/compare/browser-v0.1.2...HEAD
+[browser-unreleased]: https://github.com/somus/keyseal/compare/browser-v0.1.3...HEAD
+[browser-0.1.3]: https://github.com/somus/keyseal/compare/browser-v0.1.2...browser-v0.1.3
 [browser-0.1.2]: https://github.com/somus/keyseal/compare/browser-v0.1.1...browser-v0.1.2
 [browser-0.1.1]: https://github.com/somus/keyseal/tree/browser-v0.1.1
 [catalogue-unreleased]: https://github.com/somus/keyseal/compare/catalogue...HEAD

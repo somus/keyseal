@@ -1,6 +1,6 @@
 # reference-server
 
-A minimal integrator backend: `@keyseal/server` with the in-memory adapter, wired to a running signing service. It serves a one-page UI that creates a sign job for one or more uploaded PDFs, opens the `keyseal://` link and polls the job, and it writes each signed PDF to `./out/<reference>-<index>.pdf`, the index 0-based in the job's order. The end-to-end CI drives it headless through the same endpoints.
+A minimal integrator backend: `@keyseal/server` with the in-memory adapter, wired to a running signing service. It serves a one-page UI that creates a sign job for one or more uploaded PDFs, then opens the `keyseal://` link and watches the job with `@keyseal/browser`'s `signWithHelper`, showing a "Didn't open? Download the helper" link beside the status while the job is still pending after five seconds, and it writes each signed PDF to `./out/<reference>-<index>.pdf`, the index 0-based in the job's order. The end-to-end CI drives it headless through the same endpoints.
 
 ## Run
 
@@ -27,6 +27,7 @@ Open `http://127.0.0.1:8787/`. A helper only accepts an `http://localhost` or `h
 
 ## Endpoints
 
+- `GET /` serves the page with a Content-Security-Policy whose `frame-src keyseal:` lets `@keyseal/browser` open the link in its hidden iframe, and `GET /client.js` serves the page's script, [src/client.ts](src/client.ts), which the server bundles with `Bun.build` at startup.
 - `POST /jobs` with `{ "documents": [{ "pdf": "<base64>", "title"?, "fieldName"?, "signatureDetails"?: { "reason"?, "location"?, "contactInfo"? } }], "title"?, "signer"?, "expectedCertificateSha256"?, "certificatePolicy"?, "rsaPadding"?: "pkcs1" | "pss" }` creates a sign job for 1 to 20 PDFs, signed together, and returns `{ id, link, jobUrl, reference }`. Every document needs a `title` when there are several. Without `fieldName`, the server adds an empty signature field on the last page of that PDF through the service's `/prepare`.
 - `POST /enrol-jobs` with `{ "title"?, "signer"?, "expectedCertificateSha256"?, "certificatePolicy"? }` creates an enrol job and returns the same shape.
 - `GET /jobs/<id>/status` returns `{ state, message?, kind, reference, expiresAt, outputs }`, where `outputs` lists the signed PDFs' paths in the job's order once the job is `completed`, and is null before.

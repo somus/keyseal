@@ -15,6 +15,7 @@
     "examples/reference-server": {
       "name": "@keyseal/reference-server",
       "dependencies": {
+        "@keyseal/browser": "workspace:*",
         "@keyseal/server": "workspace:*",
       },
     },

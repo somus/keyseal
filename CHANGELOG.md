@@ -46,6 +46,8 @@ lines under the new version with the release date.
 
 - The .deb recommends `desktop-file-utils`, so the `keyseal://` handler
   registers on minimal systems.
+- GPUI Kit 0.9.0 (GPUI snapshot gpui-pre 0.3.11) and ureq 3.5.1, with the
+  other dependencies at their latest compatible versions.
 
 ### [0.1.3][helper-0.1.3] - 2026-10-27
 
@@ -99,6 +101,11 @@ lines under the new version with the release date.
   body counts as a failed fetch, so revocation is reported as unchecked.
 - `/validate` refuses a PDF with more than 50 signatures and stops after
   45 seconds, with a 422 in both cases.
+
+#### Changed
+
+- The image's base layers are pinned by digest (python:3.15-slim and uv
+  0.13.7), and the locked dependencies are at their latest versions.
 
 ### [0.2.2][service-0.2.2] - 2026-11-03
 

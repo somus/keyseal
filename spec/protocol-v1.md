@@ -88,7 +88,7 @@ The helper MUST refuse a job URL whose host:
 
 - is an IPv4 or IPv6 literal;
 - is `localhost` or ends in `.localhost`;
-- resolves to an address in a loopback, unspecified, private or link-local range: `0.0.0.0/8`, `10.0.0.0/8`, `100.64.0.0/10`, `127.0.0.0/8`, `169.254.0.0/16`, `172.16.0.0/12`, `192.168.0.0/16`, `::/128`, `::1/128`, `fc00::/7`, `fe80::/10`, and IPv4-mapped IPv6 forms of the IPv4 ranges.
+- resolves to an address that is not public unicast, from the IANA special-purpose address registries: `0.0.0.0/8`, `10.0.0.0/8`, `100.64.0.0/10`, `127.0.0.0/8`, `169.254.0.0/16`, `172.16.0.0/12`, `192.0.0.0/24`, `192.0.2.0/24`, `192.88.99.0/24`, `192.168.0.0/16`, `198.18.0.0/15`, `198.51.100.0/24`, `203.0.113.0/24`, `224.0.0.0/4`, `240.0.0.0/4`, `::/96` (which holds `::/128`, `::1/128` and the deprecated IPv4-compatible form), `64:ff9b:1::/48`, `100::/64`, `2001:2::/48`, `2001:db8::/32`, `3fff::/20`, `5f00::/16`, `fc00::/7`, `fe80::/10`, `fec0::/10`, `ff00::/8`, and the IPv4-mapped (`::ffff:0:0/96`), NAT64 (`64:ff9b::/96`) and 6to4 (`2002::/16`) forms of the IPv4 ranges.
 
 The resolution check applies to the address of every connection the helper opens for the job, not only to the first lookup, so that a DNS answer that changes during the job cannot reach a private address.
 
@@ -259,7 +259,7 @@ Request, `CertificateSubmission`:
 { "claimNonce": "...", "certificate": "<base64 DER>", "chain": ["<base64 DER>"] }
 ```
 
-`certificate` is the chosen certificate, at most 16384 characters. `chain` holds the other certificates found on the token, at most 8 entries of at most 16384 characters each, in any order; it MAY be empty.
+`certificate` is the chosen certificate, at most 16384 characters. `chain` holds the certificates of the chosen certificate's issuer chain found on the token (its issuer, that issuer's issuer and so on), never the token's other certificates, at most 8 entries of at most 16384 characters each, in any order; it MAY be empty.
 
 The job MUST be `claimed`. The server MUST refuse the certificate with `422` unless it parses as an X.509 certificate, is valid at the time of the request, has a key supported by section 11, chains to a root the signing service trusts, if the job has an expected certificate has that SHA-256, if the job has a certificate policy satisfies it (section 8.2), and, if the job description carried `digestAlgorithm`, has a key whose digest under section 11 is that value. A refused certificate fails the job (section 8.8). For `issuerCommonNames` the server MAY read the CN from the certificate's issuer name rather than from the CA certificate on the path: a path to a trusted root links each certificate to its issuer by name and by signature (RFC 5280 section 6), so a certificate that passes the chain check names the CA that issued it. Otherwise the server asks the signing service to prepare a signature in every document with the certificate and chain, stores what it needs to finish each of them, moves the job to `prepared` and returns `200` with a `PreparedSignature`:
 

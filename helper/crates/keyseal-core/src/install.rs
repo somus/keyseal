@@ -14,7 +14,7 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-/// Runs the system tools registration needs (`reg`, `xdg-mime`); tests
+/// Runs the system tools registration needs (`reg.exe`, `xdg-mime`); tests
 /// record the calls instead.
 pub trait Host {
     fn run(&mut self, program: &str, args: &[&str]) -> Result<(), String>;
@@ -138,6 +138,14 @@ fn copy_binary(source: &Path, target: &Path) -> Result<(), String> {
 #[cfg(any(windows, test))]
 const WINDOWS_KEY: &str = r"HKCU\Software\Classes\keyseal";
 
+/// `reg.exe` in the system folder, `%SystemRoot%\System32`, so a `reg` on
+/// the `PATH` or in the current folder never runs instead.
+#[cfg(any(windows, test))]
+fn reg() -> String {
+    let root = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
+    format!(r"{root}\System32\reg.exe")
+}
+
 /// Installs to `local_app_data\keyseal\keyseal.exe` and registers it. The
 /// installed path.
 #[cfg(any(windows, test))]
@@ -153,21 +161,22 @@ fn install_windows(
     let _ = std::fs::remove_file(format!("{}:Zone.Identifier", target.display()));
     let command = format!("\"{}\" \"%1\"", target.display());
     let open = format!(r"{WINDOWS_KEY}\shell\open\command");
+    let reg = reg();
     host.run(
-        "reg",
+        &reg,
         &["add", WINDOWS_KEY, "/ve", "/d", "URL:keyseal", "/f"],
     )?;
     host.run(
-        "reg",
+        &reg,
         &["add", WINDOWS_KEY, "/v", "URL Protocol", "/d", "", "/f"],
     )?;
-    host.run("reg", &["add", &open, "/ve", "/d", &command, "/f"])?;
+    host.run(&reg, &["add", &open, "/ve", "/d", &command, "/f"])?;
     Ok(target)
 }
 
 #[cfg(any(windows, test))]
 fn uninstall_windows(local_app_data: &Path, host: &mut dyn Host) -> Result<(), String> {
-    host.run("reg", &["delete", WINDOWS_KEY, "/f"])?;
+    host.run(&reg(), &["delete", WINDOWS_KEY, "/f"])?;
     let dir = local_app_data.join("keyseal");
     if dir.exists() && std::fs::remove_dir_all(&dir).is_err() {
         // The running keyseal.exe can't be deleted.
@@ -358,13 +367,15 @@ mod tests {
         let target = install_windows(&source, &local, &mut host).unwrap();
         assert_eq!(target, local.join("keyseal").join("keyseal.exe"));
         assert_eq!(std::fs::read(&target).unwrap(), b"exe");
+        let reg = reg();
+        assert!(reg.ends_with(r"\System32\reg.exe"), "{reg}");
         assert_eq!(
             host.0,
             [
-                r"reg add|HKCU\Software\Classes\keyseal|/ve|/d|URL:keyseal|/f".to_string(),
-                r"reg add|HKCU\Software\Classes\keyseal|/v|URL Protocol|/d||/f".to_string(),
+                format!(r"{reg} add|HKCU\Software\Classes\keyseal|/ve|/d|URL:keyseal|/f"),
+                format!(r"{reg} add|HKCU\Software\Classes\keyseal|/v|URL Protocol|/d||/f"),
                 format!(
-                    r#"reg add|HKCU\Software\Classes\keyseal\shell\open\command|/ve|/d|"{}" "%1"|/f"#,
+                    r#"{reg} add|HKCU\Software\Classes\keyseal\shell\open\command|/ve|/d|"{}" "%1"|/f"#,
                     target.display()
                 ),
             ]
@@ -372,7 +383,10 @@ mod tests {
 
         let mut host = Recorder::default();
         uninstall_windows(&local, &mut host).unwrap();
-        assert_eq!(host.0, [r"reg delete|HKCU\Software\Classes\keyseal|/f"]);
+        assert_eq!(
+            host.0,
+            [format!(r"{reg} delete|HKCU\Software\Classes\keyseal|/f")]
+        );
         assert!(!local.join("keyseal").exists());
         let _ = std::fs::remove_dir_all(&local);
     }

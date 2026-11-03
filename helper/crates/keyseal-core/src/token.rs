@@ -63,6 +63,57 @@ pub fn is_signing_certificate(der: &[u8]) -> bool {
     !ca && non_repudiation
 }
 
+/// The certificates among `others` that form the issuer chain of `der`,
+/// its issuer first: each one's subject is the issuer name of the one
+/// before and, when both carry key identifiers, its subject key identifier
+/// is that one's authority key identifier. The chain ends at a self-issued
+/// certificate or where no issuer is among `others`, so the rest of a
+/// shared token's certificates are left out.
+pub fn issuers(der: &[u8], mut others: Vec<Vec<u8>>) -> Vec<Vec<u8>> {
+    use x509_parser::certificate::X509Certificate;
+    use x509_parser::extensions::ParsedExtension;
+
+    fn key_ids<'a>(certificate: &'a X509Certificate) -> (Option<&'a [u8]>, Option<&'a [u8]>) {
+        let (mut authority, mut subject) = (None, None);
+        for extension in certificate.iter_extensions() {
+            match extension.parsed_extension() {
+                ParsedExtension::AuthorityKeyIdentifier(aki) => {
+                    authority = aki.key_identifier.as_ref().map(|id| id.0);
+                }
+                ParsedExtension::SubjectKeyIdentifier(ski) => subject = Some(ski.0),
+                _ => {}
+            }
+        }
+        (authority, subject)
+    }
+
+    let mut chain = Vec::new();
+    let mut current = der.to_vec();
+    while let Ok((_, certificate)) = x509_parser::parse_x509_certificate(&current) {
+        let issuer = certificate.issuer().as_raw();
+        if certificate.subject().as_raw() == issuer {
+            break;
+        }
+        let (authority, _) = key_ids(&certificate);
+        let found = others.iter().position(|other| {
+            x509_parser::parse_x509_certificate(other).is_ok_and(|(_, candidate)| {
+                let (_, subject_key) = key_ids(&candidate);
+                candidate.subject().as_raw() == issuer
+                    && match (authority, subject_key) {
+                        (Some(authority), Some(subject_key)) => authority == subject_key,
+                        _ => true,
+                    }
+            })
+        });
+        let Some(index) = found else {
+            break;
+        };
+        current = others.swap_remove(index);
+        chain.push(current.clone());
+    }
+    chain
+}
+
 /// The certificate's subject, for display (section 12.1).
 pub fn subject(der: &[u8]) -> String {
     x509_parser::parse_x509_certificate(der)
@@ -404,5 +455,35 @@ mod tests {
         assert!(!is_signing_certificate(include_bytes!(
             "../tests/fixtures/no-key-usage.der"
         )));
+    }
+
+    // chain-*.der: a P-256 root, a sub CA it issued, a signer the sub CA
+    // issued, and an impostor self-signed CA with the sub CA's name and
+    // another key, made with `openssl x509 -req` and key identifiers.
+    const ROOT: &[u8] = include_bytes!("../tests/fixtures/chain-root.der");
+    const SUB: &[u8] = include_bytes!("../tests/fixtures/chain-sub.der");
+    const SIGNER: &[u8] = include_bytes!("../tests/fixtures/chain-signer.der");
+    const IMPOSTOR: &[u8] = include_bytes!("../tests/fixtures/chain-impostor.der");
+    const OTHER: &[u8] = include_bytes!("../tests/fixtures/non-repudiation.der");
+
+    #[test]
+    fn issuers_follow_the_chain_and_leave_the_rest_out() {
+        let others = [OTHER, ROOT, IMPOSTOR, SUB].map(<[u8]>::to_vec).to_vec();
+        assert_eq!(issuers(SIGNER, others), [SUB, ROOT]);
+    }
+
+    #[test]
+    fn issuers_need_the_issuer_on_the_token() {
+        let others = [OTHER, ROOT, IMPOSTOR].map(<[u8]>::to_vec).to_vec();
+        assert!(issuers(SIGNER, others).is_empty());
+        let others = [ROOT, SIGNER].map(<[u8]>::to_vec).to_vec();
+        assert_eq!(issuers(SUB, others), [ROOT]);
+    }
+
+    #[test]
+    fn a_self_signed_certificate_has_no_issuers() {
+        let others = [ROOT, SUB, SIGNER].map(<[u8]>::to_vec).to_vec();
+        assert!(issuers(OTHER, others.clone()).is_empty());
+        assert!(issuers(ROOT, others).is_empty());
     }
 }

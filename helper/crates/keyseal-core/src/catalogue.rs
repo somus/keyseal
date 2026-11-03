@@ -232,7 +232,7 @@ pub fn refresh() -> Option<Result<Catalogue, String>> {
     }
     let result = fetch(CATALOGUE_URL);
     if let Some(dir) = stamp.parent() {
-        let _ = std::fs::create_dir_all(dir).and_then(|()| std::fs::write(&stamp, b""));
+        let _ = crate::create_private_dir(dir).and_then(|()| crate::write_private(&stamp, b""));
     }
     Some(result)
 }
@@ -256,13 +256,13 @@ fn store(
         ));
     }
     let error = |e: std::io::Error| format!("Couldn't write {}: {e}", dir.display());
-    std::fs::create_dir_all(dir).map_err(error)?;
+    crate::create_private_dir(dir).map_err(error)?;
     for (name, bytes) in [
         ("catalogue.json", catalogue),
         ("catalogue.json.sig", signature),
     ] {
         let temporary = dir.join(format!("{name}.tmp"));
-        std::fs::write(&temporary, bytes).map_err(error)?;
+        crate::write_private(&temporary, bytes).map_err(error)?;
         std::fs::rename(&temporary, dir.join(name)).map_err(error)?;
     }
     Ok(verified)

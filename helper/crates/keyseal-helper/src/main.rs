@@ -183,13 +183,23 @@ fn write_log_file(message: &str) {
     };
     let path = dir.join("keyseal.log");
     let full = std::fs::metadata(&path).is_ok_and(|m| m.len() > MAX_LOG_BYTES);
-    let file = std::fs::create_dir_all(&dir).and_then(|_| {
-        std::fs::OpenOptions::new()
+    let file = keyseal_core::create_private_dir(&dir).and_then(|_| {
+        let mut options = std::fs::OpenOptions::new();
+        options
             .create(true)
             .append(!full)
             .write(true)
-            .truncate(full)
-            .open(&path)
+            .truncate(full);
+        // Readable only by the user, as everything in the config directory.
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+        let file = options.open(&path)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        }
+        Ok(file)
     });
     let seconds = SystemTime::now()
         .duration_since(UNIX_EPOCH)

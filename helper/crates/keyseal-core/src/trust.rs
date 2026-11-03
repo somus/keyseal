@@ -98,11 +98,11 @@ impl TrustStore {
     fn write(&self, file: &File) -> Result<(), String> {
         let error = |e: std::io::Error| format!("Couldn't write {}: {e}", self.path.display());
         if let Some(dir) = self.path.parent() {
-            std::fs::create_dir_all(dir).map_err(error)?;
+            crate::create_private_dir(dir).map_err(error)?;
         }
         let bytes = serde_json::to_vec_pretty(file).map_err(|e| e.to_string())?;
         let temporary = self.path.with_extension("json.tmp");
-        std::fs::write(&temporary, bytes).map_err(error)?;
+        crate::write_private(&temporary, &bytes).map_err(error)?;
         std::fs::rename(&temporary, &self.path).map_err(error)
     }
 }

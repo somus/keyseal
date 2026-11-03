@@ -615,14 +615,17 @@ fn choose(
     Ok(certificates.remove(index))
 }
 
-/// The other certificates on the token, for the server to build the chain.
+/// The chosen certificate's issuers among the other certificates on the
+/// token, for the server to build the chain; a shared token's other
+/// signers' certificates aren't sent.
 fn chain(token: &dyn TokenBackend, chosen: &TokenCertificate) -> Result<Vec<Vec<u8>>, String> {
-    Ok(token
+    let others = token
         .certificates(false)?
         .into_iter()
         .filter(|c| c.sha256 != chosen.sha256)
         .map(|c| c.der)
-        .collect())
+        .collect();
+    Ok(token::issuers(&chosen.der, others))
 }
 
 /// Section 8.4: every prepared PDF hashes to the messageDigest about to be

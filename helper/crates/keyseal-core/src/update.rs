@@ -237,7 +237,7 @@ fn read_stamp(stamp: &Path) -> (Option<u64>, String) {
 }
 
 fn write_stamp(stamp: &Path, checked: u64, noticed: &str) {
-    let _ = std::fs::write(stamp, format!("{checked}\n{noticed}\n"));
+    let _ = crate::write_private(stamp, format!("{checked}\n{noticed}\n").as_bytes());
 }
 
 fn fetch(agent: &Agent, url: &str, limit: u64, deadline: Instant) -> Result<Vec<u8>, String> {
@@ -319,10 +319,10 @@ fn check_and_stage(
     let temp = dir.with_extension(format!("tmp-{}", std::process::id()));
     let staged = (|| {
         let _ = std::fs::remove_dir_all(&temp);
-        std::fs::create_dir_all(&temp)?;
-        std::fs::write(temp.join(MANIFEST), &manifest)?;
-        std::fs::write(temp.join(SIGNATURES), &signatures)?;
-        std::fs::write(temp.join(&file.file), &asset)?;
+        crate::create_private_dir(&temp)?;
+        crate::write_private(&temp.join(MANIFEST), &manifest)?;
+        crate::write_private(&temp.join(SIGNATURES), &signatures)?;
+        crate::write_private(&temp.join(&file.file), &asset)?;
         let _ = std::fs::remove_dir_all(dir);
         std::fs::rename(&temp, dir)
     })();
@@ -460,7 +460,7 @@ fn install_binary(asset: &[u8], exe: &Path, version: &str, config: &Path) -> Res
 /// notice, for the log.
 fn keep(asset: &[u8], exe: &Path, version: &str, config: &Path) -> Result<String, String> {
     let keep = kept(config, version);
-    std::fs::write(&keep, asset)
+    crate::write_private(&keep, asset)
         .and_then(|()| make_executable(&keep))
         .map_err(|e| e.to_string())?;
     let notice = format!(
@@ -482,7 +482,7 @@ fn keep_bundle(
     config: &Path,
 ) -> Result<String, String> {
     let keep = kept(config, version);
-    std::fs::write(&keep, asset).map_err(|e| e.to_string())?;
+    crate::write_private(&keep, asset).map_err(|e| e.to_string())?;
     let folder = bundle.parent().unwrap_or(bundle);
     let notice = format!(
         "KeySeal {version} is downloaded to {}. Open it and move KeySeal to {}, replacing the one there, to update.",
@@ -632,7 +632,7 @@ pub fn check_now() -> Result<(), String> {
 fn check(forced: bool) -> Result<Option<String>, String> {
     let platform = PLATFORM.ok_or("There are no KeySeal updates for this platform.")?;
     let config = crate::config_dir()?;
-    std::fs::create_dir_all(&config).map_err(|e| e.to_string())?;
+    crate::create_private_dir(&config).map_err(|e| e.to_string())?;
     let stamp = config.join(STAMP);
     let now = SystemTime::now();
     if !forced && !check_due(&stamp, now) {

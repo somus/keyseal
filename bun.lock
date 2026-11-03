@@ -20,7 +20,7 @@
     },
     "packages/browser": {
       "name": "@keyseal/browser",
-      "version": "0.1.1",
+      "version": "0.1.2",
       "devDependencies": {
         "@types/bun": "1.4.4",
         "typescript": "7.0.2",

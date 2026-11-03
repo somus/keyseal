@@ -31,7 +31,7 @@ The helper never talks to the signing service, and the PIN never leaves the sign
 | Component | Path | What it is |
 | --- | --- | --- |
 | Helper | [`helper/`](helper/) | Rust desktop app for macOS, Windows and Linux, on GPUI Kit. Finds the token's driver, enforces the trust rules and signs. |
-| `@keyseal/server` | [`packages/server/`](packages/server/) | Fetch-API handlers for the manifest and job endpoint, and job creation. Runs on Bun, Node 22+ and Cloudflare Workers. |
+| `@keyseal/server` | [`packages/server/`](packages/server/) | Fetch-API handlers for the manifest and job endpoint, and job creation. Runs on Bun and Node 22+. |
 | `@keyseal/browser` | [`packages/browser/`](packages/browser/) | Opens the link, watches the job and tells the page when to offer the helper download. No dependencies. |
 | Signing service | [`service/`](service/) | pyHanko behind FastAPI in a Docker image: prepare, sign, validate, long-term validation data. |
 | Driver catalogue | [`catalogue/`](catalogue/) | Signed list of DSC token drivers by USB id and platform (HYP2003, ePass2003, ProxKey, SafeNet and others). |

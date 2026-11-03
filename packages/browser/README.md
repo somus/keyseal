@@ -4,6 +4,8 @@ Browser-side helper for pages that start a KeySeal job. It opens the `keyseal://
 
 The package has no runtime dependencies. It does not create jobs or talk to the job endpoint; your backend does that (see [`@keyseal/server`](../server/)).
 
+The type declarations need TypeScript 4.7 or later. They are found through `exports` only, so `moduleResolution` must be `node16` or `nodenext`, or `bundler` from TypeScript 5.0.
+
 ## API
 
 ```ts

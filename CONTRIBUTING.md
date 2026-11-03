@@ -18,6 +18,7 @@ Everyone taking part in the project is expected to follow the [code of conduct](
 - Keep a pull request to one change, and match the surrounding code's style and comment density.
 - Add focused tests where the change carries risk, in the component's existing test style.
 - The helper, the TypeScript packages, the signing service and the spec live in one repository so a protocol change lands in one pull request. A change to the wire format updates `spec/protocol-v1.md`, `spec/openapi.yaml` and every side of the protocol together.
+- A change users of a component would notice adds a line under that component's Unreleased heading in [CHANGELOG.md](CHANGELOG.md). The release pull request moves those lines under the new version.
 - Strings the helper shows live in `helper/crates/keyseal-ui/src/strings.rs`, in plain English, without jargon where a plain word works.
 
 ## Commits

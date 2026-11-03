@@ -9,7 +9,9 @@ publishes it with provenance.
 ## Steps
 
 1. Bump `version` in `packages/server/package.json` or
-   `packages/browser/package.json` in a pull request, and merge it.
+   `packages/browser/package.json`, move the package's Unreleased entries in
+   `CHANGELOG.md` under the new version and date, and merge the pull
+   request.
 2. Tag the merge commit and push the tag:
 
    ```sh

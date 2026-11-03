@@ -52,7 +52,8 @@ revocation are described in `docs/code-signing-policy.md`.
 ## Steps
 
 1. Set `version` in `helper/Cargo.toml` (`[workspace.package]`), update
-   `Cargo.lock` (`cargo check` in `helper/`), and merge.
+   `Cargo.lock` (`cargo check` in `helper/`), move the helper's Unreleased
+   entries in `CHANGELOG.md` under the new version and date, and merge.
 2. Tag the merge commit on `main` and push the tag. The tag must be
    `helper-v<version>` on a commit of `main`; the workflow fails otherwise.
 

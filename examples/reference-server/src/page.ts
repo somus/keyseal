@@ -1,4 +1,4 @@
-/** The one page: upload PDFs, open the keyseal:// link, watch the job. */
+/** The one page: upload PDFs, open the keyseal:// link, watch the job. Its script is client.ts. */
 export const page = `<!doctype html>
 <html lang="en">
 <head>
@@ -12,6 +12,7 @@ export const page = `<!doctype html>
   button { margin-top: 1.5rem; }
   #job { margin-top: 2rem; }
 </style>
+<script type="module" src="/client.js"></script>
 </head>
 <body>
 <h1>Sign PDFs</h1>
@@ -24,62 +25,9 @@ export const page = `<!doctype html>
 <div id="job" hidden>
   <p><a id="link">Open in the KeySeal helper</a></p>
   <p>State: <strong id="state">pending</strong></p>
+  <p id="not-opened" hidden>Didn't open? <a id="download">Download the helper</a></p>
   <p id="detail"></p>
 </div>
-<script>
-const form = document.getElementById("form");
-const show = (id, text) => { document.getElementById(id).textContent = text; };
-
-async function base64(file) {
-  const url = await new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result);
-    reader.onerror = () => reject(reader.error);
-    reader.readAsDataURL(file);
-  });
-  return url.slice(url.indexOf(",") + 1);
-}
-
-async function watch(id) {
-  for (;;) {
-    const response = await fetch("/jobs/" + id + "/status");
-    const status = await response.json();
-    show("state", status.state ?? "unknown");
-    if (status.message) show("detail", status.message);
-    if (status.outputs) show("detail", "Signed PDFs written to " + status.outputs.join(", "));
-    if (!["pending", "claimed", "prepared"].includes(status.state)) return;
-    await new Promise((resolve) => setTimeout(resolve, 1000));
-  }
-}
-
-form.addEventListener("submit", async (event) => {
-  event.preventDefault();
-  const data = new FormData(form);
-  const response = await fetch("/jobs", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      documents: await Promise.all(
-        data.getAll("pdf").map(async (file) => ({ pdf: await base64(file), title: file.name }))
-      ),
-      signer: data.get("signer"),
-      title: data.get("title"),
-    }),
-  });
-  const job = await response.json();
-  document.getElementById("job").hidden = false;
-  if (!response.ok) {
-    show("state", "not created");
-    show("detail", job.message);
-    return;
-  }
-  const link = document.getElementById("link");
-  link.href = job.link;
-  show("detail", job.link);
-  location.href = job.link;
-  watch(job.id);
-});
-</script>
 </body>
 </html>
 `;

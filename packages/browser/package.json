@@ -11,12 +11,14 @@
     "directory": "packages/browser"
   },
   "files": [
-    "dist"
+    "dist",
+    "src"
   ],
   "type": "module",
   "sideEffects": false,
   "exports": {
     ".": {
+      "@keyseal/source": "./src/index.ts",
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     }

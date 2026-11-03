@@ -19,6 +19,18 @@ function required(name: string): string {
   return value;
 }
 
+// The page's script and @keyseal/browser, bundled once at startup.
+const build = await Bun.build({
+  conditions: ["@keyseal/source"],
+  entrypoints: [`${import.meta.dir}/client.ts`],
+  target: "browser",
+});
+const client = await build.outputs[0]!.text();
+
+// @keyseal/browser opens the keyseal:// link in an iframe, so frame-src must allow it.
+const contentSecurityPolicy =
+  "default-src 'self'; style-src 'self' 'unsafe-inline'; frame-src keyseal:";
+
 const port = Number(process.env.PORT ?? "8787");
 const origin = process.env.KEYSEAL_ORIGIN ?? `http://localhost:${port}`;
 const outDir = "out";
@@ -206,7 +218,15 @@ const server = Bun.serve({
     const { pathname } = new URL(request.url);
     if (request.method === "GET" && pathname === "/") {
       return new Response(page, {
-        headers: { "Content-Type": "text/html; charset=utf-8" },
+        headers: {
+          "Content-Security-Policy": contentSecurityPolicy,
+          "Content-Type": "text/html; charset=utf-8",
+        },
+      });
+    }
+    if (request.method === "GET" && pathname === "/client.js") {
+      return new Response(client, {
+        headers: { "Content-Type": "text/javascript; charset=utf-8" },
       });
     }
     if (request.method === "POST" && pathname === "/jobs") {

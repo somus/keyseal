@@ -305,9 +305,13 @@ jobs:
         with:
           ref: ${{ inputs.tag }}
           fetch-depth: 0
-      # The keys that verify below come from this checkout.
+      # The keys that verify below come from this checkout, so the check is
+      # main's copy of the script, not the tag's.
       - name: The tag is on main and pins main's keys
-        run: helper/packaging/check-release-commit.sh
+        run: |
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          git show origin/main:helper/packaging/check-release-commit.sh >"$RUNNER_TEMP/check-release-commit.sh"
+          bash "$RUNNER_TEMP/check-release-commit.sh"
       # Building the helper needs GPUI's packages, as in checks.yml.
       - run: |
           sudo apt-get update

@@ -88,7 +88,7 @@ fn main() -> ExitCode {
 /// Runs the job with the newest helper: a staged update replaces this one
 /// first. The windows look for the next update after the job.
 fn run_updated(link: &str) -> ExitCode {
-    if let Some(code) = update::relaunch_if_staged(&["run", link]) {
+    if let Some(code) = update::relaunch_if_staged(&["run", link], log) {
         return code;
     }
     run(link)
@@ -143,7 +143,7 @@ fn launch(start: keyseal_ui::Start) -> ! {
         // A link from the open-URL event arrives here first, so a staged
         // update is installed now; `run_updated` has done it for the others.
         #[cfg(target_os = "macos")]
-        update::relaunch_if_staged(&["run", link]);
+        update::relaunch_if_staged(&["run", link], log);
         log("Job started.");
         let code = match run_flow(link, ui) {
             Ok(Outcome::Signed) => {

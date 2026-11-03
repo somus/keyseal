@@ -254,7 +254,9 @@ fn start_job(
         if let Some(Err(message)) = keyseal_core::catalogue::refresh() {
             log(&format!("Driver catalogue update failed: {message}"));
         }
-        keyseal_core::update::after_job();
+        if let Err(message) = keyseal_core::update::after_job() {
+            log(&format!("Update check failed: {message}"));
+        }
         let _ = events.unbounded_send(Event::Done(code));
     });
 }

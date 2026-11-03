@@ -296,6 +296,17 @@ fn check_and_stage(
     else {
         return Ok(None);
     };
+    // A build left for the user to install isn't downloaded again.
+    if let Some(left) = dir
+        .parent()
+        .map(|config| kept(config, &version))
+        .filter(|left| left.exists())
+    {
+        return Err(format!(
+            "KeySeal {version} is already downloaded to {}.",
+            left.display()
+        ));
+    }
     let asset = fetch(
         &agent,
         &format!("{base}/{}", file.file),
@@ -358,7 +369,7 @@ fn apply_staged(
             return Err(keep(&asset, exe, &version, config)?);
         }
         #[cfg(target_os = "macos")]
-        install_bundle(&asset, exe)?;
+        install_bundle(&asset, exe, &version, config)?;
         #[cfg(not(target_os = "macos"))]
         install_binary(&asset, exe, &version, config)?;
         Ok(Some(version))
@@ -368,9 +379,11 @@ fn apply_staged(
 }
 
 /// Replaces the app bundle around `exe` with the one in the zip `asset`,
-/// unpacked beside it so the swap is a rename on one volume.
+/// unpacked beside it so the swap is a rename on one volume. A bundle in a
+/// folder the user can't write (`/Applications` for a standard user), or
+/// one they can't move, stays, and the zip is [`keep_bundle`]t.
 #[cfg(target_os = "macos")]
-fn install_bundle(asset: &[u8], exe: &Path) -> Result<(), String> {
+fn install_bundle(asset: &[u8], exe: &Path, version: &str, config: &Path) -> Result<(), String> {
     let bundle = exe
         .ancestors()
         .nth(3)
@@ -379,9 +392,9 @@ fn install_bundle(asset: &[u8], exe: &Path) -> Result<(), String> {
     let folder = bundle.parent().ok_or("The app bundle has no folder.")?;
     let unpack = folder.join(format!(".keyseal-update-{}", std::process::id()));
     let result = (|| {
-        std::fs::create_dir(&unpack).map_err(|e| e.to_string())?;
+        std::fs::create_dir(&unpack)?;
         let zip = unpack.join("update.zip");
-        std::fs::write(&zip, asset).map_err(|e| e.to_string())?;
+        std::fs::write(&zip, asset)?;
         let unpacked = Command::new("/usr/bin/ditto")
             .args(["-x", "-k"])
             .arg(&zip)
@@ -390,18 +403,23 @@ fn install_bundle(asset: &[u8], exe: &Path) -> Result<(), String> {
             .is_ok_and(|status| status.success());
         let new = unpack.join(APP);
         if !unpacked || !new.join("Contents/MacOS/keyseal").is_file() {
-            return Err("The update didn't unpack.".to_string());
+            return Err(std::io::Error::other("The update didn't unpack."));
         }
         let old = unpack.join("previous.app");
-        std::fs::rename(bundle, &old).map_err(|e| e.to_string())?;
+        std::fs::rename(bundle, &old)?;
         if let Err(error) = std::fs::rename(&new, bundle) {
             let _ = std::fs::rename(&old, bundle);
-            return Err(error.to_string());
+            // The old bundle could be moved, so the folder is writable.
+            return Err(std::io::Error::other(error));
         }
         Ok(())
     })();
     let _ = std::fs::remove_dir_all(&unpack);
-    result.map_err(|e| format!("Couldn't replace {}: {e}", bundle.display()))
+    match result {
+        Ok(()) => Ok(()),
+        Err(error) if unwritable(&error) => Err(keep_bundle(asset, bundle, version, config)?),
+        Err(error) => Err(format!("Couldn't replace {}: {error}", bundle.display())),
+    }
 }
 
 /// Replaces the binary at `exe`. A running exe on Windows can be renamed
@@ -441,7 +459,7 @@ fn install_binary(asset: &[u8], exe: &Path, version: &str, config: &Path) -> Res
 /// with a [`take_notice`] saying so the first time for each version. The
 /// notice, for the log.
 fn keep(asset: &[u8], exe: &Path, version: &str, config: &Path) -> Result<String, String> {
-    let keep = config.join(format!("keyseal-{version}"));
+    let keep = kept(config, version);
     std::fs::write(&keep, asset)
         .and_then(|()| make_executable(&keep))
         .map_err(|e| e.to_string())?;
@@ -450,18 +468,54 @@ fn keep(asset: &[u8], exe: &Path, version: &str, config: &Path) -> Result<String
         keep.display(),
         exe.display()
     );
+    Ok(notice_once(config, version, notice))
+}
+
+/// Leaves the zip of the new app bundle in `config` for the user to move
+/// over `bundle`, with a [`take_notice`] as [`keep`] gives. The notice, for
+/// the log.
+#[cfg(target_os = "macos")]
+fn keep_bundle(
+    asset: &[u8],
+    bundle: &Path,
+    version: &str,
+    config: &Path,
+) -> Result<String, String> {
+    let keep = kept(config, version);
+    std::fs::write(&keep, asset).map_err(|e| e.to_string())?;
+    let folder = bundle.parent().unwrap_or(bundle);
+    let notice = format!(
+        "KeySeal {version} is downloaded to {}. Open it and move KeySeal to {}, replacing the one there, to update.",
+        keep.display(),
+        folder.display()
+    );
+    Ok(notice_once(config, version, notice))
+}
+
+/// Where a build left for the user to install is: the app bundle's zip on
+/// macOS, the binary elsewhere.
+fn kept(config: &Path, version: &str) -> PathBuf {
+    if cfg!(target_os = "macos") {
+        config.join(format!("KeySeal-{version}.zip"))
+    } else {
+        config.join(format!("keyseal-{version}"))
+    }
+}
+
+/// Gives `notice` to [`take_notice`] the first time for `version`, and
+/// returns it.
+fn notice_once(config: &Path, version: &str, notice: String) -> String {
     let stamp = config.join(STAMP);
     let (checked, noticed) = read_stamp(&stamp);
     if noticed != version {
         write_stamp(&stamp, checked.unwrap_or(0), version);
         *NOTICE.lock().unwrap_or_else(|e| e.into_inner()) = Some(notice.clone());
     }
-    Ok(notice)
+    notice
 }
 
 /// The folder of the helper is one the user can't write: owned by root, or
 /// on a read-only file system.
-#[cfg(any(not(target_os = "macos"), test))]
 fn unwritable(error: &std::io::Error) -> bool {
     matches!(
         error.kind(),
@@ -502,8 +556,9 @@ fn install_target(appimage: Option<PathBuf>) -> Option<(PathBuf, bool)> {
 }
 
 /// On launch: installs a staged release and runs it with `args`, returning
-/// its exit code. `None` means this helper carries on.
-pub fn relaunch_if_staged(args: &[&str]) -> Option<ExitCode> {
+/// its exit code. `None` means this helper carries on. `log` records why an
+/// update wasn't installed, where a helper without a terminal can show it.
+pub fn relaunch_if_staged(args: &[&str], log: fn(&str)) -> Option<ExitCode> {
     let (exe, replace) = install_target(std::env::var_os("APPIMAGE").map(PathBuf::from))?;
     if cfg!(windows) {
         let _ = std::fs::remove_file(exe.with_extension("old.exe"));
@@ -524,7 +579,7 @@ pub fn relaunch_if_staged(args: &[&str]) -> Option<ExitCode> {
     let version = match staged {
         Ok(version) => version?,
         Err(message) => {
-            eprintln!("The update wasn't installed: {message}");
+            log(&format!("The update wasn't installed: {message}"));
             return None;
         }
     };
@@ -534,7 +589,7 @@ pub fn relaunch_if_staged(args: &[&str]) -> Option<ExitCode> {
     {
         use std::os::unix::process::CommandExt;
         let error = command.exec();
-        eprintln!("Couldn't start KeySeal {version}: {error}");
+        log(&format!("Couldn't start KeySeal {version}: {error}"));
         None
     }
     #[cfg(not(unix))]
@@ -546,22 +601,21 @@ pub fn relaunch_if_staged(args: &[&str]) -> Option<ExitCode> {
                 .unwrap_or(1),
         )),
         Err(error) => {
-            eprintln!("Couldn't start KeySeal {version}: {error}");
+            log(&format!("Couldn't start KeySeal {version}: {error}"));
             None
         }
     }
 }
 
 /// After a job: stages a newer release when a check is due or was asked
-/// for. The GUI calls this on a background thread; headless runs skip it.
-pub fn after_job() {
+/// for, and says why that failed. The GUI calls this on a background
+/// thread; headless runs skip it.
+pub fn after_job() -> Result<(), String> {
     if PLATFORM.is_none() || std::env::var("KEYSEAL_HEADLESS").is_ok_and(|v| v == "1") {
-        return;
+        return Ok(());
     }
     let forced = CHECK_SOON.swap(false, Ordering::Relaxed);
-    if let Err(message) = check(forced) {
-        eprintln!("Update check failed: {message}");
-    }
+    check(forced).map(|_| ())
 }
 
 /// `keyseal update`: checks now.
@@ -626,6 +680,10 @@ mod tests {
     use super::*;
     use ed25519_dalek::{Signer, SigningKey};
     use serde_json::json;
+
+    /// Held by the tests that read [`take_notice`], which is process-wide.
+    #[cfg(unix)]
+    static NOTICES: Mutex<()> = Mutex::new(());
 
     const MANIFEST_BYTES: &[u8] = br#"{"format":1,"version":"1.4.0","platforms":{"macos-universal":{"file":"keyseal-helper-1.4.0-macos-universal.zip","sha256":"00"}}}"#;
 
@@ -851,6 +909,13 @@ mod tests {
         assert!(error.contains("doesn't match"), "{error}");
         let forged = host("1.1.0", &build, &stranger);
         assert!(check_and_stage(&forged, &dir, &keys, 1, "test-x64", "1.0.0").is_err());
+
+        // A build left for the user to install isn't downloaded again.
+        std::fs::remove_dir_all(&dir).unwrap();
+        std::fs::write(kept(dir.parent().unwrap(), "1.1.0"), &build).unwrap();
+        let error = check_and_stage(&base, &dir, &keys, 1, "test-x64", "1.0.0").unwrap_err();
+        assert!(error.contains("already downloaded"), "{error}");
+        assert!(!dir.exists());
         let _ = std::fs::remove_dir_all(dir.parent().unwrap());
     }
 
@@ -977,6 +1042,7 @@ mod tests {
     fn keeps_the_build_when_the_folder_is_unwritable() {
         use std::io::{Error, ErrorKind};
         use std::os::unix::fs::PermissionsExt;
+        let _notices = NOTICES.lock().unwrap_or_else(|e| e.into_inner());
         assert!(unwritable(&Error::from(ErrorKind::PermissionDenied)));
         assert!(unwritable(&Error::from(ErrorKind::ReadOnlyFilesystem)));
         assert!(!unwritable(&Error::from(ErrorKind::NotFound)));
@@ -995,7 +1061,7 @@ mod tests {
         std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o755)).unwrap();
         if !root_user {
             let error = result.unwrap_err();
-            let kept = config.join("keyseal-1.1.0");
+            let kept = kept(&config, "1.1.0");
             assert!(error.contains(&kept.display().to_string()), "{error}");
             assert_eq!(notice, Some(error));
             assert_eq!(std::fs::read(&kept).unwrap(), b"new build");
@@ -1014,10 +1080,7 @@ mod tests {
             apply_staged(&dir, &exe, false, &[public(&a)], 1, "test-x64", "1.0.0").unwrap_err();
         assert!(error.starts_with("KeySeal 1.1.0 is downloaded"), "{error}");
         assert_eq!(std::fs::read(&exe).unwrap(), b"old build");
-        assert_eq!(
-            std::fs::read(config.join("keyseal-1.1.0")).unwrap(),
-            b"new image"
-        );
+        assert_eq!(std::fs::read(kept(&config, "1.1.0")).unwrap(), b"new image");
         assert!(!dir.exists());
         assert_eq!(take_notice().is_some(), root_user);
         keep(b"newer build", &exe, "1.2.0", &config).unwrap();
@@ -1048,6 +1111,45 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// A bundle in a folder the user can't write (`/Applications` for a
+    /// standard user) stays: its zip is left in the config directory with
+    /// a notice saying where to move it, once per version.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn keeps_the_bundle_when_its_folder_is_unwritable() {
+        use std::os::unix::fs::PermissionsExt;
+        let _notices = NOTICES.lock().unwrap_or_else(|e| e.into_inner());
+        let a = signing_key(1);
+        let keys = [public(&a)];
+        let root = temp_dir("locked");
+        let config = root.join("config");
+        let dir = config.join(STAGED);
+        let (exe, asset) = installed(&root);
+        let hash = sha256_hex(&asset);
+        let folder = root.join("Applications");
+        std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let root_user = std::fs::write(folder.join("probe"), b"").is_ok();
+        stage(&dir, &asset, &hash, &a);
+        let result = apply_staged(&dir, &exe, true, &keys, 1, "test-x64", "1.0.0");
+        let notice = take_notice();
+        stage(&dir, &asset, &hash, &a);
+        let again = apply_staged(&dir, &exe, true, &keys, 1, "test-x64", "1.0.0");
+        std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o755)).unwrap();
+        if !root_user {
+            let error = result.unwrap_err();
+            let kept = config.join("KeySeal-1.1.0.zip");
+            assert!(error.contains(&kept.display().to_string()), "{error}");
+            assert!(error.contains(&folder.display().to_string()), "{error}");
+            assert_eq!(notice, Some(error));
+            assert_eq!(std::fs::read(&kept).unwrap(), asset);
+            assert_eq!(std::fs::read(&exe).unwrap(), b"old build");
+            assert!(!dir.exists());
+            assert!(again.is_err());
+            assert_eq!(take_notice(), None, "noticed once per version");
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// When the new bundle can't be moved into place, the old one goes back.
     #[cfg(target_os = "macos")]
     #[test]
@@ -1071,7 +1173,8 @@ mod tests {
             .unwrap();
         assert!(zipped.success());
 
-        let error = install_bundle(&std::fs::read(&zip).unwrap(), &exe).unwrap_err();
+        let error =
+            install_bundle(&std::fs::read(&zip).unwrap(), &exe, "1.1.0", &root).unwrap_err();
         assert!(error.starts_with("Couldn't replace"), "{error}");
         assert_eq!(std::fs::read(&exe).unwrap(), b"old build");
         let _ = Command::new("/bin/chmod")

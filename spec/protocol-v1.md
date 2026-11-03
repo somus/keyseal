@@ -30,7 +30,7 @@ There are four roles.
 - **Helper**: the desktop application registered for the `keyseal://` scheme. It reads certificates from the user's token, checks what it is asked to sign, asks for the PIN and signs. It talks only to the job origin.
 - **Signing service**: the pyHanko service that prepares and finishes PDF signatures. Only the integrator backend reaches it. The helper MUST NOT contact the signing service, and nothing the server sends to the helper MUST name the service's address or credentials.
 
-Informative: the browser page detects that the helper started by watching for the job to reach the `claimed` state through the integrator's own status endpoint. `@keyseal/browser` polls by default and can use SSE. If no claim arrives within about 5 seconds, the page shows the download link while the job stays open, so a fresh install can still claim it.
+Informative: the browser page detects that the helper started by watching for the job to reach the `claimed` state through the integrator's own status endpoint. `@keyseal/browser` polls by default and can use SSE. If no claim arrives within about 5 seconds, the page offers the download beside the job's status while the job stays open, so a fresh install can still claim it. The page never shows an install-only state: an installed helper may still be on its first-contact prompt, which comes before any network request to the origin (section 5).
 
 ## 3. The `keyseal://` link
 

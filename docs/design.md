@@ -47,7 +47,7 @@ Enrol, capturing a certificate without signing, is a single round: `GET` the job
 
 - The token is opaque and single use, and only its hash is stored.
 - Jobs live 15 minutes. Completing a job takes a 5 minute settle lease: the request handling a completion holds the job for at most 5 minutes, after which a repeated completion may take it over. The lease doesn't limit how long the helper may take within the job's lifetime.
-- The `claimed` state drives install detection: if no claim arrives within about 5 seconds, the page shows the download link while the job stays open, so a fresh install can still pick it up.
+- The `claimed` state drives install detection: if no claim arrives within about 5 seconds, the page offers the download beside the job's status while the job stays open, so a fresh install can still pick it up. It never switches to an install-only state, because an installed helper may still be on its first-contact prompt, which comes before any request to the origin.
 
 ### Versioning
 
@@ -106,7 +106,7 @@ English only, with every string in one table (`helper/crates/keyseal-ui/src/stri
 
 ### Platforms
 
-- macOS universal app, notarized.
+- macOS universal app, ad-hoc signed and not yet notarized; it moves to a notarized Developer ID signature once the project has a Developer ID (see [code-signing-policy.md](code-signing-policy.md)).
 - Windows x64, unsigned. SignPath Foundation declined the first application (October 2026); the project applies again once the helper has a record of use.
 - Linux tarball with an xdg handler, AppImage and deb, unsigned, using p11-kit.
 

@@ -1,12 +1,14 @@
 name: release
 
-# Helper releases, in two halves (docs/RELEASING.md):
+# Helper releases, in two halves (docs/releasing.md):
 #
 # 1. Pushing a helper-v* tag builds the unsigned binaries reproducibly,
-#    signs and notarizes the macOS app, and makes a draft release holding
-#    every asset, keyseal-update.json and the SHA-256 lists.
+#    signs the macOS app (ad-hoc until there is a Developer ID, then
+#    notarized), and makes a draft release holding every asset,
+#    keyseal-update.json and the SHA-256 lists.
 # 2. Maintainers rebuild, compare, and sign keyseal-update.json and SHA256SUMS
-#    offline on their YubiKeys (helper/packaging/sign-manifest.md). A manual
+#    offline with their release keys, software keys in Bitwarden for now
+#    (docs/code-signing-policy.md, helper/packaging/sign-manifest.md). A manual
 #    run with the combined signatures verifies them with the pinned keys and
 #    threshold, checks every asset against SHA256SUMS, then publishes the
 #    draft as the latest release.
@@ -108,7 +110,7 @@ jobs:
       # TODO(Windows signing): once a signing service accepts the project
       # (SignPath Foundation declined the first application), submit the
       # unsigned exe here, gated on the reproducibility check
-      # (docs/CODE_SIGNING_POLICY.md). The signed exe then replaces it in
+      # (docs/code-signing-policy.md). The signed exe then replaces it in
       # dist/ before the zip is made, and becomes the update asset.
       - name: Zip with install.cmd
         shell: pwsh
@@ -129,7 +131,7 @@ jobs:
     needs: check
     runs-on: ubuntu-24.04
     # By digest, so maintainers reproduce with the same image
-    # (docs/RELEASING.md).
+    # (docs/releasing.md).
     container: ubuntu:22.04@sha256:0a9887931b0e38af2e3487ed39e29436b0535c4f3f52e57745baaf79d1898956
     steps:
       # GPUI's Linux build dependencies, as in checks.yml, plus the

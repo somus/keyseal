@@ -9,35 +9,45 @@ maintainer, and a manual publish. The signing rules are in
 `docs/code-signing-policy.md`; the signing steps are in
 `helper/packaging/sign-manifest.md`.
 
-## Before the first release
+## Repository setup
 
-- Run `scripts/set-github-owner.sh <owner>` to put the repository's owner
-  in every repository URL that still names `OWNER` (the helper's `RELEASES` and
-  catalogue URLs, the package manifests), and replace the placeholder in
-  `RELEASE_KEYS` (`helper/crates/keyseal-core/src/update.rs`) and
-  `CATALOGUE_KEYS` (`catalogue.rs`) with the real public keys. The release
-  workflow refuses to run until they are real.
-- Create the `release-macos` environment (required reviewer: a maintainer)
-  with the secrets `APPLE_DEVELOPER_ID_P12` (base64 of the Developer ID
-  Application certificate and key), `APPLE_DEVELOPER_ID_P12_PASSWORD`,
-  `APPLE_API_KEY_P8` (the App Store Connect API key file's contents),
-  `APPLE_API_KEY_ID` and `APPLE_API_ISSUER`, and the variable
-  `APPLE_SIGNING_IDENTITY` ("Developer ID Application: Name (TEAMID)").
-  Without `APPLE_SIGNING_IDENTITY` the workflow ad-hoc signs the macOS app
-  and disk image instead of notarizing them, and Mac users approve the app
-  once in System Settings, Privacy & Security, Open Anyway.
-- Create the `release` environment with a maintainer as required reviewer.
-- Protect `main` (changes only through reviewed pull requests) and add a
-  tag ruleset for `helper-v*` (Settings, Rules, Rulesets, New tag ruleset,
-  target pattern `helper-v*`) that restricts creation, updates and
-  deletion to maintainers and blocks force pushes. The workflow also
+This is what the repository has in place for helper releases; check it
+here before changing any of it.
+
+- The release keys are pinned in `RELEASE_KEYS` with `THRESHOLD`
+  (`helper/crates/keyseal-core/src/update.rs`) and the catalogue keys in
+  `CATALOGUE_KEYS` (`catalogue.rs`). The fingerprints and custody rules are
+  in `docs/code-signing-policy.md`.
+- The `release` environment, with a maintainer as required reviewer, gates
+  the publish run.
+- The `release-macos` environment, with a maintainer as required reviewer,
+  holds the macOS signing secrets `APPLE_DEVELOPER_ID_P12` (base64 of the
+  Developer ID Application certificate and key),
+  `APPLE_DEVELOPER_ID_P12_PASSWORD`, `APPLE_API_KEY_P8` (the App Store
+  Connect API key file's contents), `APPLE_API_KEY_ID` and
+  `APPLE_API_ISSUER`, and the variable `APPLE_SIGNING_IDENTITY`
+  ("Developer ID Application: Name (TEAMID)"). Until the project has a
+  Developer ID, `APPLE_SIGNING_IDENTITY` is unset, so the workflow ad-hoc
+  signs the macOS app and disk image instead of notarizing them, and Mac
+  users approve the app once in System Settings, Privacy & Security, Open
+  Anyway.
+- A branch ruleset on `main` allows changes only through reviewed pull
+  requests.
+- A tag ruleset on `helper-v*` restricts creating, updating and deleting
+  release tags to maintainers and blocks force pushes. The workflow also
   refuses a tag whose commit isn't on `main` or whose `RELEASE_KEYS`,
   `THRESHOLD` or `CATALOGUE_KEYS` differ from `main`'s
   (`helper/packaging/check-release-commit.sh`), but the ruleset keeps
   anyone else from making or moving release tags at all.
-- Other releases in this repository (the driver catalogue, packages) must
-  be published with `--latest=false`: helpers fetch
+- Every other release in this repository (the driver catalogue, packages)
+  is published with `--latest=false`: helpers fetch
   `releases/latest/download/keyseal-update.json`.
+
+To replace a key, make the new one with `helper/packaging/new-key.sh`,
+change `RELEASE_KEYS` or `CATALOGUE_KEYS` in a reviewed pull request, and
+release a helper signed by the keys the installed helpers already trust.
+Helpers that install it trust the new key from then on. Rotation and
+revocation are described in `docs/code-signing-policy.md`.
 
 ## Steps
 

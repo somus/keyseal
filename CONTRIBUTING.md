@@ -2,6 +2,8 @@
 
 Thanks for your interest in KeySeal. Issues and pull requests are welcome in English.
 
+Everyone taking part in the project is expected to follow the [code of conduct](CODE_OF_CONDUCT.md).
+
 ## Before you start
 
 - For a bug, open an issue with the component, the version and, for helper or token problems, the output of `keyseal doctor`.

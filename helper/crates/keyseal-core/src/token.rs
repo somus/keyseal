@@ -275,13 +275,16 @@ fn c_sign(path: &Path) -> CK_C_Sign {
     // function list is read.
     unsafe {
         let library = cryptoki_sys::Pkcs11::new(path).ok()?;
-        let mut list = std::ptr::null_mut();
-        let rv = library.C_GetFunctionList(&mut list);
+        let mut list = std::mem::MaybeUninit::uninit();
+        let rv = library.C_GetFunctionList(list.as_mut_ptr());
         std::mem::forget(library);
-        if rv != CKR_OK || list.is_null() {
+        if rv != CKR_OK {
             return None;
         }
-        (*list).C_Sign
+        // The module's static function list, alive while the library stays
+        // loaded, which is for the rest of the process.
+        let list = std::ptr::NonNull::new(list.assume_init())?;
+        list.as_ref().C_Sign
     }
 }
 

@@ -51,7 +51,7 @@ From the system's certificate store the helper never asks for a PIN. A sign job 
 
 CNG signing has been checked on Windows 11 with a TPM virtual smart card through Edge, Chrome and Firefox, not yet with a vendor DSC token. The unit tests cover the filtering and the signature encoding against a fake store; Windows code type-checks from macOS or Linux with `cargo xwin clippy --target x86_64-pc-windows-msvc --all-targets` ([cargo-xwin](https://github.com/rust-cross/cargo-xwin) supplies the MSVC headers `ring` builds against).
 
-The macOS keychain path has not yet been checked with a real token. Its tests import RSA and P-256 identities into a throwaway keychain, treat their software keys as on a token, and check that PKCS#1 v1.5, PSS and ECDSA signatures made through the store verify; the token ID filter and the system's PIN dialog need a PIV card or YubiKey.
+The macOS keychain path is tested two ways. The unit tests import RSA and P-256 identities into a throwaway keychain, treat their software keys as on a token, and check that PKCS#1 v1.5, PSS and ECDSA signatures made through the store verify. The `macos-token` workflow puts a virtual PIV card in the runner (`scripts/ci/virtual-piv.sh`: PivApplet in jCardSim behind vsmartcard's vpcd reader), which macOS's own PIV driver exposes, and checks that the keychain search finds its certificate and counts its key as on a token. Signing with a real token, and the system's PIN dialog, have not been checked yet.
 
 `crates/keyseal-helper`, the `keyseal` binary:
 

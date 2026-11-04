@@ -308,6 +308,25 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// A token CryptoTokenKit exposes, as the virtual PIV card that
+    /// scripts/ci/virtual-piv.sh sets up in the macos-token workflow: its
+    /// signing certificate is found through the token access group and
+    /// counts as on a token. Signing would need the system's PIN dialog.
+    #[test]
+    #[ignore = "needs a token in the keychain"]
+    fn finds_a_token_in_the_keychain() {
+        let offered = Store::new(Keychain::tokens(), KeyUsage::NonRepudiation)
+            .certificates(false)
+            .unwrap();
+        let subjects: Vec<String> = offered.iter().map(|c| token::subject(&c.der)).collect();
+        assert!(
+            subjects
+                .iter()
+                .any(|s| s.contains("KeySeal Virtual PIV Signer")),
+            "offered: {subjects:?}"
+        );
+    }
+
     /// Software keys in a real keychain search aren't on a token, so the
     /// store offers nothing for them.
     #[test]

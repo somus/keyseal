@@ -29,7 +29,7 @@ Recommends: p11-kit, desktop-file-utils
 Section: utils
 Priority: optional
 Description: KeySeal helper
- Signs documents with a DSC token for websites that use KeySeal.
+ Signs documents with a token or smart card for websites that use KeySeal.
 CONTROL
 # dpkg-deb only clamps mtimes to SOURCE_DATE_EPOCH; set them outright.
 find "$root" -exec touch -h -d "@$SOURCE_DATE_EPOCH" {} +

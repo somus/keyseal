@@ -1,36 +1,21 @@
-import { constants, verify, X509Certificate } from "node:crypto";
+import { constants, createHash, verify, X509Certificate } from "node:crypto";
 
+import { type BrainpoolCurve, verifyBrainpool } from "./brainpool.js";
 import type {
   CertificateInspector,
   InspectedCertificate,
 } from "./certificates.js";
+import type { EcCurve, KeyUsage } from "./types.js";
 
-const CURVES = new Map([
-  ["prime256v1", "P-256"],
-  ["secp384r1", "P-384"],
-] as const);
+const EC_PUBLIC_KEY = "1.2.840.10045.2.1";
 
-function readKey(certificate: X509Certificate): InspectedCertificate["key"] {
-  try {
-    // Bun cannot decode some keys, such as secp256k1, and throws here.
-    const key = certificate.publicKey;
-    if (key.asymmetricKeyType === "rsa") {
-      return {
-        bits: key.asymmetricKeyDetails?.modulusLength ?? 0,
-        type: "rsa",
-      };
-    }
-    if (key.asymmetricKeyType === "ec") {
-      const curve = CURVES.get(
-        key.asymmetricKeyDetails?.namedCurve as "prime256v1"
-      );
-      return curve ? { curve, type: "ec" } : null;
-    }
-    return null;
-  } catch {
-    return null;
-  }
-}
+/** Protocol section 11.1: the supported curves by their OIDs. */
+const CURVES = new Map<string, EcCurve>([
+  ["1.2.840.10045.3.1.7", "P-256"],
+  ["1.3.132.0.34", "P-384"],
+  ["1.3.36.3.3.2.8.1.1.7", "brainpoolP256r1"],
+  ["1.3.36.3.3.2.8.1.1.11", "brainpoolP384r1"],
+]);
 
 function commonName(distinguishedName: string): string | null {
   const part = distinguishedName
@@ -95,30 +80,143 @@ function oid(bytes: Uint8Array): string {
   return [top, first - top * 40n, ...arcs].join(".");
 }
 
-const CERTIFICATE_POLICIES = "2.5.29.32";
+function oidAt(der: Uint8Array, at: Element): string {
+  return oid(der.subarray(at.start, at.end));
+}
+
+/** The TBSCertificate's elements. */
+function tbsElements(der: Uint8Array): Element[] {
+  const [tbs] = children(der, element(der, 0));
+  return children(der, tbs!);
+}
 
 /**
- * The policy identifiers in the certificatePolicies extension, which
- * `X509Certificate` does not expose: Certificate, then TBSCertificate, its
- * `[3]` extensions, and the extension's PolicyInformation sequence.
+ * The value of the extension with `id`, which `X509Certificate` does not
+ * expose: TBSCertificate, its `[3]` extensions, and the extension's
+ * extnValue OCTET STRING, whose contents are the value's DER.
  */
-function policyOids(der: Uint8Array): string[] {
-  const [tbs] = children(der, element(der, 0));
-  const extensions = children(der, tbs!).find((child) => child.tag === 0xa3);
+function extensionValue(der: Uint8Array, id: string): Element | null {
+  const extensions = tbsElements(der).find((child) => child.tag === 0xa3);
   if (!extensions) {
-    return [];
+    return null;
   }
   for (const extension of children(der, children(der, extensions)[0]!)) {
-    const [id, ...rest] = children(der, extension);
-    if (oid(der.subarray(id!.start, id!.end)) === CERTIFICATE_POLICIES) {
-      const policies = element(der, rest.at(-1)!.start);
-      return children(der, policies).map((policy) => {
-        const [identifier] = children(der, policy);
-        return oid(der.subarray(identifier!.start, identifier!.end));
-      });
+    const [extnId, ...rest] = children(der, extension);
+    if (oidAt(der, extnId!) === id) {
+      return element(der, rest.at(-1)!.start);
     }
   }
-  return [];
+  return null;
+}
+
+const CERTIFICATE_POLICIES = "2.5.29.32";
+const KEY_USAGE = "2.5.29.15";
+
+/** The policy identifiers in the certificatePolicies extension. */
+function policyOids(der: Uint8Array): string[] {
+  const policies = extensionValue(der, CERTIFICATE_POLICIES);
+  if (!policies) {
+    return [];
+  }
+  return children(der, policies).map((policy) =>
+    oidAt(der, children(der, policy)[0]!)
+  );
+}
+
+/**
+ * The digitalSignature (bit 0) and nonRepudiation (bit 1) bits the KeyUsage
+ * BIT STRING asserts (RFC 5280 section 4.2.1.3); its first content byte
+ * counts the unused bits.
+ */
+function keyUsage(der: Uint8Array): KeyUsage[] | null {
+  const bits = extensionValue(der, KEY_USAGE);
+  if (!bits) {
+    return null;
+  }
+  const first = bits.end - bits.start > 1 ? der[bits.start + 1]! : 0;
+  const asserted: KeyUsage[] = [];
+  if (first & 0x80) {
+    asserted.push("digitalSignature");
+  }
+  if (first & 0x40) {
+    asserted.push("nonRepudiation");
+  }
+  return asserted;
+}
+
+/**
+ * The SubjectPublicKeyInfo's algorithm, its parameters OID if any, and the
+ * public key's BIT STRING contents without the unused-bits byte. Read from
+ * the DER, since Bun's `node:crypto` cannot decode brainpool keys.
+ */
+function publicKeyInfo(der: Uint8Array): {
+  algorithm: string;
+  parameters: string | null;
+  key: Uint8Array;
+} {
+  const tbs = tbsElements(der);
+  // version [0], serial, signature, issuer, validity, subject, then the key.
+  const info = tbs[tbs[0]!.tag === 0xa0 ? 6 : 5]!;
+  const [algorithm, key] = children(der, info);
+  const [id, parameters] = children(der, algorithm!);
+  return {
+    algorithm: oidAt(der, id!),
+    key: der.subarray(key!.start + 1, key!.end),
+    parameters: parameters?.tag === 0x06 ? oidAt(der, parameters) : null,
+  };
+}
+
+function readKey(
+  certificate: X509Certificate,
+  der: Uint8Array
+): InspectedCertificate["key"] {
+  try {
+    const { algorithm, parameters } = publicKeyInfo(der);
+    if (algorithm === EC_PUBLIC_KEY) {
+      const curve = CURVES.get(parameters ?? "");
+      return curve ? { curve, type: "ec" } : null;
+    }
+    const key = certificate.publicKey;
+    if (key.asymmetricKeyType === "rsa") {
+      return {
+        bits: key.asymmetricKeyDetails?.modulusLength ?? 0,
+        type: "rsa",
+      };
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/** Whether `signature`, a DER ECDSA-Sig-Value, is the brainpool key's over `data`. */
+function verifyBrainpoolSignature(
+  der: Uint8Array,
+  curve: BrainpoolCurve,
+  data: Uint8Array,
+  signature: Uint8Array,
+  digest: string
+): boolean {
+  const sequence = element(signature, 0);
+  const integers = children(signature, sequence);
+  if (
+    sequence.tag !== 0x30 ||
+    sequence.end !== signature.length ||
+    integers.length !== 2 ||
+    integers.some((integer) => integer.tag !== 0x02)
+  ) {
+    return false;
+  }
+  const [r, s] = integers.map((integer) =>
+    signature.subarray(integer.start, integer.end)
+  );
+  return verifyBrainpool(
+    curve,
+    publicKeyInfo(der).key,
+    createHash(digest).update(data).digest(),
+    r!,
+    s!
+  );
 }
 
 /**
@@ -140,18 +238,22 @@ export const nodeCertificateInspector: CertificateInspector = {
   inspect(der) {
     let certificate: X509Certificate;
     let policies: string[];
+    let usage: KeyUsage[] | null;
     try {
       certificate = parse(der);
       policies = policyOids(der);
+      usage = keyUsage(der);
     } catch {
       return null;
     }
     // Unlike `subject` and `issuer`, the legacy object's values are not escaped.
     const { issuer, subject } = certificate.toLegacyObject();
     return {
+      ca: certificate.ca,
       issuer: certificate.issuer.replaceAll("\n", ", "),
       issuerCommonName: only(issuer.CN),
-      key: readKey(certificate),
+      key: readKey(certificate, der),
+      keyUsage: usage,
       notAfter: new Date(certificate.validTo),
       notBefore: new Date(certificate.validFrom),
       policyOids: policies,
@@ -163,7 +265,18 @@ export const nodeCertificateInspector: CertificateInspector = {
   },
   verify(der, data, signature, algorithm, digest) {
     try {
-      const key = parse(der).publicKey;
+      const certificate = parse(der);
+      const read = readKey(certificate, der);
+      if (
+        read?.type === "ec" &&
+        (read.curve === "brainpoolP256r1" || read.curve === "brainpoolP384r1")
+      ) {
+        return (
+          algorithm === "ecdsa" &&
+          verifyBrainpoolSignature(der, read.curve, data, signature, digest)
+        );
+      }
+      const key = certificate.publicKey;
       const isEc = key.asymmetricKeyType === "ec";
       if (isEc !== (algorithm === "ecdsa")) {
         return false;

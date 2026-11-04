@@ -48,3 +48,32 @@ printf '[req]\ndistinguished_name = dn\nstring_mask = MASK:0x800\nprompt = no\n[
 openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out "$work/bmp.key" 2>/dev/null
 openssl req -x509 -new -key "$work/bmp.key" -config "$work/bmp.cnf" \
   -not_before 20260101000000Z -not_after 20360101000000Z -outform der -out "$helper_out/bmp-names.der"
+
+# Brainpool certificates (protocol section 11.1). Bun's node:crypto cannot sign
+# with these curves, so each key's signature over the test toSign of field
+# Signature1 is kept, DER-encoded, as <name>.sig instead of the key.
+for curve in brainpoolP256r1 brainpoolP384r1; do
+  make "$curve" -algorithm EC -pkeyopt ec_paramgen_curve:"$curve"
+  digest=sha256
+  [ "$curve" = brainpoolP384r1 ] && digest=sha384
+  printf 'signed attributes Signature1' |
+    openssl dgst -"$digest" -sign "$work/$curve.key" -out "$out/$curve.sig"
+  helper_name="$(printf '%s' "$curve" | sed 's/^brainpoolP/brainpool-p/')"
+  openssl x509 -in "$out/$curve.pem" -outform der -out "$helper_out/$helper_name.der"
+done
+
+# Key usage test certificates (protocol section 8.2): end-entity certificates
+# asserting digitalSignature only, nonRepudiation only or no KeyUsage, and a CA
+# certificate asserting nonRepudiation.
+usage() {
+  name="$1"
+  shift
+  openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out "$work/$name.key" 2>/dev/null
+  openssl req -x509 -new -key "$work/$name.key" -subj "/C=IN/O=Acme, Inc./CN=Test Signer $name" \
+    -not_before 20260101000000Z -not_after 20360101000000Z "$@" -out "$out/$name.pem"
+}
+
+usage usage-signature -addext "basicConstraints=critical,CA:FALSE" -addext "keyUsage=critical,digitalSignature"
+usage usage-nonrepudiation -addext "basicConstraints=critical,CA:FALSE" -addext "keyUsage=critical,nonRepudiation"
+usage usage-none -addext "basicConstraints=critical,CA:FALSE"
+usage usage-ca -addext "basicConstraints=critical,CA:TRUE" -addext "keyUsage=critical,nonRepudiation,keyCertSign"

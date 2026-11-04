@@ -1,6 +1,7 @@
 //! The worker protocol end to end against SoftHSM: the helper's client
 //! starts `keyseal-token-worker`, lists certificates before and after login,
-//! has a wrong PIN refused, signs with an RSA and a P-256 key, and closes
+//! has a wrong PIN refused, signs with an RSA and a P-256 key and with an
+//! RSA key that needs the PIN for each signature, and closes
 //! the worker. A raw session checks that stdout carries only protocol lines
 //! and that the worker exits when stdin closes.
 //! Runs when `KEYSEAL_SOFTHSM_MODULE` names libsofthsm2, and needs
@@ -33,8 +34,8 @@ fn run(command: &mut Command) -> Output {
     output
 }
 
-/// A SoftHSM token in `dir` with an RSA and a P-256 key, each beside a
-/// public certificate.
+/// A SoftHSM token in `dir` with an RSA and a P-256 key, and an RSA key
+/// with CKA_ALWAYS_AUTHENTICATE, each beside a public certificate.
 fn make_token(dir: &Path, module: &str) {
     std::fs::create_dir_all(dir.join("tokens")).unwrap();
     std::fs::write(
@@ -52,13 +53,14 @@ fn make_token(dir: &Path, module: &str) {
         "--so-pin",
         "5678",
     ]));
-    let keys: [(&str, &str, &[&str]); 2] = [
+    let keys: [(&str, &str, &[&str]); 3] = [
         ("rsa", "01", &["-newkey", "rsa:2048"]),
         (
             "p256",
             "02",
             &["-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256"],
         ),
+        ("always", "03", &["-newkey", "rsa:2048"]),
     ];
     for (name, id, newkey) in keys {
         run(Command::new("openssl")
@@ -89,6 +91,9 @@ fn make_token(dir: &Path, module: &str) {
                 .args(["--label", name]);
             if kind == "privkey" {
                 command.arg("--usage-sign");
+            }
+            if kind == "privkey" && name == "always" {
+                command.arg("--always-auth");
             }
             run(&mut command);
         }
@@ -124,6 +129,7 @@ fn verify(dir: &Path, name: &str, data: &[u8], signature: &[u8]) {
 fn round_trip(dir: &Path, worker: &Path, module: &Path) {
     let rsa = std::fs::read(dir.join("rsa.der")).unwrap();
     let p256 = std::fs::read(dir.join("p256.der")).unwrap();
+    let always = std::fs::read(dir.join("always.der")).unwrap();
     let token = WorkerToken::open(worker, module, Duration::ZERO).unwrap();
     assert!(!token.pin_pad());
     assert_eq!(token.pin_warning(), None);
@@ -139,31 +145,37 @@ fn round_trip(dir: &Path, worker: &Path, module: &Path) {
     let refused = token.login(Zeroizing::new("0000".into())).unwrap_err();
     assert!(refused.0.contains("refused the PIN"), "{refused}");
     token.login(Zeroizing::new(PIN.into())).unwrap();
-    assert_eq!(token.certificates(true).unwrap().len(), 2);
-    // A job's documents are signed in one request, in the one session.
+    assert_eq!(token.certificates(true).unwrap().len(), 3);
+    // A job's documents are signed in one request, in the one session; the
+    // worker keeps the PIN from login for the key that needs it for each
+    // signature, and drops it after that request.
     let documents = [
         DATA.to_vec(),
         b"second document".to_vec(),
         b"third".to_vec(),
     ];
+    let sign = |certificate: &[u8], scheme| {
+        token.sign(
+            certificate,
+            &documents,
+            DigestAlgorithm::Sha256,
+            scheme,
+            None,
+        )
+    };
     for (name, certificate, scheme) in [
+        ("always", &always, SignatureAlgorithm::RsaPkcs1v15),
         ("rsa", &rsa, SignatureAlgorithm::RsaPkcs1v15),
         ("p256", &p256, SignatureAlgorithm::Ecdsa),
     ] {
-        let signatures = token
-            .sign(
-                certificate,
-                &documents,
-                DigestAlgorithm::Sha256,
-                scheme,
-                None,
-            )
-            .unwrap();
+        let signatures = sign(certificate, scheme).unwrap();
         assert_eq!(signatures.len(), documents.len());
         for (data, signature) in documents.iter().zip(&signatures) {
             verify(dir, name, data, signature);
         }
     }
+    let dropped = sign(&always, SignatureAlgorithm::RsaPkcs1v15).unwrap_err();
+    assert!(dropped.0.contains("none was kept from login"), "{dropped}");
     token.close();
 }
 
@@ -202,7 +214,7 @@ fn raw_session(worker: &Path, module: &Path) {
     assert!(replies[1]["Err"].is_string(), "{replies:?}");
     assert_eq!(
         replies[2]["Ok"]["Certificates"].as_array().unwrap().len(),
-        2
+        3
     );
 }
 

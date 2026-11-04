@@ -7,13 +7,15 @@ Every route except `GET /health`, plugin routes included, needs `Authorization: 
 | Route | Does |
 |---|---|
 | `GET /health` | Liveness and the number of trust roots loaded |
-| `POST /validate?base=<bytes>` | Validation report for a PDF body; `base` adds what changed since the copy the signer was given. Each signature's `timestampValid` is whether its signature timestamp is intact and matches the signature, `null` without one; a signature with an invalid timestamp makes the report `invalid` |
-| `POST /certificate` | Whether a certificate chains to a configured root and may sign (`trusted`), and whether its revocation status was checked (`revocationChecked`) |
+| `POST /validate?base=<bytes>&keyUsage=<usage>` | Validation report for a PDF body; `base` adds what changed since the copy the signer was given, and `keyUsage` is the key usage a `trusted` signer's certificate asserts (below). Each signature's `timestampValid` is whether its signature timestamp is intact and matches the signature, `null` without one; a signature with an invalid timestamp makes the report `invalid` |
+| `POST /certificate` | Whether a certificate chains to a configured root and may sign (`trusted`), and whether its revocation status was checked (`revocationChecked`); optional `keyUsage` (below) |
 | `POST /prepare` | Adds empty signature fields as one incremental update |
 | `POST /sign/start` | Reserves the signature and returns `toSign`, `digestAlgorithm` (`sha256` or `sha384`), `signatureAlgorithm` (`rsa-pkcs1-v1_5`, `rsa-pss` or `ecdsa`) and an opaque `state`; optional `stampStyle`, `rsaPadding` (`pkcs1` or `pss`), `reason`, `location` and `contactInfo` |
 | `POST /sign/finish` | Builds the CMS around the token's signature and returns the signed PDF (PAdES B-T); a 422 when the TSA's token doesn't stamp the digest of that signature |
 | `POST /finalize` | Revocation data for every signature and a document timestamp (PAdES B-LTA) |
 | `POST /retimestamp` | Another document timestamp before the last one's certificate expires |
+
+`keyUsage` on `/certificate` and `/validate` is `nonRepudiation`, the default, or `digitalSignature`. With `nonRepudiation` a certificate may sign only when its KeyUsage extension asserts nonRepudiation; with `digitalSignature`, when it asserts digitalSignature or nonRepudiation. A certificate without a KeyUsage extension never may, nor may a CA's certificate on `/certificate`. Any other value is a 422.
 
 `reason`, `location` and `contactInfo` go into the signature dictionary as `/Reason`, `/Location` and `/ContactInfo`, which PDF viewers show in their signature panel. Each is trimmed and must then be 1 to 200 characters without control characters, or the request is a 422. They are written into the prepared PDF at `/sign/start`, so the state's MAC covers them and `/sign/finish` takes nothing more. The built-in stamp adds a `Reason:` line, wrapped to two lines and shortened past that.
 
@@ -21,7 +23,7 @@ The `state` from `/sign/start` is a JSON object passed back unchanged to `/sign/
 
 The state's last member, `mac`, is an HMAC-SHA256 over the exact JSON text before it, keyed with HMAC-SHA256 of the label `keyseal-service sign state v1` under the bearer token. `/sign/finish` refuses a state whose MAC is missing or doesn't match with a 422 before reading anything in it, so no member can change, and a state from before the token was rotated is refused too.
 
-Supported keys: RSA (PKCS#1 v1.5 or PSS with MGF1 and a 32-byte salt, SHA-256) and ECDSA P-256 (SHA-256) or P-384 (SHA-384), with ECDSA signatures as DER `ECDSA-Sig-Value`. PDFs are limited to 25 MB.
+Supported keys: RSA (PKCS#1 v1.5 or PSS with MGF1 and a 32-byte salt, SHA-256) and ECDSA P-256 or brainpoolP256r1 (SHA-256) and P-384 or brainpoolP384r1 (SHA-384), with ECDSA signatures as DER `ECDSA-Sig-Value`. PDFs are limited to 25 MB.
 
 Bodies are capped as they stream in, so a chunked body is held to the same limits as one with a `Content-Length`: 25 MB for the raw PDF that `/validate`, `/finalize` and `/retimestamp` take, and 60 MB plus 16 KB for a JSON body. A larger body is a 413, and a `Content-Length` that isn't a non-negative decimal number is a 400.
 
@@ -46,6 +48,7 @@ The service refuses to start, logging which rule failed and exiting 1, when the 
 | `SIGNING_SERVICE_TOKEN` | none, required | Bearer token shared with the integrator backend |
 | `SIGNING_TSA_URL` | `http://timestamp.digicert.com` | RFC 3161 timestamp authority; `none` turns timestamps off, and `/finalize` and `/retimestamp` then answer 503 |
 | `SIGNING_TRUST_ROOTS_DIR` | bundled CCA India roots and intermediates | Directory of `.pem`, `.cer`, `.crt` or `.der` certificates replacing the bundled ones; self-signed ones are roots, the rest intermediates |
+| `SIGNING_EXTRA_TRUST_ROOTS_DIR` | none | Directory of `.pem`, `.cer`, `.crt` or `.der` certificates added to the bundled ones, or to `SIGNING_TRUST_ROOTS_DIR`'s; self-signed ones are roots, the rest intermediates |
 | `SIGNING_ALLOW_FETCHING` | off | `true` lets validation fetch issuer certificates, OCSP and CRL data |
 | `TZ` | container's (UTC) | Time zone of the date in the built-in stamp, for example `Asia/Kolkata`; a zone name, since pyHanko refuses POSIX zones such as `IST-5:30` |
 
@@ -56,6 +59,8 @@ Revocation is checked soft-fail: a certificate whose CRL or OCSP data is missing
 With `SIGNING_ALLOW_FETCHING=true`, the URLs fetched come from the certificates being checked, so the service only connects to public IP addresses, over direct HTTP or HTTPS: every DNS answer and the address actually connected to must be public, each redirect is checked again, and proxies, proxy environment variables and cookies are not used. A response body past 8 MiB for a CRL or issuer certificate, or 64 KiB for an OCSP response, counted after decompression, is a failed fetch, so that data counts as unavailable and `revocationChecked` is false.
 
 Setting `SIGNING_TRUST_ROOTS_DIR` replaces both the bundled CCA India roots and the bundled intermediates, so put every root and intermediate the chains need in that directory. The service refuses to start when the directory holds no readable root.
+
+To trust another CA as well, such as a foreign or private one, keep the bundled set and point `SIGNING_EXTRA_TRUST_ROOTS_DIR` at a directory of its certificates instead. The service refuses to start when that directory can't be read or holds no readable certificate. `/health` counts its roots with the others.
 
 ## Plugins
 

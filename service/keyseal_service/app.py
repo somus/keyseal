@@ -33,6 +33,8 @@ from .prepare import MAX_FIELDS, FieldRequest, PrepareError, prepare_fields
 from .request_guard import RequestGuard
 from .settings import Settings, TrustRootsError, WeakTokenError, check_token
 from .validate import (
+    DEFAULT_KEY_USAGE,
+    KeyUsage,
     ValidationLimitError,
     ValidationSettings,
     certificate_trusted,
@@ -100,6 +102,7 @@ class SignStartRequest(BaseModel):
 class CertificateRequest(BaseModel):
     certificate: Certificate
     chain: Chain
+    keyUsage: KeyUsage = DEFAULT_KEY_USAGE
 
 
 class SignFinishRequest(BaseModel):
@@ -190,10 +193,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         base: int | None = Query(
             default=None, ge=1, description="Bytes of the copy the signer was given"
         ),
+        keyUsage: KeyUsage = Query(
+            default=DEFAULT_KEY_USAGE, description="The key usage a trusted signer asserts"
+        ),
     ) -> dict[str, object]:
         pdf = await _read_pdf(request)
         try:
-            return await _validating(lambda settings: validate_pdf_async(pdf, settings, base))
+            return await _validating(
+                lambda settings: validate_pdf_async(pdf, settings, base, keyUsage)
+            )
         except ValidationLimitError as error:
             raise HTTPException(422, str(error)) from error
 
@@ -206,7 +214,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         except remote_sign.RemoteSignError as error:
             raise HTTPException(400, str(error)) from error
         trusted, revocation_checked = await _validating(
-            lambda settings: certificate_trusted(cert, chain, settings)
+            lambda settings: certificate_trusted(cert, chain, settings, body.keyUsage)
         )
         return {"revocationChecked": revocation_checked, "trusted": trusted}
 

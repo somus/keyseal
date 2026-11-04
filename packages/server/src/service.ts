@@ -1,6 +1,7 @@
 import { fromBase64, isBase64, readBody, toBase64 } from "./encoding.js";
 import type {
   DigestAlgorithm,
+  KeyUsage,
   RsaPadding,
   SignatureAlgorithm,
   SignatureDetails,
@@ -189,12 +190,14 @@ export class ServiceClient {
   }
 
   /**
-   * Whether the certificate chains to a configured root and may sign, and
-   * whether its revocation status was checked.
+   * Whether the certificate chains to a configured root and may sign with
+   * `keyUsage` (the service defaults to nonRepudiation), and whether its
+   * revocation status was checked.
    */
   async certificate(input: {
     certificate: string;
     chain: string[];
+    keyUsage?: KeyUsage;
   }): Promise<{ trusted: boolean; revocationChecked: boolean }> {
     const body = await this.#postJson("/certificate", input);
     return {
@@ -259,12 +262,24 @@ export class ServiceClient {
     );
   }
 
-  /** The service's validation report for a PDF; `base` is the length of the copy the signer was given. */
+  /**
+   * The service's validation report for a PDF; `base` is the length of the
+   * copy the signer was given, and `keyUsage` the key usage the signer's
+   * certificate must have (the service defaults to nonRepudiation).
+   */
   async validate(
     pdf: Uint8Array<ArrayBuffer>,
-    base?: number
+    base?: number,
+    keyUsage?: KeyUsage
   ): Promise<ValidationReport> {
-    const path = base === undefined ? "/validate" : `/validate?base=${base}`;
+    const query = new URLSearchParams();
+    if (base !== undefined) {
+      query.set("base", String(base));
+    }
+    if (keyUsage !== undefined) {
+      query.set("keyUsage", keyUsage);
+    }
+    const path = query.size === 0 ? "/validate" : `/validate?${query}`;
     const bytes = await this.#post(path, new Blob([pdf]), "application/pdf");
     return JSON.parse(new TextDecoder().decode(bytes)) as ValidationReport;
   }

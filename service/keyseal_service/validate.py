@@ -15,7 +15,7 @@ from collections.abc import Collection
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from asn1crypto import algos, keys, pem, x509
 from cryptography.exceptions import InvalidSignature
@@ -40,6 +40,7 @@ from pyhanko.sign.validation import (
     async_validate_pdf_signature,
     async_validate_pdf_timestamp,
 )
+from pyhanko.sign.validation.settings import KeyUsageConstraints
 from pyhanko.sign.validation.status import PdfSignatureStatus, SignatureCoverageLevel
 from pyhanko_certvalidator import CertificateValidator, ValidationContext
 from pyhanko_certvalidator.authority import AuthorityWithCert
@@ -55,6 +56,19 @@ from pyhanko_certvalidator.validate import async_validate_path
 log = logging.getLogger(__name__)
 
 CERT_SUFFIXES = {".pem", ".cer", ".crt", ".der"}
+
+#: The key usage a signer's certificate must assert: nonRepudiation, or with
+#: "digitalSignature" either digitalSignature or nonRepudiation. A certificate
+#: without a KeyUsage extension asserts neither.
+KeyUsage = Literal["nonRepudiation", "digitalSignature"]
+DEFAULT_KEY_USAGE: KeyUsage = "nonRepudiation"
+
+
+def key_usage_constraints(key_usage: KeyUsage) -> KeyUsageConstraints:
+    if key_usage == "digitalSignature":
+        return KeyUsageConstraints(key_usage={"digital_signature", "non_repudiation"})
+    return KeyUsageConstraints(key_usage={"non_repudiation"})
+
 
 #: pyHanko's default policy, except that a non-signature field's existing
 #: appearance stream can't be rewritten in place. pyHanko (0.37, 0.38) counts
@@ -259,12 +273,18 @@ async def _revocation_checked(
 
 
 async def certificate_trusted(
-    cert: x509.Certificate, chain: list[x509.Certificate], settings: ValidationSettings
+    cert: x509.Certificate,
+    chain: list[x509.Certificate],
+    settings: ValidationSettings,
+    key_usage: KeyUsage = DEFAULT_KEY_USAGE,
 ) -> tuple[bool, bool]:
-    """Whether a certificate chains to a configured root and has the key usage
-    validation requires of a PDF signer (the DSC enrolment check), so an
-    encryption certificate on the same token isn't enrolled, and whether its
-    revocation status was checked (`_revocation_checked`)."""
+    """Whether a certificate chains to a configured root, isn't a CA's and
+    has the key usage `key_usage` asks of a PDF signer (the DSC enrolment
+    check), so an encryption certificate on the same token isn't enrolled,
+    and whether its revocation status was checked (`_revocation_checked`)."""
+    if cert.ca:
+        log.info("Certificate refused: a CA certificate")
+        return False, False
     context = settings.context()
     try:
         try:
@@ -282,7 +302,7 @@ async def certificate_trusted(
             path = await CertificateValidator(
                 cert, intermediate_certs=chain, validation_context=context
             ).async_validate_path()
-        PdfSignatureStatus.default_usage_constraints().validate(cert)
+        key_usage_constraints(key_usage).validate(cert)
     except Exception as error:  # noqa: BLE001 - any path failure means untrusted
         log.info("Certificate refused: %s: %s", type(error).__name__, error)
         return False, False
@@ -296,6 +316,7 @@ async def _signer_trusted(
     status: PdfSignatureStatus,
     settings: ValidationSettings,
     now: ValidationContext,
+    key_usage: KeyUsage,
 ) -> tuple[bool, bool]:
     """Whether the signer's certificate chains to a configured root, now or
     when the signature's trusted timestamp says it was made, and whether its
@@ -314,7 +335,11 @@ async def _signer_trusted(
         return False, False
     context = settings.context(moment=ts.timestamp, known=now)
     then = await async_validate_pdf_signature(
-        sig, signer_validation_context=context, diff_policy=DIFF_POLICY, skip_diff=True
+        sig,
+        signer_validation_context=context,
+        diff_policy=DIFF_POLICY,
+        key_usage_settings=key_usage_constraints(key_usage),
+        skip_diff=True,
     )
     if not (then.trusted and settings.is_configured_root(then.validation_path)):
         return False, False
@@ -324,13 +349,16 @@ async def _signer_trusted(
 
 
 async def _check_signature(
-    sig: EmbeddedPdfSignature, settings: ValidationSettings
+    sig: EmbeddedPdfSignature, settings: ValidationSettings, key_usage: KeyUsage
 ) -> tuple[PdfSignatureStatus, bool, bool]:
     context = settings.context()
     status = await async_validate_pdf_signature(
-        sig, signer_validation_context=context, diff_policy=DIFF_POLICY
+        sig,
+        signer_validation_context=context,
+        diff_policy=DIFF_POLICY,
+        key_usage_settings=key_usage_constraints(key_usage),
     )
-    return status, *await _signer_trusted(sig, status, settings, context)
+    return status, *await _signer_trusted(sig, status, settings, context, key_usage)
 
 
 def _locks(sig: EmbeddedPdfSignature) -> list[dict[str, Any]]:
@@ -588,19 +616,26 @@ def _changes_since(reader: PdfFileReader, data: bytes, base_length: int) -> str:
 
 
 def validate_pdf(
-    data: bytes, settings: ValidationSettings, base_length: int | None = None
+    data: bytes,
+    settings: ValidationSettings,
+    base_length: int | None = None,
+    key_usage: KeyUsage = DEFAULT_KEY_USAGE,
 ) -> dict[str, Any]:
     """Synchronous form of `validate_pdf_async`, for scripts and tests."""
-    return asyncio.run(validate_pdf_async(data, settings, base_length))
+    return asyncio.run(validate_pdf_async(data, settings, base_length, key_usage))
 
 
 async def validate_pdf_async(
-    data: bytes, settings: ValidationSettings, base_length: int | None = None
+    data: bytes,
+    settings: ValidationSettings,
+    base_length: int | None = None,
+    key_usage: KeyUsage = DEFAULT_KEY_USAGE,
 ) -> dict[str, Any]:
     """Validate every signature in a PDF; `status` sums them up. With
     `base_length`, `changesSinceBase` is the most the revisions appended to
     that many leading bytes (the copy a signer was given) change, and
-    `baseSignatureFields` names the signature fields that copy had.
+    `baseSignatureFields` names the signature fields that copy had. A
+    signer is trusted only with the key usage `key_usage` asks for.
 
     A PDF with more than MAX_SIGNATURES signatures, or a validation that runs
     past VALIDATION_BUDGET_SECONDS, raises `ValidationLimitError`. The budget
@@ -608,7 +643,7 @@ async def validate_pdf_async(
     (parsing, pyHanko's diff analysis) finishes first."""
     try:
         async with asyncio.timeout(VALIDATION_BUDGET_SECONDS):
-            return await _validate_pdf(data, settings, base_length)
+            return await _validate_pdf(data, settings, base_length, key_usage)
     except TimeoutError as error:
         raise ValidationLimitError(
             f"Validation took longer than {VALIDATION_BUDGET_SECONDS} seconds"
@@ -616,7 +651,7 @@ async def validate_pdf_async(
 
 
 async def _validate_pdf(
-    data: bytes, settings: ValidationSettings, base_length: int | None
+    data: bytes, settings: ValidationSettings, base_length: int | None, key_usage: KeyUsage
 ) -> dict[str, Any]:
     checked_at = datetime.now(UTC).isoformat()
     try:
@@ -670,7 +705,9 @@ async def _validate_pdf(
             continue
         try:
             try:
-                status, trusted, revocation_checked = await _check_signature(sig, settings)
+                status, trusted, revocation_checked = await _check_signature(
+                    sig, settings, key_usage
+                )
             except TimeoutError:
                 # pyHanko's soft-fail covers a responder that refuses the
                 # connection but not one that never answers, as Indian CAs'
@@ -680,7 +717,7 @@ async def _validate_pdf(
                     raise
                 log.warning("Revocation fetch timed out for %s; checking without fetching", sig.field_name)
                 status, trusted, revocation_checked = await _check_signature(
-                    sig, replace(settings, allow_fetching=False)
+                    sig, replace(settings, allow_fetching=False), key_usage
                 )
         except Exception as error:  # noqa: BLE001 - report, don't crash
             log.exception("Checking the signature in %s failed", sig.field_name)

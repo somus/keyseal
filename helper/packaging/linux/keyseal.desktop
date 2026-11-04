@@ -1,7 +1,7 @@
 [Desktop Entry]
 Type=Application
 Name=KeySeal
-Comment=Sign documents with a DSC token
+Comment=Sign documents with a token or smart card
 Exec=keyseal %u
 Icon=keyseal
 Terminal=false

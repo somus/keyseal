@@ -1,16 +1,24 @@
 from __future__ import annotations
 
+import asyncio
 import logging
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 from cryptography.hazmat.primitives import serialization
+from fastapi.testclient import TestClient
+from pyhanko_certvalidator import CertificateValidator
 
 from keyseal_service.app import create_app
-from keyseal_service.settings import Settings, WeakTokenError, check_token
-from keyseal_service.validate import ValidationSettings
+from keyseal_service.settings import TRUST, Settings, WeakTokenError, check_token
+from keyseal_service.validate import (
+    ValidationSettings,
+    certificate_trusted,
+    load_trust_roots,
+)
 
-from .conftest import TOKEN, Pki
+from .conftest import TOKEN, Pki, _asn1
 
 
 @pytest.mark.parametrize(
@@ -85,3 +93,93 @@ def test_a_roots_dir_without_roots_refuses_to_start(
             create_app()
         assert exited.value.code == 1
         assert "holds no readable root" in caplog.text
+
+
+def test_an_extra_roots_dir_adds_to_the_bundled_roots(
+    pki: Pki, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("SIGNING_TRUST_ROOTS_DIR", raising=False)
+    monkeypatch.setenv("SIGNING_SERVICE_TOKEN", TOKEN)
+    monkeypatch.setenv("SIGNING_EXTRA_TRUST_ROOTS_DIR", str(tmp_path))
+    pki.write_ca(tmp_path)
+    settings = Settings.from_env()
+    validation = settings.validation
+    assert len(validation.trust_roots) == 2
+    assert validation.trust_roots[-1].sha256 == pki.ca_asn1.sha256
+    assert len(validation.intermediates) == 2
+    with TestClient(create_app(settings)) as client:
+        assert client.get("/health").json()["trustRoots"] == 2
+    # A certificate from the extra root is trusted.
+    signer = _asn1(pki.signer_cert)
+    assert asyncio.run(certificate_trusted(signer, [pki.ca_asn1], validation))[0] is True
+    # A CCA India chain still ends in the bundled root, checked at a fixed
+    # time inside the sub CA's validity (2022-02-16 to 2032-02-16).
+    sub_ca = load_trust_roots(TRUST / "intermediates")[-1]
+    moment = datetime(2026, 6, 1, tzinfo=UTC)
+    path = asyncio.run(
+        CertificateValidator(
+            sub_ca, validation_context=validation.context(moment=moment)
+        ).async_validate_path()
+    )
+    assert path.trust_anchor.authority.name.native["common_name"] == "CCA India 2022"
+    assert validation.is_configured_root(path)
+
+
+def test_an_extra_roots_dir_adds_to_a_roots_dir(
+    pki: Pki, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    base, extra = tmp_path / "base", tmp_path / "extra"
+    base.mkdir()
+    extra.mkdir()
+    other = Pki()
+    other.write_ca(base)
+    pki.write_ca(extra)
+    (extra / "signer.der").write_bytes(pki.signer_cert.public_bytes(serialization.Encoding.DER))
+    monkeypatch.setenv("SIGNING_TRUST_ROOTS_DIR", str(base))
+    monkeypatch.setenv("SIGNING_EXTRA_TRUST_ROOTS_DIR", str(extra))
+    validation = Settings.from_env().validation
+    assert [c.sha256 for c in validation.trust_roots] == [
+        other.ca_asn1.sha256,
+        pki.ca_asn1.sha256,
+    ]
+    assert [c.sha256 for c in validation.intermediates] == [_asn1(pki.signer_cert).sha256]
+
+
+def test_an_extra_roots_dir_without_certificates_refuses_to_start(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    monkeypatch.delenv("SIGNING_TRUST_ROOTS_DIR", raising=False)
+    monkeypatch.setenv("SIGNING_SERVICE_TOKEN", TOKEN)
+    unreadable = tmp_path / "unreadable"
+    unreadable.mkdir()
+    (unreadable / "root.pem").write_bytes(b"not a certificate")
+    for directory in (tmp_path / "missing", tmp_path / "unreadable"):
+        monkeypatch.setenv("SIGNING_EXTRA_TRUST_ROOTS_DIR", str(directory))
+        with caplog.at_level(logging.CRITICAL), pytest.raises(SystemExit) as exited:
+            create_app()
+        assert exited.value.code == 1
+        assert f"SIGNING_EXTRA_TRUST_ROOTS_DIR {directory} holds no readable certificate" in (
+            caplog.text
+        )
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    monkeypatch.setenv("SIGNING_EXTRA_TRUST_ROOTS_DIR", str(empty))
+    with pytest.raises(SystemExit):
+        create_app()
+
+
+def test_an_extra_roots_dir_that_cannot_be_listed_refuses_to_start(
+    pki: Pki, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    monkeypatch.delenv("SIGNING_TRUST_ROOTS_DIR", raising=False)
+    monkeypatch.setenv("SIGNING_SERVICE_TOKEN", TOKEN)
+    monkeypatch.setenv("SIGNING_EXTRA_TRUST_ROOTS_DIR", str(tmp_path))
+    pki.write_ca(tmp_path)
+    tmp_path.chmod(0)
+    try:
+        with caplog.at_level(logging.CRITICAL), pytest.raises(SystemExit) as exited:
+            create_app()
+    finally:
+        tmp_path.chmod(0o700)
+    assert exited.value.code == 1
+    assert f"SIGNING_EXTRA_TRUST_ROOTS_DIR {tmp_path} is unreadable" in caplog.text

@@ -217,7 +217,7 @@ fn desktop_entry(exe: &Path) -> Result<String, String> {
         "[Desktop Entry]\n\
          Type=Application\n\
          Name=KeySeal\n\
-         Comment=Sign documents with a DSC token\n\
+         Comment=Sign documents with a token or smart card\n\
          Exec={exe} %u\n\
          Terminal=false\n\
          NoDisplay=true\n\
@@ -352,6 +352,24 @@ mod tests {
         );
         assert!(desktop_entry(Path::new("/home/$x/.local/bin/keyseal")).is_err());
         assert!(desktop_entry(Path::new("/home/\"x\"/.local/bin/keyseal")).is_err());
+    }
+
+    /// The entry `install` writes says what the packaged one says.
+    #[test]
+    fn describes_the_helper_as_the_packaged_entry_does() {
+        let comment = |entry: &str| {
+            entry
+                .lines()
+                .find(|line| line.starts_with("Comment="))
+                .map(str::to_owned)
+        };
+        let written = desktop_entry(Path::new("/usr/bin/keyseal")).unwrap();
+        let packaged = include_str!("../../../packaging/linux/keyseal.desktop");
+        assert_eq!(comment(&written), comment(packaged));
+        assert_eq!(
+            comment(&written).unwrap(),
+            "Comment=Sign documents with a token or smart card"
+        );
     }
 
     #[test]

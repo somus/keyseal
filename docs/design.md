@@ -57,7 +57,7 @@ Enrol, capturing a certificate without signing, is a single round: `GET` the job
 
 ### Algorithms
 
-RSA PKCS#1 v1.5, RSA-PSS, ECDSA P-256 and ECDSA P-384. RSA-PSS uses MGF1 with the message digest and a salt as long as the digest. P-256 signs SHA-256 and P-384 signs SHA-384; ECDSA signatures travel as DER `ECDSA-Sig-Value`.
+RSA PKCS#1 v1.5, RSA-PSS, and ECDSA on P-256, P-384, brainpoolP256r1 and brainpoolP384r1. RSA-PSS uses MGF1 with the message digest and a salt as long as the digest. P-256 and brainpoolP256r1 sign SHA-256, P-384 and brainpoolP384r1 sign SHA-384; ECDSA signatures travel as DER `ECDSA-Sig-Value`.
 
 ## Trust model
 
@@ -93,7 +93,7 @@ On Windows, CNG (`NCryptSignHash`) signs with keys in hardware or removable key 
 
 Intel-only macOS drivers run in a separate x86_64 worker process that speaks JSON over pipes, shipped inside the universal app.
 
-PIN handling: the retry warning is shown where the driver exposes it, the PIN is never retried automatically and asked once per job however many documents it has, it stays in zeroising buffers from the window to the login, and tokens with a PIN pad use the protected authentication path.
+PIN handling: the retry warning is shown where the driver exposes it, the PIN is never retried automatically and asked once per job however many documents it has, it stays in zeroising buffers from the window to the login, and tokens with a PIN pad use the protected authentication path. A key marked `CKA_ALWAYS_AUTHENTICATE` needs a context-specific login before every signature: the signer still approves the batch and enters the PIN once, and the helper keeps the PIN in its zeroising buffer until the job's signatures are done, re-authenticating the key before each one. On a PIN pad the PIN never reaches the helper, so the reader asks for it once per document, and the helper says so before signing.
 
 ### What you see is what you sign
 

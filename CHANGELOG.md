@@ -19,6 +19,26 @@ lines under the new version with the release date.
 
 ### [Unreleased][helper-unreleased]
 
+#### Added
+
+- Keys that need the PIN for every signature (`CKA_ALWAYS_AUTHENTICATE`)
+  sign a whole job after one PIN: the helper keeps the PIN in a zeroising
+  buffer until the job's signatures are made and logs in again before each
+  one. On a PIN pad the reader asks once per document.
+- RSA PKCS#1 v1.5 signing on tokens without `CKM_SHA256_RSA_PKCS` or
+  `CKM_SHA384_RSA_PKCS`: the helper hashes the document and signs the
+  DigestInfo with `CKM_RSA_PKCS`, giving the same signature.
+- ECDSA keys on brainpoolP256r1 (with SHA-256) and brainpoolP384r1 (with
+  SHA-384).
+- `certificatePolicy.keyUsage`: with `digitalSignature`, a job also offers
+  certificates whose key usage has digitalSignature without nonRepudiation.
+  Without it, nonRepudiation is still required.
+
+#### Changed
+
+- Messages and the Linux desktop entry say "token or smart card" instead of
+  "DSC token".
+
 ### [0.1.4][helper-0.1.4] - 2026-11-04
 
 #### Fixed
@@ -97,6 +117,22 @@ lines under the new version with the release date.
 
 ### [Unreleased][service-unreleased]
 
+#### Added
+
+- ECDSA keys on brainpoolP256r1 (SHA-256) and brainpoolP384r1 (SHA-384), as
+  for P-256 and P-384.
+- `keyUsage` on `POST /certificate` (body) and `POST /validate` (query):
+  `nonRepudiation`, the default, or `digitalSignature`, which also accepts a
+  certificate whose KeyUsage asserts digitalSignature only. A certificate
+  without a KeyUsage extension never qualifies.
+- `SIGNING_EXTRA_TRUST_ROOTS_DIR`, a directory of roots and intermediates
+  trusted in addition to the bundled set or `SIGNING_TRUST_ROOTS_DIR`'s. The
+  service refuses to start when it is unreadable or holds no certificate.
+
+#### Changed
+
+- `POST /certificate` refuses CA certificates whatever key usage they assert.
+
 ### [0.2.3][service-0.2.3] - 2026-11-04
 
 #### Security
@@ -167,6 +203,27 @@ lines under the new version with the release date.
 ## @keyseal/server
 
 ### [Unreleased][server-unreleased]
+
+#### Added
+
+- `certificatePolicy.keyUsage`: `"nonRepudiation"` (the default) or
+  `"digitalSignature"`, which also accepts certificates whose KeyUsage asserts
+  digitalSignature only. A policy of only `keyUsage` is valid. Certificates
+  without KeyUsage and CA certificates never satisfy a policy.
+- The job's key usage is sent to the signing service's `/certificate` check
+  in both rounds, and `ServiceClient.validate(pdf, base, keyUsage)` passes
+  one to `/validate`.
+- brainpoolP256r1 (SHA-256) and brainpoolP384r1 (SHA-384) keys, parsed from
+  the certificate DER and verified in TypeScript, since Bun and Workers lack
+  these curves in `node:crypto`.
+- `CertificateFacts` and `InspectedCertificate` report `keyUsage` and `ca`;
+  new exported types `KeyUsage` and `EcCurve`.
+
+#### Changed
+
+- A custom `CertificateInspector` must now return `keyUsage` and `ca`.
+- A job with a `certificatePolicy` but no `keyUsage` now also checks
+  nonRepudiation locally, before asking the signing service.
 
 ### [0.3.0][server-0.3.0] - 2026-11-04
 

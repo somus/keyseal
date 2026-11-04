@@ -1,6 +1,7 @@
 import type {
   CertificateFacts,
   DigestAlgorithm,
+  KeyUsage,
   RsaPadding,
   SignatureAlgorithm,
 } from "./types.js";
@@ -19,7 +20,14 @@ export interface InspectedCertificate {
   serialNumber: string;
   notBefore: Date;
   notAfter: Date;
-  /** Null when the key is not RSA, P-256 or P-384, or cannot be read. */
+  /**
+   * The digitalSignature and nonRepudiation bits its KeyUsage extension
+   * asserts; null without the extension.
+   */
+  keyUsage: KeyUsage[] | null;
+  /** Whether its basicConstraints extension marks it a CA. */
+  ca: boolean;
+  /** Null when the key is not RSA or a supported curve, or cannot be read. */
   key: CertificateFacts["key"] | null;
 }
 
@@ -47,7 +55,10 @@ export interface CertificateInspector {
 
 /** Protocol section 11.1: the digest each supported key signs with. */
 export function digestFor(key: CertificateFacts["key"]): DigestAlgorithm {
-  return key.type === "ec" && key.curve === "P-384" ? "sha384" : "sha256";
+  return key.type === "ec" &&
+    (key.curve === "P-384" || key.curve === "brainpoolP384r1")
+    ? "sha384"
+    : "sha256";
 }
 
 /** The scheme `key` signs with when RSA keys use `rsaPadding`. */

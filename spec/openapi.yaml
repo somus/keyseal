@@ -519,7 +519,7 @@ components:
           $ref: "#/components/schemas/SameOriginUrl"
     CertificatePolicy:
       type: object
-      description: What the certificate must show (protocol-v1.md 8.2). Every member present must hold; strings compare exactly, and a name with no or several CN or O attributes matches nothing. The helper keeps only certificates that satisfy it; the server refuses any other with 422 and fails the job.
+      description: What the certificate must show (protocol-v1.md 8.2). Every member present must hold; strings compare exactly, and a name with no or several CN or O attributes matches nothing. A policy with only keyUsage is valid. The helper keeps only certificates that satisfy it; the server refuses any other with 422 and fails the job.
       minProperties: 1
       properties:
         policyOids:
@@ -545,8 +545,14 @@ components:
           type: string
           minLength: 1
           maxLength: 200
+        keyUsage:
+          description: "The key usage the certificate's KeyUsage extension must assert (protocol-v1.md 8.2): `nonRepudiation` needs the nonRepudiation bit, `digitalSignature` accepts digitalSignature or nonRepudiation. Absent, or with no policy, `nonRepudiation` applies. A certificate without KeyUsage, or a CA certificate, never satisfies it."
+          type: string
+          enum: [nonRepudiation, digitalSignature]
+          default: nonRepudiation
       examples:
         - policyOids: ["2.16.356.100.2.3"]
+        - keyUsage: digitalSignature
     CertificateSubmission:
       type: object
       required: [claimNonce, certificate, chain]

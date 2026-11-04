@@ -5,7 +5,8 @@
    the token must sign, plus an opaque state.
 2. The signer's helper signs those bytes on their token: RSA PKCS#1 v1.5 or
    RSA-PSS (MGF1, salt as long as the digest) with SHA-256, or ECDSA with
-   SHA-256 (P-256) or SHA-384 (P-384) returned as a DER ECDSA-Sig-Value.
+   SHA-256 (P-256, brainpoolP256r1) or SHA-384 (P-384, brainpoolP384r1)
+   returned as a DER ECDSA-Sig-Value.
 3. `finish`: given the state and the signature value, build the CMS with a
    signature timestamp from the TSA (PAdES B-T) and write it into the PDF.
 
@@ -58,6 +59,8 @@ SignatureAlgorithm = Literal["rsa-pkcs1-v1_5", "rsa-pss", "ecdsa"]
 _EC = {
     "secp256r1": ("sha256", "sha256_ecdsa", 72),
     "secp384r1": ("sha384", "sha384_ecdsa", 104),
+    "brainpoolp256r1": ("sha256", "sha256_ecdsa", 72),
+    "brainpoolp384r1": ("sha384", "sha384_ecdsa", 104),
 }
 
 
@@ -112,9 +115,10 @@ def algorithms(cert: x509.Certificate, rsa_padding: RsaPadding = "pkcs1") -> Alg
                 digest, algos.SignedDigestAlgorithm({"algorithm": mechanism}), "ecdsa", size
             )
         raise UnsupportedKeyError(
-            "Only P-256 and P-384 elliptic-curve DSC certificates are supported"
+            "Only P-256, P-384, brainpoolP256r1 and brainpoolP384r1 elliptic-curve"
+            " certificates are supported"
         )
-    raise UnsupportedKeyError("Only RSA and elliptic-curve DSC certificates are supported")
+    raise UnsupportedKeyError("Only RSA and elliptic-curve certificates are supported")
 
 
 def load_cert(der_b64: str) -> x509.Certificate:
@@ -343,7 +347,7 @@ def _verify_signature(
                 ) from error
             public_key.verify(signature, data, ec.ECDSA(digest))
         else:
-            raise UnsupportedKeyError("Only RSA and elliptic-curve DSC certificates are supported")
+            raise UnsupportedKeyError("Only RSA and elliptic-curve certificates are supported")
     except InvalidSignature as error:
         raise RemoteSignError(
             "The signature doesn't match the certificate: was the right token used?"

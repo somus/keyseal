@@ -1,11 +1,5 @@
 import { describe, expect, spyOn, test } from "bun:test";
-import {
-  constants,
-  createHash,
-  createPrivateKey,
-  sign,
-  X509Certificate,
-} from "node:crypto";
+import { constants, createHash, createPrivateKey, sign } from "node:crypto";
 
 import {
   createMemoryAdapter,
@@ -75,6 +69,8 @@ function signWith(
 const GOOD_SIGNATURE = signWith("rsa", toSignFor("Signature1"));
 
 const CERTS = {
+  brainpoolP256r1: await fixture("brainpoolP256r1"),
+  brainpoolP384r1: await fixture("brainpoolP384r1"),
   ed25519: await fixture("ed25519"),
   p256: await fixture("p256"),
   p384: await fixture("p384"),
@@ -83,6 +79,30 @@ const CERTS = {
   policy: await fixture("policy"),
   rsa: await fixture("rsa"),
   secp256k1: await fixture("secp256k1"),
+  // Self-signed P-256 certificates to O "Acme, Inc.": end-entity ones whose
+  // KeyUsage asserts digitalSignature only, nonRepudiation only, or that have
+  // no KeyUsage, and a CA certificate asserting nonRepudiation.
+  "usage-ca": await fixture("usage-ca"),
+  "usage-none": await fixture("usage-none"),
+  "usage-nonrepudiation": await fixture("usage-nonrepudiation"),
+  "usage-signature": await fixture("usage-signature"),
+};
+
+/**
+ * Each brainpool key's signature over `toSignFor("Signature1")`, made by
+ * OpenSSL: Bun's `node:crypto` cannot sign with these curves.
+ */
+const BRAINPOOL_SIGNATURES = {
+  brainpoolP256r1: Buffer.from(
+    await Bun.file(
+      new URL("fixtures/brainpoolP256r1.sig", import.meta.url)
+    ).bytes()
+  ).toString("base64"),
+  brainpoolP384r1: Buffer.from(
+    await Bun.file(
+      new URL("fixtures/brainpoolP384r1.sig", import.meta.url)
+    ).bytes()
+  ).toString("base64"),
 };
 
 function sha256(base64: string): string {
@@ -152,16 +172,18 @@ function fakeService() {
             { status: 422 }
           );
         }
-        const key = new X509Certificate(
+        // Bun's X509Certificate cannot decode brainpool keys.
+        const key = nodeCertificateInspector.inspect(
           Buffer.from(body.certificate as string, "base64")
-        ).publicKey;
+        )?.key;
         const digest =
-          key.asymmetricKeyDetails?.namedCurve === "secp384r1"
+          key?.type === "ec" &&
+          (key.curve === "P-384" || key.curve === "brainpoolP384r1")
             ? "sha384"
             : "sha256";
         const signatureAlgorithm =
           fake.signatureAlgorithm ??
-          (key.asymmetricKeyType === "ec"
+          (key?.type === "ec"
             ? "ecdsa"
             : body.rsaPadding === "pss"
               ? "rsa-pss"
@@ -485,6 +507,14 @@ describe("sign flow", () => {
         expected: { digestAlgorithm: "sha384", signatureAlgorithm: "ecdsa" },
       },
       {
+        certificate: CERTS.brainpoolP256r1,
+        expected: { digestAlgorithm: "sha256", signatureAlgorithm: "ecdsa" },
+      },
+      {
+        certificate: CERTS.brainpoolP384r1,
+        expected: { digestAlgorithm: "sha384", signatureAlgorithm: "ecdsa" },
+      },
+      {
         certificate: CERTS.rsa,
         expected: {
           digestAlgorithm: "sha256",
@@ -496,6 +526,36 @@ describe("sign flow", () => {
       const { prepared } = await t.preparedJob(certificate);
       expect(prepared).toMatchObject(expected);
     }
+  });
+
+  test("completes jobs signed with brainpool keys", async () => {
+    for (const curve of ["brainpoolP256r1", "brainpoolP384r1"] as const) {
+      const t = setup();
+      const { id, token, claimNonce, prepared } = await t.preparedJob(
+        CERTS[curve]
+      );
+      expect(prepared.documents[0].toSign).toBe(toSignFor("Signature1"));
+      const response = await t.post(token, "signature", {
+        claimNonce,
+        signatures: [BRAINPOOL_SIGNATURES[curve]],
+      });
+      expect(response.status).toBe(200);
+      expect((await t.keyseal.status(id))?.state).toBe("completed");
+      expect(t.completed[0]?.result.certificate.key).toEqual({
+        curve,
+        type: "ec",
+      });
+    }
+    // A job announcing the other digest refuses the key in round 1.
+    const t = setup();
+    const { token } = await t.signJob({ digestAlgorithm: "sha256" });
+    const { claimNonce } = await t.claim(token);
+    const response = await t.post(token, "certificate", {
+      certificate: CERTS.brainpoolP384r1,
+      chain: [],
+      claimNonce,
+    });
+    expect(response.status).toBe(422);
   });
 
   test("asks the service for PSS on RSA keys when the job wants it", async () => {
@@ -967,6 +1027,78 @@ describe("node certificate inspector", () => {
   });
 });
 
+describe("node certificate inspector, brainpool and key usage", () => {
+  const der = (name: keyof typeof CERTS) => Buffer.from(CERTS[name], "base64");
+
+  test("reads brainpool keys and verifies their signatures", () => {
+    const data = Buffer.from(toSignFor("Signature1"), "base64");
+    const verify = (
+      name: keyof typeof CERTS,
+      signature: Uint8Array,
+      algorithm: "rsa-pkcs1-v1_5" | "ecdsa",
+      digest: "sha256" | "sha384",
+      signed: Uint8Array = data
+    ) =>
+      nodeCertificateInspector.verify(
+        der(name),
+        signed,
+        signature,
+        algorithm,
+        digest
+      );
+    const p256 = Buffer.from(BRAINPOOL_SIGNATURES.brainpoolP256r1, "base64");
+    const p384 = Buffer.from(BRAINPOOL_SIGNATURES.brainpoolP384r1, "base64");
+    expect(
+      nodeCertificateInspector.inspect(der("brainpoolP256r1"))?.key
+    ).toEqual({ curve: "brainpoolP256r1", type: "ec" });
+    expect(
+      nodeCertificateInspector.inspect(der("brainpoolP384r1"))?.key
+    ).toEqual({ curve: "brainpoolP384r1", type: "ec" });
+    expect(verify("brainpoolP256r1", p256, "ecdsa", "sha256")).toBe(true);
+    expect(verify("brainpoolP384r1", p384, "ecdsa", "sha384")).toBe(true);
+
+    const tampered = Buffer.from(p256);
+    tampered[tampered.length - 1]! ^= 1;
+    expect(verify("brainpoolP256r1", tampered, "ecdsa", "sha256")).toBe(false);
+    expect(
+      verify("brainpoolP256r1", p256, "ecdsa", "sha256", Buffer.from("other"))
+    ).toBe(false);
+    expect(verify("brainpoolP256r1", p256, "ecdsa", "sha384")).toBe(false);
+    expect(verify("brainpoolP256r1", p256, "rsa-pkcs1-v1_5", "sha256")).toBe(
+      false
+    );
+    expect(verify("brainpoolP384r1", p256, "ecdsa", "sha384")).toBe(false);
+    expect(verify("p256", p256, "ecdsa", "sha256")).toBe(false);
+    expect(
+      verify("brainpoolP256r1", Buffer.from([0x30, 0]), "ecdsa", "sha256")
+    ).toBe(false);
+  });
+
+  test("reads the KeyUsage bits and whether it is a CA", () => {
+    const inspect = (name: keyof typeof CERTS) => {
+      const inspected = nodeCertificateInspector.inspect(der(name));
+      return { ca: inspected?.ca, keyUsage: inspected?.keyUsage };
+    };
+    expect(inspect("usage-signature")).toEqual({
+      ca: false,
+      keyUsage: ["digitalSignature"],
+    });
+    expect(inspect("usage-nonrepudiation")).toEqual({
+      ca: false,
+      keyUsage: ["nonRepudiation"],
+    });
+    expect(inspect("policy")).toEqual({
+      ca: false,
+      keyUsage: ["digitalSignature", "nonRepudiation"],
+    });
+    expect(inspect("usage-none")).toEqual({ ca: false, keyUsage: null });
+    expect(inspect("usage-ca")).toEqual({
+      ca: true,
+      keyUsage: ["nonRepudiation"],
+    });
+  });
+});
+
 describe("enrol flow", () => {
   test("hands the certificate facts to onCompleted in one round", async () => {
     const t = setup();
@@ -1048,6 +1180,11 @@ describe("certificate policy", () => {
       { issuerCommonNames: ["x".repeat(201)] },
       { issuerCommonNames: [1] },
       { subjectOrganization: "" },
+      { keyUsage: "keyCertSign" },
+      { keyUsage: "NonRepudiation" },
+      { keyUsage: ["nonRepudiation"] },
+      { keyUsage: null },
+      { policyOids: ["2.16.356.100.2.3"], keyUsage: "" },
     ];
     for (const certificatePolicy of invalid) {
       const input = {
@@ -1071,6 +1208,87 @@ describe("certificate policy", () => {
       policyOids: [`2.${"1".repeat(126)}`, "0.0"],
       subjectOrganization: "é".repeat(200),
     });
+  });
+
+  test("accepts a policy of only keyUsage, with either value", async () => {
+    const t = setup();
+    for (const keyUsage of ["nonRepudiation", "digitalSignature"] as const) {
+      const { token } = await t.signJob({ certificatePolicy: { keyUsage } });
+      expect((await t.jobFor(token)).certificatePolicy).toEqual({ keyUsage });
+      expect((await t.claim(token)).certificatePolicy).toEqual({ keyUsage });
+    }
+  });
+
+  test("requires the key usage the policy asks for", async () => {
+    const policies = {
+      absent: { subjectOrganization: "Acme, Inc." },
+      digitalSignature: { keyUsage: "digitalSignature" },
+      nonRepudiation: { keyUsage: "nonRepudiation" },
+    } as const;
+    const cases: [keyof typeof CERTS, (keyof typeof policies)[]][] = [
+      ["usage-signature", ["digitalSignature"]],
+      [
+        "usage-nonrepudiation",
+        ["absent", "digitalSignature", "nonRepudiation"],
+      ],
+      ["policy", ["absent", "digitalSignature", "nonRepudiation"]],
+      ["usage-none", []],
+      ["usage-ca", []],
+    ];
+    for (const [name, accepted] of cases) {
+      for (const [setting, certificatePolicy] of Object.entries(policies)) {
+        const t = setup();
+        const { token } = await t.keyseal.createEnrolJob({
+          certificatePolicy,
+          signer: "Asha Rao",
+          title: "DSC enrolment",
+        });
+        const { claimNonce } = await t.claim(token);
+        const response = await t.post(token, "certificate", {
+          certificate: CERTS[name],
+          chain: [],
+          claimNonce,
+        });
+        expect({ name, setting, status: response.status }).toEqual({
+          name,
+          setting,
+          status: accepted.includes(setting as keyof typeof policies)
+            ? 200
+            : 422,
+        });
+      }
+    }
+  });
+
+  test("asks the service to check the job's key usage in both rounds", async () => {
+    const cases = [
+      [undefined, "nonRepudiation"],
+      [{ subjectOrganization: "Acme, Inc." }, "nonRepudiation"],
+      [{ keyUsage: "nonRepudiation" }, "nonRepudiation"],
+      [{ keyUsage: "digitalSignature" }, "digitalSignature"],
+    ] as const;
+    for (const [certificatePolicy, keyUsage] of cases) {
+      const t = setup();
+      const certificate =
+        certificatePolicy === undefined ? CERTS.rsa : CERTS.policy;
+      const { token, claimNonce, prepared } = await t.preparedJob(
+        certificate,
+        certificatePolicy === undefined ? {} : { certificatePolicy }
+      );
+      if (certificatePolicy === undefined) {
+        await t.post(token, "signature", {
+          claimNonce,
+          signatures: signaturesFor(prepared),
+        });
+      }
+      const bodies = t.fake.calls
+        .filter((call) => call.path === "/certificate")
+        .map((call) => call.body);
+      expect(bodies.length).toBe(certificatePolicy === undefined ? 2 : 1);
+      for (const body of bodies) {
+        expect(body).toEqual({ certificate, chain: [], keyUsage });
+      }
+    }
   });
 
   test("returns the policy in the job description of both kinds", async () => {
@@ -1154,6 +1372,31 @@ describe("certificate policy", () => {
         expect(t.fake.calls).toEqual([]);
       }
     }
+  });
+});
+
+describe("service client", () => {
+  test("sends base and keyUsage as validate query parameters", async () => {
+    const paths: string[] = [];
+    const service = new ServiceClient({
+      async fetch(input) {
+        paths.push(`${input.pathname}${input.search}`);
+        return Response.json({ signatures: [], status: "no_signatures" });
+      },
+      token: SERVICE_TOKEN,
+      url: "http://signing:8080",
+    });
+    const pdf = new Uint8Array(PDF);
+    await service.validate(pdf);
+    await service.validate(pdf, 1234);
+    await service.validate(pdf, undefined, "digitalSignature");
+    await service.validate(pdf, 1234, "nonRepudiation");
+    expect(paths).toEqual([
+      "/validate",
+      "/validate?base=1234",
+      "/validate?keyUsage=digitalSignature",
+      "/validate?base=1234&keyUsage=nonRepudiation",
+    ]);
   });
 });
 

@@ -238,8 +238,11 @@ A `CertificatePolicy` is an object with at least one of these members:
 | `policyOids` | array of 1 to 16 OIDs, each in dotted-decimal form matching `^[0-2](\.(0\|[1-9][0-9]*))+$` and at most 128 characters | Its certificatePolicies extension (RFC 5280 section 4.2.1.4) holds at least one of them as a `policyIdentifier`. |
 | `issuerCommonNames` | array of 1 to 16 strings, each 1 to 200 characters | The common name (CN) of its issuer name, which is the subject CN of the CA that issued it, equals one of them. |
 | `subjectOrganization` | string, 1 to 200 characters | The organization (O) of its subject name equals it. |
+| `keyUsage` | `"nonRepudiation"` or `"digitalSignature"` | Its KeyUsage extension asserts the key usage the member names, under the key usage rule below. |
 
-A certificate satisfies the policy when it satisfies every member present. Strings compare exactly, code point by code point, without case folding or normalisation. A name with no CN or O attribute, or with more than one, satisfies no member that reads it. Policy qualifiers are ignored, and `anyPolicy` in a certificate matches only an OID list that names it. A server MUST NOT send `certificatePolicy` without a member.
+A policy with only `keyUsage` is valid. A certificate satisfies the policy when it satisfies every member present. Strings compare exactly, code point by code point, without case folding or normalisation. A name with no CN or O attribute, or with more than one, satisfies no member that reads it. Policy qualifiers are ignored, and `anyPolicy` in a certificate matches only an OID list that names it. A server MUST NOT send `certificatePolicy` without a member.
+
+Key usage rule: every job requires a key usage, the policy's `keyUsage`, or `nonRepudiation` when the job has no `certificatePolicy` or its policy has no `keyUsage`. A certificate has the key usage `nonRepudiation` when its KeyUsage extension (RFC 5280 section 4.2.1.3) asserts the nonRepudiation (contentCommitment) bit, and the key usage `digitalSignature` when it asserts the digitalSignature bit, the nonRepudiation bit or both. A certificate without a KeyUsage extension, and a CA certificate (basicConstraints with `cA` true), has neither and is never accepted. `nonRepudiation` is the default because it marks a key for signatures that commit the signer to content, as Indian DSCs and qualified certificates assert; `digitalSignature` admits tokens such as corporate PIV cards whose signing certificate asserts digitalSignature only.
 
 Informative: Indian DSCs mark their class with CCA India certificate policy OIDs, `2.16.356.100.2.2` for Class 2 and `2.16.356.100.2.3` for Class 3 (CCA, *OID Hierarchy for India PKI*). The CCA interoperability guidelines have a certificate carry the OID of its class and of every lower class, so `policyOids: ["2.16.356.100.2.3"]` admits Class 3 certificates only and `["2.16.356.100.2.2"]` admits Class 2 and Class 3.
 
@@ -248,7 +251,7 @@ The claim nonce MUST come from a CSPRNG with at least 128 bits of entropy; 32 ra
 The helper MUST then:
 
 1. Check that `kind` equals the link's action, and for a sign job that `documents` has 1 to 20 entries whose `document` is the job URL followed by `/documents/<index>` for the entry's own index. If not, report a failure (section 8.7) and stop.
-2. Find the certificates on the token whose key is supported (section 11); section 12.1 says when the helper may log in first. If `expectedCertificateSha256` is present, keep only the certificate whose DER SHA-256 equals it. If `certificatePolicy` is present, keep only the certificates that satisfy it. If none remain, report a failure and stop, with a message that says plainly that the token holds no certificate the origin accepts for the job. If more than one remains, the user chooses.
+2. Find the certificates on the token whose key is supported (section 11); section 12.1 says when the helper may log in first. If `expectedCertificateSha256` is present, keep only the certificate whose DER SHA-256 equals it. If `certificatePolicy` is present, keep only the certificates that satisfy it. Keep only the certificates that have the job's key usage (the key usage rule above), with or without a policy. If none remain, report a failure and stop, with a message that says plainly that the token holds no certificate the origin accepts for the job. If more than one remains, the user chooses.
 3. Continue with section 8.3 for `sign` or section 8.6 for `enrol`.
 
 ### 8.3 Sign round 1: `POST <job URL>/certificate`
@@ -261,7 +264,7 @@ Request, `CertificateSubmission`:
 
 `certificate` is the chosen certificate, at most 16384 characters. `chain` holds the certificates of the chosen certificate's issuer chain found on the token (its issuer, that issuer's issuer and so on), never the token's other certificates, at most 8 entries of at most 16384 characters each, in any order; it MAY be empty.
 
-The job MUST be `claimed`. The server MUST refuse the certificate with `422` unless it parses as an X.509 certificate, is valid at the time of the request, has a key supported by section 11, chains to a root the signing service trusts, if the job has an expected certificate has that SHA-256, if the job has a certificate policy satisfies it (section 8.2), and, if the job description carried `digestAlgorithm`, has a key whose digest under section 11 is that value. A refused certificate fails the job (section 8.8). For `issuerCommonNames` the server MAY read the CN from the certificate's issuer name rather than from the CA certificate on the path: a path to a trusted root links each certificate to its issuer by name and by signature (RFC 5280 section 6), so a certificate that passes the chain check names the CA that issued it. Otherwise the server asks the signing service to prepare a signature in every document with the certificate and chain, stores what it needs to finish each of them, moves the job to `prepared` and returns `200` with a `PreparedSignature`:
+The job MUST be `claimed`. The server MUST refuse the certificate with `422` unless it parses as an X.509 certificate, is valid at the time of the request, has a key supported by section 11, chains to a root the signing service trusts, has the job's key usage (section 8.2), if the job has an expected certificate has that SHA-256, if the job has a certificate policy satisfies it (section 8.2), and, if the job description carried `digestAlgorithm`, has a key whose digest under section 11 is that value. A refused certificate fails the job (section 8.8). For `issuerCommonNames` the server MAY read the CN from the certificate's issuer name rather than from the CA certificate on the path: a path to a trusted root links each certificate to its issuer by name and by signature (RFC 5280 section 6), so a certificate that passes the chain check names the CA that issued it. Otherwise the server asks the signing service to prepare a signature in every document with the certificate and chain, stores what it needs to finish each of them, moves the job to `prepared` and returns `200` with a `PreparedSignature`:
 
 | Member | Type | Meaning |
 | --- | --- | --- |
@@ -299,7 +302,7 @@ The server MUST verify every signature over its document's `toSign` with the rou
 
 ### 8.6 Enrol: `POST <job URL>/certificate`
 
-Enrol is a single round. The request is a `CertificateSubmission` as in section 8.3. The job MUST be `claimed`. The server MUST apply the certificate checks of section 8.3: it refuses with `422`, failing the job, a certificate that does not parse as X.509, is not valid at the time of the request, has a key not supported by section 11, does not match the expected SHA-256, does not satisfy the job's certificate policy, or does not chain to a root the signing service trusts. It MAY refuse other certificates by its own policy. On acceptance it moves the job to `completed`, hands the certificate and chain to the integrator, and returns `200` with `EnrolResult` (`{}`). What the integrator stores is its own policy.
+Enrol is a single round. The request is a `CertificateSubmission` as in section 8.3. The job MUST be `claimed`. The server MUST apply the certificate checks of section 8.3: it refuses with `422`, failing the job, a certificate that does not parse as X.509, is not valid at the time of the request, has a key not supported by section 11, does not match the expected SHA-256, does not satisfy the job's certificate policy, does not have the job's key usage, or does not chain to a root the signing service trusts. It MAY refuse other certificates by its own policy. On acceptance it moves the job to `completed`, hands the certificate and chain to the integrator, and returns `200` with `EnrolResult` (`{}`). What the integrator stores is its own policy.
 
 The helper MAY log in to the token to read certificates for an enrol job, after showing what section 12.2 requires.
 
@@ -405,14 +408,16 @@ After login, the helper MUST sign with the private key that belongs to the poste
 | RSA | `sha256` chosen by the server; the helper accepts `sha256` or `sha384` | `rsa-pkcs1-v1_5` or `rsa-pss` | Octet string of the modulus length (RFC 8017 I2OSP) |
 | EC P-256 | `sha256` | `ecdsa` | DER `ECDSA-Sig-Value` |
 | EC P-384 | `sha384` | `ecdsa` | DER `ECDSA-Sig-Value` |
+| EC brainpoolP256r1 | `sha256` | `ecdsa` | DER `ECDSA-Sig-Value` |
+| EC brainpoolP384r1 | `sha384` | `ecdsa` | DER `ECDSA-Sig-Value` |
 
-Any other key type or curve is unsupported. The server MUST NOT prepare a signature for it, and the helper MUST NOT offer its certificate. P-256 requires `sha256` and P-384 requires `sha384`; the helper MUST refuse any other pairing, and MUST refuse `ecdsa` with an RSA key or an RSA scheme with an EC key.
+Any other key type or curve is unsupported. The server MUST NOT prepare a signature for it, and the helper MUST NOT offer its certificate. The EC curves are named by their OIDs in the certificate's SubjectPublicKeyInfo: P-256 (secp256r1, `1.2.840.10045.3.1.7`), P-384 (secp384r1, `1.3.132.0.34`), brainpoolP256r1 (`1.3.36.3.3.2.8.1.1.7`) and brainpoolP384r1 (`1.3.36.3.3.2.8.1.1.11`), the last two from RFC 5639. P-256 and brainpoolP256r1 require `sha256`, and P-384 and brainpoolP384r1 require `sha384`; the helper MUST refuse any other pairing, and MUST refuse `ecdsa` with an RSA key or an RSA scheme with an EC key.
 
 Each signature is computed over the exact `toSign` bytes of its document: the input to the digest is the DER SignedAttributes with outer tag 0x31.
 
 - **RSA PKCS#1 v1.5**: RSASSA-PKCS1-v1_5 (RFC 8017) with `digestAlgorithm`.
 - **RSA-PSS**: RSASSA-PSS (RFC 8017) with `digestAlgorithm` as the message digest, MGF1 with the same digest, salt length equal to the digest length (32 for sha256, 48 for sha384), and trailer field 1.
-- **ECDSA**: ECDSA over the digest of `toSign`. The raw `r || s` value from the token MUST be exactly twice the field length (64 bytes for P-256, 96 for P-384); the helper encodes it as DER `ECDSA-Sig-Value` (SEQUENCE of two minimal INTEGERs). The helper MUST NOT send raw `r || s`, and the server MUST refuse it.
+- **ECDSA**: ECDSA over the digest of `toSign`. The raw `r || s` value from the token MUST be exactly twice the field length (64 bytes for P-256 and brainpoolP256r1, 96 for P-384 and brainpoolP384r1); the helper encodes it as DER `ECDSA-Sig-Value` (SEQUENCE of two minimal INTEGERs). The helper MUST NOT send raw `r || s`, and the server MUST refuse it.
 
 The helper MUST read the key type from the token's key object and cross-check it with the certificate's SubjectPublicKeyInfo.
 
@@ -436,7 +441,7 @@ The helper MUST first try to enumerate certificates without logging in to the to
    - for a job with several documents, their number, and each document's `title` in order;
    - the subject of the certificate it will sign with;
    - each document's `messageDigest` from its `toSign`, as lowercase hex, beside that document's `title` when there are several.
-3. Ask for the PIN once, log in, and sign every document in the same token session.
+3. Ask for the PIN once, log in, and sign every document in the same token session, re-authenticating the key before each signature when it requires that (below).
 
 If the token exposes no certificate before login, the helper MAY ask for the PIN first. In that case:
 
@@ -445,7 +450,9 @@ If the token exposes no certificate before login, the helper MAY ask for the PIN
 3. The helper MUST then show a second prompt with the certificate subject and every document's `messageDigest` as lowercase hex, and MUST require one explicit confirmation before signing the documents.
 4. If the user declines, the helper MUST close the token session (logout) and report a failure (section 8.7).
 
-In both paths the PIN is not retained beyond the login call (section 12.3), and the user approves the documents together: there is one PIN prompt or confirmation per job, not per document. Any validation failure in either path is reported and stops the job without signing any document.
+In both paths the PIN is not retained beyond the job's signatures (section 12.3), and the user approves the documents together: there is one PIN prompt or confirmation per job, not per document.
+
+A private key whose `CKA_ALWAYS_AUTHENTICATE` attribute is true needs a context-specific login (`C_Login` with `CKU_CONTEXT_SPECIFIC`) after each `C_SignInit`. The approval and the PIN entry still cover the whole job: the helper MUST NOT ask for the PIN again per document, and MUST re-authenticate the key before each signature with the PIN entered once. On a protected authentication path (section 12.3) the PIN never reaches the helper; the helper makes each context-specific login without a PIN and the reader asks for it once per document, which the helper SHOULD say before signing. Any validation failure in either path is reported and stops the job without signing any document.
 
 In either path, a view MAY keep the document titles, the certificate subject and the digests behind a control in the same view that reveals them, provided the number of documents is shown without it.
 
@@ -460,7 +467,7 @@ Before asking for a PIN or reading certificates, the helper MUST show the origin
 - The helper asks for the PIN once per job, whatever the number of documents, and MUST NOT retry a PIN automatically.
 - The helper SHOULD show the remaining retry count where the driver exposes it.
 - For tokens with a PIN pad, the helper MUST use the protected authentication path.
-- The PIN MUST NOT leave the helper: it is never sent over the network, written to disk or logged, and the helper clears it from memory after login.
+- The PIN MUST NOT leave the helper: it is never sent over the network, written to disk or logged, and the helper clears it from memory after login. For a key that requires a context-specific login before each signature (section 12.1), the helper keeps it in memory it clears until the job's signatures are done, and no longer.
 
 ### 12.4 Text from the server
 

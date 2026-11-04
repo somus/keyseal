@@ -5,7 +5,9 @@
 //! and signs a batch of three documents after one login on both. It
 //! refuses tampered SignedAttributes before the PIN, wrong pairings of key
 //! and algorithm, documents that don't hash to the digest, a batch with one
-//! such document, and untrusted origins, and enrols a certificate.
+//! such document, and untrusted origins, and enrols a certificate. A
+//! second test signs with keys that need the PIN for each signature and
+//! with brainpool keys, and applies the job's key usage.
 //! Runs when `KEYSEAL_SOFTHSM_MODULE` names libsofthsm2, and needs
 //! softhsm2-util, pkcs11-tool (OpenSC) and openssl on the PATH.
 
@@ -118,6 +120,7 @@ struct Job {
     documents: usize,
     /// This served document differs from the one its `toSign` was made for.
     tampered: Option<usize>,
+    certificate_policy: Option<Value>,
 }
 
 impl Job {
@@ -133,6 +136,7 @@ impl Job {
             extra: None,
             documents: 1,
             tampered: None,
+            certificate_policy: None,
         }
     }
 
@@ -250,6 +254,9 @@ fn serve(listener: TcpListener, job: Job) -> Posted {
                     }
                     if let Some(digest) = job.job_digest {
                         description["digestAlgorithm"] = digest.into();
+                    }
+                    if let Some(policy) = &job.certificate_policy {
+                        description["certificatePolicy"] = policy.clone();
                     }
                     if job.kind == "sign" {
                         description["documents"] = (0..job.documents)
@@ -438,13 +445,17 @@ fn init_token(dir: &Path, name: &str) -> String {
     conf
 }
 
-/// A certificate `name.der` and its key: with `ca` a self-signed CA,
-/// otherwise an end-entity signing certificate issued by `ca.der`.
-fn make_certificate(dir: &Path, name: &str, newkey: &[&str], ca: bool) {
-    let extensions: &[&str] = if ca {
-        &[]
-    } else {
-        &[
+/// The key usage of an end-entity signing certificate.
+const SIGNING: Option<&str> = Some("digitalSignature,nonRepudiation");
+
+/// A certificate `name.der` and its key: with no `key_usage` a self-signed
+/// CA, otherwise an end-entity certificate with that key usage issued by
+/// `ca.der`.
+fn make_certificate(dir: &Path, name: &str, newkey: &[&str], key_usage: Option<&str>) {
+    let key_usage = key_usage.map(|usage| format!("keyUsage=critical,{usage}"));
+    let extensions: Vec<&str> = match &key_usage {
+        None => Vec::new(),
+        Some(key_usage) => vec![
             "-CA",
             "ca.der",
             "-CAkey",
@@ -452,15 +463,15 @@ fn make_certificate(dir: &Path, name: &str, newkey: &[&str], ca: bool) {
             "-addext",
             "basicConstraints=critical,CA:FALSE",
             "-addext",
-            "keyUsage=critical,digitalSignature,nonRepudiation",
-        ]
+            key_usage,
+        ],
     };
     run(Command::new("openssl")
         .current_dir(dir)
         .args(["req", "-x509", "-nodes", "-days", "1"])
         .args(["-subj", &format!("/CN=Test {name}")])
         .args(newkey)
-        .args(extensions)
+        .args(&extensions)
         .args(["-keyout", &format!("{name}.pem")])
         .args(["-outform", "DER", "-out", &format!("{name}.der")]));
     run(Command::new("openssl").current_dir(dir).args([
@@ -474,7 +485,8 @@ fn make_certificate(dir: &Path, name: &str, newkey: &[&str], ca: bool) {
     ]));
 }
 
-/// Writes `name`'s certificate (and key, unless `cert_only`) to the token.
+/// Writes `name`'s certificate (and key, unless `cert_only`) to the token;
+/// with `always_auth`, a key that needs the PIN for each signature.
 fn write_objects(
     setup: &Setup,
     conf: &str,
@@ -482,6 +494,7 @@ fn write_objects(
     id: &str,
     cert_only: bool,
     private_cert: bool,
+    always_auth: bool,
 ) {
     let mut objects = vec![(format!("{name}.der"), "cert")];
     if !cert_only {
@@ -505,6 +518,9 @@ fn write_objects(
             ]);
         if kind == "privkey" {
             command.arg("--usage-sign");
+            if always_auth {
+                command.arg("--always-auth");
+            }
         }
         if kind == "cert" && private_cert {
             command.arg("--private");
@@ -533,26 +549,26 @@ fn runs_jobs_on_softhsm() {
     // private object.
     let public = init_token(&setup.dir, "public");
     let private = init_token(&setup.dir, "private");
-    make_certificate(&setup.dir, "ca", &["-newkey", "rsa:2048"], true);
-    make_certificate(&setup.dir, "rsa", &["-newkey", "rsa:2048"], false);
+    make_certificate(&setup.dir, "ca", &["-newkey", "rsa:2048"], None);
+    make_certificate(&setup.dir, "rsa", &["-newkey", "rsa:2048"], SIGNING);
     make_certificate(
         &setup.dir,
         "p256",
         &["-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256"],
-        false,
+        SIGNING,
     );
     make_certificate(
         &setup.dir,
         "p384",
         &["-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-384"],
-        false,
+        SIGNING,
     );
-    make_certificate(&setup.dir, "hidden", &["-newkey", "rsa:2048"], false);
-    write_objects(&setup, &public, "rsa", "01", false, false);
-    write_objects(&setup, &public, "p256", "02", false, false);
-    write_objects(&setup, &public, "p384", "03", false, false);
-    write_objects(&setup, &public, "ca", "09", true, false);
-    write_objects(&setup, &private, "hidden", "01", false, true);
+    make_certificate(&setup.dir, "hidden", &["-newkey", "rsa:2048"], SIGNING);
+    write_objects(&setup, &public, "rsa", "01", false, false, false);
+    write_objects(&setup, &public, "p256", "02", false, false, false);
+    write_objects(&setup, &public, "p384", "03", false, false, false);
+    write_objects(&setup, &public, "ca", "09", true, false, false);
+    write_objects(&setup, &private, "hidden", "01", false, true, false);
 
     // Certificates visible before login: one view with the digest, then the PIN.
     for (name, digest, scheme) in [
@@ -864,6 +880,145 @@ fn runs_jobs_on_softhsm() {
 
     // Development origins are never written to the trust store.
     assert!(!setup.dir.join("config").join("trust.json").exists());
+
+    let _ = std::fs::remove_dir_all(&setup.dir);
+}
+
+/// Keys and certificates beyond the plain ones: keys that need the PIN for
+/// each signature (CKA_ALWAYS_AUTHENTICATE, which SoftHSM enforces) sign a
+/// batch after one PIN; brainpoolP256r1 and brainpoolP384r1 keys sign; and
+/// a certificate whose key usage has digitalSignature without
+/// nonRepudiation is used only when the job's policy asks for
+/// digitalSignature.
+#[test]
+fn signs_with_other_keys_on_softhsm() {
+    let Ok(module) = std::env::var("KEYSEAL_SOFTHSM_MODULE") else {
+        eprintln!("skipped: set KEYSEAL_SOFTHSM_MODULE to libsofthsm2 to run");
+        return;
+    };
+    let dir = std::env::temp_dir().join(format!("keyseal-softhsm-other-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let setup = Setup { dir, module };
+    let always = init_token(&setup.dir, "always");
+    let brainpool = init_token(&setup.dir, "brainpool");
+    let usage = init_token(&setup.dir, "usage");
+    make_certificate(&setup.dir, "ca", &["-newkey", "rsa:2048"], None);
+    for (name, newkey) in [
+        ("rsa", &["-newkey", "rsa:2048"][..]),
+        (
+            "p256",
+            &["-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256"],
+        ),
+        (
+            "bp256",
+            &[
+                "-newkey",
+                "ec",
+                "-pkeyopt",
+                "ec_paramgen_curve:brainpoolP256r1",
+            ],
+        ),
+        (
+            "bp384",
+            &[
+                "-newkey",
+                "ec",
+                "-pkeyopt",
+                "ec_paramgen_curve:brainpoolP384r1",
+            ],
+        ),
+    ] {
+        make_certificate(&setup.dir, name, newkey, SIGNING);
+    }
+    make_certificate(
+        &setup.dir,
+        "digital",
+        &["-newkey", "rsa:2048"],
+        Some("digitalSignature"),
+    );
+    write_objects(&setup, &always, "rsa", "01", false, false, true);
+    write_objects(&setup, &always, "p256", "02", false, false, true);
+    write_objects(&setup, &brainpool, "bp256", "01", false, false, false);
+    write_objects(&setup, &brainpool, "bp384", "02", false, false, false);
+    write_objects(&setup, &usage, "digital", "01", false, false, false);
+
+    // One PIN, then a context-specific login before each of the batch's
+    // signatures, with the combined RSA mechanism and with raw ECDSA.
+    for (name, scheme) in [("rsa", "rsa-pkcs1-v1_5"), ("p256", "ecdsa")] {
+        let certificate = setup.read(&format!("{name}.der"));
+        let job = Job {
+            documents: 3,
+            ..Job::sign(&certificate, "sha256", scheme)
+        };
+        let (output, posted) = setup.run_job(&always, job, PIN, true);
+        let log = stderr(&output);
+        assert!(output.status.success(), "{name}: {log}");
+        assert!(!log.contains("KEYSEAL_PIN isn't set"), "{log}");
+        let signatures = posted.signatures.unwrap();
+        assert_eq!(signatures.len(), 3);
+        for (to_sign, signature) in posted.to_sign.iter().zip(&signatures) {
+            setup.verify(name, "sha256", scheme, to_sign, signature);
+        }
+    }
+
+    for (name, digest) in [("bp256", "sha256"), ("bp384", "sha384")] {
+        let certificate = setup.read(&format!("{name}.der"));
+        let (output, posted) = setup.run_job(
+            &brainpool,
+            Job::sign(&certificate, digest, "ecdsa"),
+            PIN,
+            true,
+        );
+        assert!(output.status.success(), "{name}: {}", stderr(&output));
+        let signatures = posted.signatures.unwrap();
+        setup.verify(name, digest, "ecdsa", &posted.to_sign[0], &signatures[0]);
+    }
+    // The curve decides the digest, as for the NIST curves.
+    let bp256 = setup.read("bp256.der");
+    let (output, posted) = setup.run_job(
+        &brainpool,
+        Job::sign(&bp256, "sha384", "ecdsa"),
+        WRONG_PIN,
+        true,
+    );
+    assert!(!output.status.success());
+    let failure = posted.failure.unwrap();
+    assert!(
+        failure.contains("which a BrainpoolP256r1 key doesn't sign"),
+        "{failure}"
+    );
+
+    let digital = setup.read("digital.der");
+    let job = |policy: Option<Value>| Job {
+        expected: None,
+        certificate_policy: policy,
+        ..Job::sign(&digital, "sha256", "rsa-pkcs1-v1_5")
+    };
+    let (output, posted) = setup.run_job(
+        &usage,
+        job(Some(json!({ "keyUsage": "digitalSignature" }))),
+        PIN,
+        true,
+    );
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(posted.certificate.as_deref(), Some(&digital[..]));
+    setup.verify(
+        "digital",
+        "sha256",
+        "rsa-pkcs1-v1_5",
+        &posted.to_sign[0],
+        &posted.signatures.unwrap()[0],
+    );
+    for policy in [None, Some(json!({ "keyUsage": "nonRepudiation" }))] {
+        let (output, posted) = setup.run_job(&usage, job(policy), PIN, true);
+        assert!(!output.status.success());
+        assert_eq!(
+            posted.failure.as_deref(),
+            Some("No signing certificate was found on the token.")
+        );
+        assert!(posted.certificate.is_none());
+    }
 
     let _ = std::fs::remove_dir_all(&setup.dir);
 }

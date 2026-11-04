@@ -119,8 +119,9 @@ interface JobInput {
   expectedCertificateSha256?: string;
   /**
    * Limits the job to certificates with one of these policy OIDs, issuer
-   * CNs, or this subject O; every member given must hold. For enrolment and
-   * first signatures, where no certificate can be pinned yet.
+   * CNs, or this subject O, and to the key usage asked for (nonRepudiation
+   * by default); every member given must hold. For enrolment and first
+   * signatures, where no certificate can be pinned yet.
    */
   certificatePolicy?: CertificatePolicy;
   /** Handed back on the job in `onCompleted` and `status`. */
@@ -247,7 +248,8 @@ function checkPolicy(policy: unknown): CertificatePolicy {
   if (!isObject(policy)) {
     throw new TypeError("certificatePolicy must be an object");
   }
-  const { policyOids, issuerCommonNames, subjectOrganization } = policy;
+  const { policyOids, issuerCommonNames, subjectOrganization, keyUsage } =
+    policy;
   const checked: CertificatePolicy = {};
   if (policyOids !== undefined) {
     checkList(
@@ -281,9 +283,17 @@ function checkPolicy(policy: unknown): CertificatePolicy {
     );
     checked.subjectOrganization = subjectOrganization as string;
   }
+  if (keyUsage !== undefined) {
+    if (keyUsage !== "nonRepudiation" && keyUsage !== "digitalSignature") {
+      throw new TypeError(
+        'certificatePolicy.keyUsage must be "nonRepudiation" or "digitalSignature"'
+      );
+    }
+    checked.keyUsage = keyUsage;
+  }
   if (Object.keys(checked).length === 0) {
     throw new TypeError(
-      "certificatePolicy needs policyOids, issuerCommonNames or subjectOrganization"
+      "certificatePolicy needs policyOids, issuerCommonNames, subjectOrganization or keyUsage"
     );
   }
   return checked;
@@ -292,16 +302,25 @@ function checkPolicy(policy: unknown): CertificatePolicy {
 /**
  * Protocol section 8.2. The issuer CN comes from the certificate's issuer
  * name; the chain check to a trusted root (section 8.3) binds that name to
- * the CA that signed it.
+ * the CA that signed it. Without `keyUsage`, nonRepudiation is required.
  */
 function satisfies(
   facts: Pick<
     CertificateFacts,
-    "policyOids" | "issuerCommonName" | "subjectOrganization"
+    | "policyOids"
+    | "issuerCommonName"
+    | "subjectOrganization"
+    | "keyUsage"
+    | "ca"
   >,
   policy: CertificatePolicy
 ): boolean {
+  const usage = facts.keyUsage ?? [];
   return (
+    !facts.ca &&
+    (usage.includes("nonRepudiation") ||
+      (policy.keyUsage === "digitalSignature" &&
+        usage.includes("digitalSignature"))) &&
     (policy.policyOids === undefined ||
       policy.policyOids.some((oid) => facts.policyOids.includes(oid))) &&
     (policy.issuerCommonNames === undefined ||
@@ -751,7 +770,7 @@ export function createKeySeal(options: KeySealOptions): KeySeal {
       return "The certificate could not be read.";
     }
     if (!inspected.key) {
-      return "The certificate's key is not supported. Use an RSA, P-256 or P-384 certificate.";
+      return "The certificate's key is not supported. Use an RSA, P-256, P-384 or brainpool certificate.";
     }
     return {
       ...inspected,
@@ -788,16 +807,21 @@ export function createKeySeal(options: KeySealOptions): KeySeal {
     if (job.digestAlgorithm && digestFor(facts.key) !== job.digestAlgorithm) {
       return "The certificate's key does not match the digest this job announced.";
     }
-    return await trustCertificate(facts);
+    return await trustCertificate(job, facts);
   }
 
-  /** The signing service's chain and revocation check, as both rounds ask it. */
+  /**
+   * The signing service's chain, key usage and revocation check, as both
+   * rounds ask it.
+   */
   async function trustCertificate(
+    job: Job,
     facts: Omit<CertificateFacts, "revocationChecked">
   ): Promise<CertificateFacts | string> {
     const { trusted, revocationChecked } = await service.certificate({
       certificate: facts.der,
       chain: facts.chain,
+      keyUsage: job.certificatePolicy?.keyUsage ?? "nonRepudiation",
     });
     if (!trusted) {
       return "The certificate is not from a trusted certifying authority, or may not sign.";
@@ -965,7 +989,7 @@ export function createKeySeal(options: KeySealOptions): KeySeal {
     }
     // Again, for the facts the integrator gets: the round 1 answer isn't kept,
     // and a revocation found since refuses the certificate now.
-    const facts = await trustCertificate(inspected);
+    const facts = await trustCertificate(job, inspected);
     if (typeof facts === "string") {
       return await refuse(job, lease, facts);
     }

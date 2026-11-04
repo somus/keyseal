@@ -1021,11 +1021,22 @@ impl JobWindow {
                 })
                 .map(|this| {
                     if *pin_pad {
+                        // A key that needs the PIN for each signature has the
+                        // pad ask once per document, which the helper can't
+                        // tell before login.
+                        let text = match self.job.kind {
+                            Kind::Sign if self.job.is_batch() => strings::PIN_PAD_BATCH,
+                            _ => strings::PIN_PAD,
+                        };
                         this.child(
                             h_flex()
+                                .id("pin-pad")
+                                .role(Role::Note)
+                                .aria_label(text)
                                 .gap_2()
                                 .child(icon("usb").size_4().text_color(cx.theme().muted_foreground))
-                                .child(note(strings::PIN_PAD, cx)),
+                                .child(note(text, cx))
+                                .test_support(),
                         )
                     } else {
                         this.child(
@@ -2301,6 +2312,39 @@ mod tests {
         })
         .unwrap();
         assert_eq!(answer.recv(), Ok(true));
+    }
+
+    /// On a PIN pad, a batch says the pad may ask once per document.
+    #[gpui_kit::test]
+    fn the_pin_pad_note_names_a_batch(cx: &mut TestAppContext) {
+        let mut windows = setup(cx);
+        let mut batch = job();
+        batch.documents.push("Annexure".into());
+        for (job, text) in [(job(), strings::PIN_PAD), (batch, strings::PIN_PAD_BATCH)] {
+            let digests = job.documents.iter().map(|_| DIGEST.into()).collect();
+            cx.update(|cx| {
+                windows.handle(
+                    Request::Job {
+                        job,
+                        stage: Stage::Pin {
+                            certificate: Some("CN=A. Signer".into()),
+                            digests: Some(digests),
+                            pin_pad: true,
+                            warning: None,
+                            reply: mpsc::channel().0,
+                        },
+                    },
+                    cx,
+                )
+            });
+            let handle = *open_windows(cx).last().unwrap();
+            cx.update_window(handle, |_, window, cx| {
+                window.render_frame(cx);
+                assert_eq!(window.find("pin-pad").label(), Some(text));
+            })
+            .unwrap();
+            cx.update(|cx| windows.close_all(cx));
+        }
     }
 
     #[gpui_kit::test]

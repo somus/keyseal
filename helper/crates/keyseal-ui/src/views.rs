@@ -82,7 +82,7 @@ impl Windows {
                 open(
                     strings::TRUST_WINDOW_TITLE,
                     440.,
-                    260.,
+                    trust_height(insecure),
                     self.log,
                     cx,
                     |window, cx| {
@@ -278,6 +278,12 @@ fn open<V: Render>(
     // front; without this the window can sit behind it or on another desktop.
     cx.activate(true);
     opened
+}
+
+/// The trust prompt's height: taller with the insecure banner, so its
+/// buttons stay inside the window.
+fn trust_height(insecure: bool) -> f32 {
+    if insecure { 312. } else { 260. }
 }
 
 /// The job window's size: taller for a batch, so its list of documents
@@ -2256,6 +2262,36 @@ mod tests {
             windows.handle(busy(job()), cx);
             assert!(opaque(cx));
         });
+    }
+
+    #[gpui_kit::test]
+    fn trust_prompt_buttons_fit_the_window(cx: &mut TestAppContext) {
+        let mut windows = setup(cx);
+        for insecure in [false, true] {
+            cx.update(|cx| {
+                windows.handle(
+                    Request::Trust {
+                        host: "localhost:3000".into(),
+                        insecure,
+                        reply: mpsc::channel().0,
+                    },
+                    cx,
+                )
+            });
+            let handle = *open_windows(cx).last().unwrap();
+            cx.update_window(handle, |_, window, cx| {
+                window.render_frame(cx);
+                let height = window.viewport_size().height;
+                for button in ["cancel", "trust"] {
+                    let bottom = window.find(button).bounds().bottom();
+                    assert!(
+                        bottom <= height,
+                        "{button} ends at {bottom:?}, below the window's {height:?} (insecure: {insecure})"
+                    );
+                }
+            })
+            .unwrap();
+        }
     }
 
     #[gpui_kit::test]

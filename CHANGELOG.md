@@ -39,6 +39,11 @@ lines under the new version with the release date.
 - Messages and the Linux desktop entry say "token or smart card" instead of
   "DSC token".
 
+#### Fixed
+
+- The trust prompt for an insecure test site is tall enough for its
+  buttons, which the warning banner pushed out of the window.
+
 ### [0.1.4][helper-0.1.4] - 2026-11-04
 
 #### Fixed

@@ -250,6 +250,8 @@ The catalogue is published as the `catalogue` release; its version is the
 
 ### [Unreleased][catalogue-unreleased]
 
+### [3][catalogue-3] - 2026-11-04
+
 #### Added
 
 - YubiKey PIV through Yubico's `ykcs11`, by USB id, and OpenSC for PIV,
@@ -286,4 +288,5 @@ The catalogue is published as the `catalogue` release; its version is the
 [browser-0.1.2]: https://github.com/somus/keyseal/compare/browser-v0.1.1...browser-v0.1.2
 [browser-0.1.1]: https://github.com/somus/keyseal/tree/browser-v0.1.1
 [catalogue-unreleased]: https://github.com/somus/keyseal/compare/catalogue...HEAD
+[catalogue-3]: https://github.com/somus/keyseal/releases/tag/catalogue
 [catalogue-2]: https://github.com/somus/keyseal/releases/tag/catalogue

@@ -456,7 +456,7 @@ A private key whose `CKA_ALWAYS_AUTHENTICATE` attribute is true needs a context-
 
 In either path, a view MAY keep the document titles, the certificate subject and the digests behind a control in the same view that reveals them, provided the number of documents is shown without it.
 
-On Windows, when the helper falls back to CNG, the vendor's PIN dialog is accepted; the helper MUST show the items of the first path's step 2 before handing off to it, and SHOULD sign every document through one key handle, so that a provider that keeps a handle authenticated asks for the PIN once per job. A provider that asks for the PIN on every signature by its own policy shows its dialog once per document.
+When the helper falls back to the system's certificate store (CNG on Windows, CryptoTokenKit on macOS), the system's or vendor's PIN dialog is accepted; the helper MUST show the items of the first path's step 2 before handing off to it, and SHOULD sign every document through one key handle, so that a provider that keeps a handle authenticated asks for the PIN once per job. A provider that asks for the PIN on every signature by its own policy shows its dialog once per document.
 
 ### 12.2 Enrol jobs
 

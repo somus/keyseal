@@ -1,7 +1,8 @@
 //! The protocol-speaking core of the KeySeal helper: link parsing, origin
 //! rules, trust on first use, the manifest, the job client, SignedAttributes
-//! checks, PKCS#11 signing with the CNG fallback on Windows, and the sign
-//! and enrol state machine that the headless CLI and the GUI share. Section
+//! checks, PKCS#11 signing with the system certificate store as a fallback
+//! (CNG on Windows, CryptoTokenKit on macOS), and the sign and enrol state
+//! machine that the headless CLI and the GUI share. Section
 //! numbers refer to `spec/protocol-v1.md`.
 
 use std::io::Write;
@@ -9,12 +10,14 @@ use std::path::{Path, PathBuf};
 
 pub mod catalogue;
 pub mod cms;
-#[cfg(any(windows, test))]
+#[cfg(windows)]
 pub mod cng;
 pub mod doctor;
 pub mod document;
 pub mod flow;
 pub mod install;
+#[cfg(target_os = "macos")]
+pub mod keychain;
 #[cfg(target_os = "macos")]
 pub mod macos;
 pub mod manifest;
@@ -22,6 +25,8 @@ pub mod modules;
 pub mod origin;
 pub mod preferences;
 pub mod protocol;
+#[cfg(any(windows, target_os = "macos", test))]
+pub mod store;
 pub mod token;
 pub mod trust;
 pub mod update;

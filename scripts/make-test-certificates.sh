@@ -77,3 +77,22 @@ usage usage-signature -addext "basicConstraints=critical,CA:FALSE" -addext "keyU
 usage usage-nonrepudiation -addext "basicConstraints=critical,CA:FALSE" -addext "keyUsage=critical,nonRepudiation"
 usage usage-none -addext "basicConstraints=critical,CA:FALSE"
 usage usage-ca -addext "basicConstraints=critical,CA:TRUE" -addext "keyUsage=critical,nonRepudiation,keyCertSign"
+
+# Identities for the helper's macOS keychain tests, which import them into a
+# throwaway keychain: self-signed end-entity certificates asserting
+# digitalSignature and nonRepudiation, as signing certificates do, with their
+# keys, as PKCS#12 under the password "keyseal".
+# 3DES and SHA-1 MACs, which every supported macOS imports.
+identity() {
+  name="$1"
+  shift
+  openssl genpkey "$@" -out "$work/$name.key" 2>/dev/null
+  openssl req -x509 -new -key "$work/$name.key" -subj "/C=IN/O=keyseal tests/CN=Test Signer $name" \
+    -not_before 20260101000000Z -not_after 20360101000000Z \
+    -addext "basicConstraints=critical,CA:FALSE" -addext "keyUsage=critical,digitalSignature,nonRepudiation" -out "$work/$name.pem"
+  openssl pkcs12 -export -inkey "$work/$name.key" -in "$work/$name.pem" -passout pass:keyseal \
+    -certpbe PBE-SHA1-3DES -keypbe PBE-SHA1-3DES -macalg sha1 -out "$helper_out/$name.p12"
+}
+
+identity keychain-rsa -algorithm RSA -pkeyopt rsa_keygen_bits:2048
+identity keychain-p256 -algorithm EC -pkeyopt ec_paramgen_curve:P-256

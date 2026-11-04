@@ -43,7 +43,11 @@ strings! {
     ENROL_NOTE = "Your PIN unlocks your token so KeySeal can find your certificate.";
     CONFIRM_NOTE = "Make sure this is the document you meant to sign, then confirm.";
     CONFIRM_BATCH_NOTE = "Make sure these are the documents you meant to sign, then confirm.";
-    ENROL_STORE_NOTE = "Next, KeySeal looks for your certificate in Windows.";
+    ENROL_STORE_NOTE = if cfg!(target_os = "macos") {
+        "Next, KeySeal looks for your certificate in the macOS keychain."
+    } else {
+        "Next, KeySeal looks for your certificate in Windows."
+    };
     CHOOSE_NOTE = "Your token holds more than one certificate. Choose the one to use.";
     WORKING = "Working...";
     // "{host}" is the site's host, as in the heading.

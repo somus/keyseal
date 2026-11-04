@@ -135,7 +135,8 @@ pub fn subject(der: &[u8]) -> String {
 
 /// What the sign and enrol flow needs from where the job's key lives: a
 /// PKCS#11 token, whose driver runs in this process or in the token worker,
-/// or on Windows the certificate store through CNG.
+/// or the system's certificate store (CNG on Windows, CryptoTokenKit on
+/// macOS).
 pub trait TokenBackend {
     /// The token has a PIN pad (protected authentication path).
     fn pin_pad(&self) -> bool;
@@ -152,8 +153,8 @@ pub trait TokenBackend {
     fn login(&self, pin: Zeroizing<String>) -> Result<(), TokenError>;
     /// The signature value over each item of `data`, in order, with the
     /// private key of `certificate` (DER), encoded as section 11.1 says. The
-    /// key is found once and every item is signed in the same session (on
-    /// CNG, through one key handle), so one login covers a job's documents.
+    /// key is found once and every item is signed in the same session (in
+    /// the certificate store, through one key handle), so one login covers a job's documents.
     /// A PKCS#11 key with CKA_ALWAYS_AUTHENTICATE gets the kept PIN, or on a
     /// PIN pad the pad's prompt, before each signature; the PIN is dropped
     /// after the call.

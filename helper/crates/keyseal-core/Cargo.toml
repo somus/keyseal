@@ -25,6 +25,9 @@ zeroize.workspace = true
 windows.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
+core-foundation.workspace = true
 objc2.workspace = true
 objc2-app-kit.workspace = true
 objc2-foundation.workspace = true
+security-framework.workspace = true
+security-framework-sys.workspace = true

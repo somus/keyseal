@@ -49,7 +49,7 @@ The helper tries candidate module paths in this order. The first path that exist
 5. The built-in list of known DSC driver paths in `helper/crates/keyseal-core/src/modules.rs`.
 6. p11-kit, on Linux only.
 
-On Windows, CNG is the last resort.
+On Windows, CNG is the last resort, and on macOS the keychain's CryptoTokenKit items.
 
 The helper verifies `catalogue.json.sig` against its pinned catalogue key before parsing the file. If the download or verification fails it keeps using the last verified catalogue, and falls back to the copy bundled at build time.
 

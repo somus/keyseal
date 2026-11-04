@@ -2,7 +2,7 @@
 
 # KeySeal
 
-KeySeal lets a web application sign PDFs with a certificate on the signer's USB token or smart card, without a browser extension or a localhost daemon. It works with any token that has a PKCS#11 driver, and with hardware keys in the Windows certificate store, and it is built and tested first for Indian Digital Signature Certificates (DSC). A signer clicks Sign on your page, a small desktop helper opens, shows who is asking and what will be signed, takes the token PIN and signs; your backend gets back a PAdES-signed PDF.
+KeySeal lets a web application sign PDFs with a certificate on the signer's USB token or smart card, without a browser extension or a localhost daemon. It works with any token that has a PKCS#11 driver, and with hardware keys in the Windows certificate store or, on macOS, through CryptoTokenKit, and it is built and tested first for Indian Digital Signature Certificates (DSC). A signer clicks Sign on your page, a small desktop helper opens, shows who is asking and what will be signed, takes the token PIN and signs; your backend gets back a PAdES-signed PDF.
 
 It is white-label: your page, your backend and your branding, with the helper and the signing service shared across integrators.
 
@@ -15,7 +15,7 @@ It is white-label: your page, your backend and your branding, with the helper an
    ▼                             │ job endpoint over HTTPS
  keyseal helper ───────────────────┘
    │
- USB token (PKCS#11, or CNG on Windows)
+ USB token (PKCS#11, or CNG on Windows and CryptoTokenKit on macOS)
 ```
 
 1. Your backend creates a sign job for one PDF, or up to 20 signed together, with `@keyseal/server` and hands the page a `keyseal://` link.
@@ -46,7 +46,7 @@ The helper never talks to the signing service, and the PIN never leaves the sign
 
 ## Supported tokens and keys
 
-The helper loads PKCS#11 drivers from system and vendor directories only, matched to the plugged-in token through the driver catalogue, and falls back to the Windows certificate store (CNG) for keys on hardware. It signs with RSA (PKCS#1 v1.5 or PSS) and ECDSA keys on P-256, P-384, brainpoolP256r1 or brainpoolP384r1, including keys that need the PIN for every signature, which it asks for once per job. Signatures are PAdES B-T, with B-LTA available from the service.
+The helper loads PKCS#11 drivers from system and vendor directories only, matched to the plugged-in token through the driver catalogue, and falls back to the system's certificate store for keys on hardware: CNG on Windows, and on macOS the keychain's CryptoTokenKit items, which covers PIV cards and YubiKeys without a driver. It signs with RSA (PKCS#1 v1.5 or PSS) and ECDSA keys on P-256, P-384, brainpoolP256r1 or brainpoolP384r1, including keys that need the PIN for every signature, which it asks for once per job. Signatures are PAdES B-T, with B-LTA available from the service.
 
 Any token or smart card with a PKCS#11 driver can sign. The catalogue names the drivers of the common Indian DSC tokens, plus OpenSC and Yubico's `ykcs11`, which cover PIV cards, YubiKeys and many national eID cards. Only the DSC tokens have been tested with hardware so far. A driver the catalogue doesn't list works once its path is set as `module` in the helper's `config.json` (`keyseal doctor` prints the config directory), or registered with p11-kit on Linux.
 

@@ -19,6 +19,15 @@ lines under the new version with the release date.
 
 ### [Unreleased][helper-unreleased]
 
+#### Added
+
+- On macOS, tokens that CryptoTokenKit exposes in the keychain, such as PIV
+  cards and YubiKeys through macOS's own driver, sign when no PKCS#11 module
+  reaches a token, as the Windows certificate store does. The helper asks for
+  no PIN there: it shows the job and digests for confirmation, and macOS
+  shows its own PIN dialog. `keyseal doctor` lists the keychain as a place
+  it tried.
+
 ### [0.2.0][helper-0.2.0] - 2026-11-04
 
 #### Added

@@ -11,10 +11,11 @@
 //! A job's documents are signed together: one PIN or confirmation, one
 //! token session, and any failure stops the job before any is signed.
 //!
-//! When no PKCS#11 module reaches a token, Windows falls back to the
-//! certificate store through CNG. Its certificates are visible without a
-//! PIN, and the vendor's PIN dialog appears during signing, so the helper
-//! asks for no PIN: the digest confirmation, after round 1, is the gate.
+//! When no PKCS#11 module reaches a token, the helper falls back to the
+//! system's certificate store: CNG on Windows, CryptoTokenKit on macOS. Its
+//! certificates are visible without a PIN, and the system's or vendor's PIN
+//! dialog appears during signing, so the helper asks for no PIN: the digest
+//! confirmation, after round 1, is the gate.
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -23,8 +24,10 @@ use zeroize::Zeroizing;
 
 use crate::cms::{self, KeyKind};
 #[cfg(windows)]
-use crate::cng::{Cng, SystemStore};
+use crate::cng::CngStore;
 use crate::document;
+#[cfg(target_os = "macos")]
+use crate::keychain::Keychain;
 use crate::manifest::{self, Branding};
 use crate::modules::{self, Attempt};
 use crate::origin::Origin;
@@ -32,6 +35,8 @@ use crate::protocol::{
     self, DocumentEntry, JobClient, JobDescription, KeyUsage, Kind, PreparedSignature,
     ProtocolError,
 };
+#[cfg(any(windows, target_os = "macos"))]
+use crate::store::Store;
 use crate::token::{self, TokenBackend, TokenCertificate, TokenError};
 use crate::trust::TrustStore;
 
@@ -169,7 +174,7 @@ pub trait Ui {
     /// The second prompt of the login-first path: an explicit yes to sign
     /// every document.
     fn confirm_digest(&mut self, confirm: &DigestConfirm) -> bool;
-    /// An enrol job about to read the certificate store through CNG: the
+    /// An enrol job about to read the system's certificate store: the
     /// job, shown before any certificate is read (section 12.2), and an
     /// explicit yes to go on.
     fn confirm_enrol(&mut self, job: &JobView) -> bool;
@@ -182,7 +187,7 @@ pub trait Ui {
     fn progress(&mut self, _progress: Progress) -> bool {
         true
     }
-    /// The window the vendor's PIN dialog belongs to (CNG's
+    /// The window a Windows provider's PIN dialog belongs to (CNG's
     /// `NCRYPT_WINDOW_HANDLE_PROPERTY`), as an `HWND`.
     fn window_handle(&self) -> Option<isize> {
         None
@@ -195,20 +200,20 @@ pub enum Outcome {
     Enrolled,
 }
 
-/// Called before the certificate store is read through CNG; an error stops
+/// Called before the system's certificate store is read; an error stops
 /// the job.
-type BeforeCng<'a> = &'a mut dyn FnMut() -> Result<(), Failure>;
+type BeforeStore<'a> = &'a mut dyn FnMut() -> Result<(), Failure>;
 
 /// Opens where the job's key is.
 /// Opens where the key is, for a job that asks for `KeyUsage`.
-type Open<'a> = &'a dyn Fn(KeyUsage, BeforeCng) -> Result<Backend, Failure>;
+type Open<'a> = &'a dyn Fn(KeyUsage, BeforeStore) -> Result<Backend, Failure>;
 
 /// Runs the job in `link`. Any failure is reported to the server once the
 /// job is claimed, shown through `ui` unless the user cancelled, and
 /// returned.
 pub fn run(link: &str, ui: &mut dyn Ui, env: &Environment) -> Result<Outcome, Failure> {
-    run_with(link, ui, env, &|usage, before_cng| {
-        open_backend(usage, before_cng, &mut |_, _| {})
+    run_with(link, ui, env, &|usage, before_store| {
+        open_backend(usage, before_store, &mut |_, _| {})
     })
 }
 
@@ -362,7 +367,8 @@ fn sign(
                 .ok_or_else(|| Failure::cancelled(CANCELLED))?;
             token.login(pin)?;
         }
-        // The login-first path, and CNG before the vendor's PIN dialog.
+        // The login-first path, and the certificate store before the
+        // system's or vendor's PIN dialog.
         _ => {
             let confirm = DigestConfirm {
                 job: view,
@@ -394,8 +400,8 @@ fn sign(
 }
 
 /// Enrol logs in to see which certificates have a private key; the PIN
-/// prompt shows the origin, title and signer first (section 12.2). CNG
-/// needs no login, so the job is shown before the store is read, and the
+/// prompt shows the origin, title and signer first (section 12.2). The
+/// certificate store needs no login, so the job is shown before the store is read, and the
 /// certificate choice is always asked.
 fn enrol(
     client: &JobClient,
@@ -434,8 +440,8 @@ fn enrol(
                 false,
             )?
         }
-        #[cfg(any(windows, test))]
-        Backend::Cng(_) => choose(
+        #[cfg(any(windows, target_os = "macos", test))]
+        Backend::Store(_) => choose(
             ui,
             view,
             signing_certificates(token, job, false)?,
@@ -470,51 +476,57 @@ fn show_step(ui: &mut dyn Ui, view: &JobView, step: Step, cancelled: &str) -> Re
 pub enum Backend {
     /// A PKCS#11 token, in this process or in the token worker.
     Pkcs11(Box<dyn TokenBackend>),
-    /// The certificate store through CNG.
-    #[cfg(any(windows, test))]
-    Cng(Box<dyn TokenBackend>),
+    /// The system's certificate store: CNG on Windows, CryptoTokenKit on
+    /// macOS.
+    #[cfg(any(windows, target_os = "macos", test))]
+    Store(Box<dyn TokenBackend>),
 }
 
 impl Backend {
     pub fn token(&self) -> &dyn TokenBackend {
         match self {
             Self::Pkcs11(token) => &**token,
-            #[cfg(any(windows, test))]
-            Self::Cng(cng) => &**cng,
+            #[cfg(any(windows, target_os = "macos", test))]
+            Self::Store(store) => &**store,
         }
     }
 }
 
-/// The error of a CNG attempt that finds no signing certificate on hardware.
-const NO_CNG_CERTIFICATE: &str = "The certificate store holds no signing certificate on hardware.";
+/// The error of a certificate store attempt that finds no signing
+/// certificate on a token.
+const NO_STORE_CERTIFICATE: &str =
+    "The certificate store holds no signing certificate on a token or smart card.";
 
 /// Opens the first of [`modules::attempts`] that reaches a token; the
 /// certificate store counts only when it holds a certificate with `usage`.
-/// `before_cng` runs before the certificate store is read; `seen` hears
+/// `before_store` runs before the certificate store is read; `seen` hears
 /// how each attempt went.
 pub fn open_backend(
     usage: KeyUsage,
-    before_cng: BeforeCng,
+    before_store: BeforeStore,
     seen: &mut dyn FnMut(&Attempt, Result<(), &str>),
 ) -> Result<Backend, Failure> {
     let open = |attempt: &Attempt, wait| open_attempt(attempt, wait, usage);
-    open_first(&modules::attempts()?, &open, before_cng, seen)
+    open_first(&modules::attempts()?, &open, before_store, seen)
 }
 
-#[cfg_attr(not(windows), allow(unused_variables))]
+#[cfg_attr(not(any(windows, target_os = "macos")), allow(unused_variables))]
 fn open_attempt(attempt: &Attempt, wait: Duration, usage: KeyUsage) -> Result<Backend, String> {
     match attempt {
         Attempt::Module(candidate) => Ok(Backend::Pkcs11(token::open(&candidate.path, wait)?)),
-        #[cfg(windows)]
-        Attempt::Cng => {
-            let cng = Cng::new(SystemStore, usage);
-            if cng.certificates(false)?.is_empty() {
-                return Err(NO_CNG_CERTIFICATE.into());
+        #[cfg(any(windows, target_os = "macos"))]
+        Attempt::Store => {
+            #[cfg(windows)]
+            let store = Store::new(CngStore, usage);
+            #[cfg(target_os = "macos")]
+            let store = Store::new(Keychain::tokens(), usage);
+            if store.certificates(false)?.is_empty() {
+                return Err(NO_STORE_CERTIFICATE.into());
             }
-            Ok(Backend::Cng(Box::new(cng)))
+            Ok(Backend::Store(Box::new(store)))
         }
-        #[cfg(not(windows))]
-        Attempt::Cng => Err(NO_CNG_CERTIFICATE.into()),
+        #[cfg(not(any(windows, target_os = "macos")))]
+        Attempt::Store => Err(NO_STORE_CERTIFICATE.into()),
     }
 }
 
@@ -527,14 +539,14 @@ fn open_attempt(attempt: &Attempt, wait: Duration, usage: KeyUsage) -> Result<Ba
 fn open_first(
     attempts: &[Attempt],
     open: &dyn Fn(&Attempt, Duration) -> Result<Backend, String>,
-    before_cng: BeforeCng,
+    before_store: BeforeStore,
     seen: &mut dyn FnMut(&Attempt, Result<(), &str>),
 ) -> Result<Backend, Failure> {
     let mut failure = None;
     let mut module_found = false;
     for attempt in attempts {
-        if *attempt == Attempt::Cng {
-            before_cng()?;
+        if *attempt == Attempt::Store {
+            before_store()?;
         } else {
             module_found = true;
         }
@@ -557,7 +569,9 @@ fn open_first(
             }
             Err(message) => {
                 seen(attempt, Err(&message));
-                if failure.is_none() && message != token::NO_TOKEN && message != NO_CNG_CERTIFICATE
+                if failure.is_none()
+                    && message != token::NO_TOKEN
+                    && message != NO_STORE_CERTIFICATE
                 {
                     failure = Some(message);
                 }
@@ -1056,7 +1070,7 @@ mod tests {
     /// and one failure report, or none before the job is claimed.
     #[test]
     fn cancelling_any_prompt_reports_one_failure_and_shows_nothing() {
-        for (kind, cng, public, private, cancel_at, reports) in [
+        for (kind, in_store, public, private, cancel_at, reports) in [
             ("sign", false, vec![], vec![], Stage::Trust, 0),
             ("sign", false, vec![RSA, P256], vec![], Stage::Choose, 1),
             ("sign", false, vec![RSA], vec![], Stage::Pin, 1),
@@ -1148,7 +1162,7 @@ mod tests {
                 1,
             ),
         ] {
-            let case = format!("{kind} {cng} {public:?} {private:?} {cancel_at:?}");
+            let case = format!("{kind} {in_store} {public:?} {private:?} {cancel_at:?}");
             let (origin, requests) = serve(kind, serde_json::Value::Null);
             let config_dir =
                 std::env::temp_dir().join(format!("keyseal-cancel-{}", std::process::id()));
@@ -1161,13 +1175,13 @@ mod tests {
             )
             .collect();
             let mut ui = CancellingUi::new(cancel_at);
-            let open = |_: KeyUsage, before_cng: BeforeCng| {
+            let open = |_: KeyUsage, before_store: BeforeStore| {
                 let token = Box::new(FakeToken::new(public.clone(), private.clone()));
-                if !cng {
+                if !in_store {
                     return Ok(Backend::Pkcs11(token));
                 }
-                before_cng()?;
-                Ok(Backend::Cng(token))
+                before_store()?;
+                Ok(Backend::Store(token))
             };
             let failure =
                 run_with(&format!("keyseal://{kind}?job={job}"), &mut ui, &env, &open).unwrap_err();
@@ -1230,7 +1244,7 @@ mod tests {
             )
             .collect();
             let mut ui = CancellingUi::new(Stage::Enrol);
-            let open = |_: KeyUsage, _: BeforeCng| {
+            let open = |_: KeyUsage, _: BeforeStore| {
                 Ok(Backend::Pkcs11(Box::new(FakeToken::new(
                     public.clone(),
                     private.clone(),
@@ -1248,7 +1262,8 @@ mod tests {
     }
 
     /// Each attempt fails over to the next: a module that doesn't load, one
-    /// that sees no token, then CNG, which the enrol hook precedes.
+    /// that sees no token, then the certificate store, which the enrol hook
+    /// precedes.
     #[test]
     fn opens_the_first_attempt_that_reaches_a_token() {
         let module = |name: &str| {
@@ -1270,17 +1285,17 @@ mod tests {
                     Err(token::NO_TOKEN.to_owned())
                 }
                 Attempt::Module(_) => Ok(Backend::Pkcs11(token())),
-                Attempt::Cng => Ok(Backend::Cng(token())),
+                Attempt::Store => Ok(Backend::Store(token())),
             }
         };
-        let run = |attempts: &[Attempt], allow_cng: bool| {
+        let run = |attempts: &[Attempt], allow_store: bool| {
             events.borrow_mut().clear();
             let result = open_first(
                 attempts,
                 &open,
                 &mut || {
-                    events.borrow_mut().push("before CNG".into());
-                    if allow_cng {
+                    events.borrow_mut().push("before the store".into());
+                    if allow_store {
                         Ok(())
                     } else {
                         Err(Failure::cancelled(CANCELLED))
@@ -1295,8 +1310,8 @@ mod tests {
             (result, events.borrow().clone())
         };
 
-        let (result, seen) = run(&[broken.clone(), empty.clone(), Attempt::Cng], true);
-        assert!(matches!(result, Ok(Backend::Cng(_))));
+        let (result, seen) = run(&[broken.clone(), empty.clone(), Attempt::Store], true);
+        assert!(matches!(result, Ok(Backend::Store(_))));
         assert_eq!(
             seen,
             [
@@ -1304,20 +1319,26 @@ mod tests {
                 "/broken [known drivers]: Couldn't load the token driver",
                 "open /empty [known drivers]",
                 &format!("/empty [known drivers]: {}", token::NO_TOKEN),
-                "before CNG",
-                "open the Windows certificate store (CNG)",
-                "the Windows certificate store (CNG): ok",
+                "before the store",
+                &format!("open {}", Attempt::Store),
+                &format!("{}: ok", Attempt::Store),
             ]
         );
 
-        let (result, seen) = run(&[empty.clone(), working, Attempt::Cng], true);
+        let (result, seen) = run(&[empty.clone(), working, Attempt::Store], true);
         assert!(matches!(result, Ok(Backend::Pkcs11(_))));
-        assert!(!seen.iter().any(|event| event.contains("CNG")), "{seen:?}");
+        let store = Attempt::Store.to_string();
+        assert!(
+            !seen
+                .iter()
+                .any(|event| event.contains(&store) || event == "before the store"),
+            "{seen:?}"
+        );
 
         // The user declines before the store is read.
-        let (result, seen) = run(&[empty.clone(), Attempt::Cng], false);
+        let (result, seen) = run(&[empty.clone(), Attempt::Store], false);
         assert!(result.is_err_and(|failure| failure.cancelled));
-        assert_eq!(seen.last().map(String::as_str), Some("before CNG"));
+        assert_eq!(seen.last().map(String::as_str), Some("before the store"));
 
         let failure = |attempts: &[Attempt]| run(attempts, true).0.err().unwrap().message;
         assert_eq!(
@@ -1421,7 +1442,7 @@ mod tests {
             format!("{origin}/api/keyseal/v1/jobs/{TOKEN}").as_bytes(),
         )
         .collect();
-        let open = |_: KeyUsage, _: BeforeCng| {
+        let open = |_: KeyUsage, _: BeforeStore| {
             Ok(Backend::Pkcs11(Box::new(FakeToken::new(
                 vec![RSA, P256],
                 vec![],
@@ -1470,7 +1491,7 @@ mod tests {
             )
             .collect();
             let asked = Cell::new(None);
-            let open = |usage: KeyUsage, _: BeforeCng| {
+            let open = |usage: KeyUsage, _: BeforeStore| {
                 asked.set(Some(usage));
                 Err(Failure::from(token::NO_TOKEN.to_owned()))
             };
@@ -1534,7 +1555,7 @@ mod tests {
         let token = FakeToken::new(public, private);
         let signed = token.signed.clone();
         let token = std::cell::RefCell::new(Some(token));
-        let open = |_: KeyUsage, _: BeforeCng| {
+        let open = |_: KeyUsage, _: BeforeStore| {
             Ok(Backend::Pkcs11(Box::new(
                 token.borrow_mut().take().expect("one token per job"),
             )))

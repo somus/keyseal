@@ -1,7 +1,7 @@
 //! Which PKCS#11 module to load. Module selection is the helper's decision
 //! alone (section 6.3): `KEYSEAL_PKCS11_MODULE`, a developer override, or the
-//! installed [`candidates`] in order, and on Windows the certificate store
-//! through CNG ([`attempts`]).
+//! installed [`candidates`] in order, and then the system's certificate
+//! store, CNG on Windows and CryptoTokenKit on macOS ([`attempts`]).
 
 use std::collections::HashSet;
 use std::path::{Component, Path, PathBuf};
@@ -179,8 +179,9 @@ fn search() -> Result<(Vec<Candidate>, bool), String> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Attempt {
     Module(Candidate),
-    /// Windows: the current user's certificate store through CNG.
-    Cng,
+    /// The system's certificate store: on Windows the current user's
+    /// through CNG, on macOS the keychain's CryptoTokenKit items.
+    Store,
 }
 
 impl std::fmt::Display for Attempt {
@@ -189,25 +190,32 @@ impl std::fmt::Display for Attempt {
             Self::Module(candidate) => {
                 write!(f, "{} [{}]", candidate.path.display(), candidate.source)
             }
-            Self::Cng => f.write_str("the Windows certificate store (CNG)"),
+            Self::Store if cfg!(target_os = "macos") => {
+                f.write_str("the macOS keychain (CryptoTokenKit)")
+            }
+            Self::Store => f.write_str("the Windows certificate store (CNG)"),
         }
     }
 }
 
 /// Where the flow looks for the job's key, in order: the candidates that
-/// exist, then on Windows CNG, which comes first when a plugged-in token's
-/// catalogue entry has `cng`.
+/// exist, then on Windows and macOS the certificate store. On Windows it
+/// comes first when a plugged-in token's catalogue entry has `cng`.
 pub fn attempts() -> Result<Vec<Attempt>, String> {
     let (candidates, prefer_cng) = search()?;
     let installed = candidates.into_iter().filter(|c| c.path.exists()).collect();
-    Ok(order(installed, cfg!(windows), prefer_cng))
+    Ok(order(
+        installed,
+        cfg!(any(windows, target_os = "macos")),
+        cfg!(windows) && prefer_cng,
+    ))
 }
 
-fn order(installed: Vec<Candidate>, cng: bool, prefer_cng: bool) -> Vec<Attempt> {
+fn order(installed: Vec<Candidate>, store: bool, store_first: bool) -> Vec<Attempt> {
     let mut list: Vec<Attempt> = installed.into_iter().map(Attempt::Module).collect();
-    if cng {
-        let at = if prefer_cng { 0 } else { list.len() };
-        list.insert(at, Attempt::Cng);
+    if store {
+        let at = if store_first { 0 } else { list.len() };
+        list.insert(at, Attempt::Store);
     }
     list
 }
@@ -452,7 +460,7 @@ mod tests {
     }
 
     #[test]
-    fn cng_comes_last_unless_a_plugged_in_token_prefers_it() {
+    fn the_store_comes_last_unless_a_plugged_in_token_prefers_cng() {
         let module = |name: &str| Candidate {
             path: system(name).into(),
             source: Source::Known,
@@ -461,12 +469,12 @@ mod tests {
         let modules: Vec<Attempt> = installed.iter().cloned().map(Attempt::Module).collect();
         assert_eq!(order(installed.clone(), false, true), modules);
         let mut last = modules.clone();
-        last.push(Attempt::Cng);
+        last.push(Attempt::Store);
         assert_eq!(order(installed.clone(), true, false), last);
-        let mut first = vec![Attempt::Cng];
+        let mut first = vec![Attempt::Store];
         first.extend(modules);
         assert_eq!(order(installed, true, true), first);
-        assert_eq!(order(Vec::new(), true, false), [Attempt::Cng]);
+        assert_eq!(order(Vec::new(), true, false), [Attempt::Store]);
     }
 
     #[test]

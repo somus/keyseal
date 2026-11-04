@@ -61,6 +61,8 @@ RSA PKCS#1 v1.5, RSA-PSS, and ECDSA on P-256, P-384, brainpoolP256r1 and brainpo
 
 ## Trust model
 
+The helper defends the signer against websites: an origin they never trusted, a trusted origin that asks for more than it showed, and pages or downloads that try to steer which driver or certificate is used. Code already running as the signer's own user is out of scope. It can change the helper's `config.json` (which may name any module), its trust records and its settings, read the PIN as it is typed, or replace the app, so no check inside the helper would stop it. The same goes for anyone who controls the signer's account or an administrator account on the machine.
+
 - Trust on first use per exact origin, on any first contact, sign or enrol.
 - The first-contact prompt shows the domain only, never branding, so a manifest can't dress up an unknown origin.
 - The trust store keeps the exact origin and the time it was trusted. Users revoke it with `keyseal doctor --forget <origin>` or from the settings window.
@@ -70,7 +72,7 @@ RSA PKCS#1 v1.5, RSA-PSS, and ECDSA on P-256, P-384, brainpoolP256r1 and brainpo
 - Manifests may never name driver paths; choosing a module is the helper's decision alone.
 - The job connection never uses a proxy, because the resolved-address check can't run through one. Update and catalogue downloads honour the usual proxy environment variables, since both are signature-checked, and `keyseal doctor` says which connections use the proxy.
 - The catalogue and the directory scan load modules only from system and vendor library directories. A path in the helper's own `config.json` may point anywhere, since writing that file is explicit consent. `/usr/local/lib` counts as a vendor directory on macOS because token installers write there.
-- Known limit: on macOS, admin users can write to `/Applications`, and Intel Homebrew makes `/usr/local` user-owned, so the directory rule is weaker there than on Linux and Windows. The helper does not check file ownership, because vendor installers vary.
+- On macOS, admin users can write to `/Applications`, and Homebrew can make `/usr/local/lib` user-owned. That gives the signer's own user a way to change a driver the helper loads, which the scope above already concedes; the directory rule exists to keep the catalogue and the scan away from places a browser or an archive writes to, such as `~/Downloads`. The helper does not check file ownership, because vendor installers vary.
 - SoftHSM is never in the default scan; CI and developers point `KEYSEAL_PKCS11_MODULE` at it.
 
 ## Helper

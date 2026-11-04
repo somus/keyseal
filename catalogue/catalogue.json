@@ -1,7 +1,7 @@
 {
   "$schema": "./schema.json",
-  "version": 2,
-  "generatedAt": "2026-10-23T00:00:00Z",
+  "version": 3,
+  "generatedAt": "2026-11-04T00:00:00Z",
   "tokens": [
     {
       "name": "ePass2003",
@@ -209,6 +209,74 @@
           "/usr/lib/libtrustkeyP11.so"
         ]
       }
+    },
+    {
+      "name": "YubiKey (PIV)",
+      "vendor": "Yubico",
+      "usb": [
+        {
+          "vid": "1050",
+          "pid": "0111"
+        },
+        {
+          "vid": "1050",
+          "pid": "0112"
+        },
+        {
+          "vid": "1050",
+          "pid": "0115"
+        },
+        {
+          "vid": "1050",
+          "pid": "0116"
+        },
+        {
+          "vid": "1050",
+          "pid": "0404"
+        },
+        {
+          "vid": "1050",
+          "pid": "0405"
+        },
+        {
+          "vid": "1050",
+          "pid": "0406"
+        },
+        {
+          "vid": "1050",
+          "pid": "0407"
+        }
+      ],
+      "modules": {
+        "macos-arm64": ["/usr/local/lib/libykcs11.dylib"],
+        "macos-x64": ["/usr/local/lib/libykcs11.dylib"],
+        "windows-x64": [
+          "C:\\Program Files\\Yubico\\Yubico PIV Tool\\bin\\libykcs11.dll"
+        ],
+        "linux-x64": [
+          "/usr/lib/x86_64-linux-gnu/libykcs11.so.2",
+          "/usr/lib/x86_64-linux-gnu/libykcs11.so",
+          "/usr/lib64/libykcs11.so.2"
+        ]
+      },
+      "notes": "ykcs11 from yubico-piv-tool. The ids are the YubiKey NEO, 4 and 5 configurations with the CCID interface enabled, FIPS models included. OpenSC's PIV driver also reaches these keys, through its entry's paths. Not yet tested with hardware."
+    },
+    {
+      "name": "OpenSC (PIV, eID and other smart cards)",
+      "vendor": "OpenSC Project",
+      "usb": [],
+      "modules": {
+        "macos-arm64": ["/Library/OpenSC/lib/opensc-pkcs11.so"],
+        "macos-x64": ["/Library/OpenSC/lib/opensc-pkcs11.so"],
+        "windows-x64": [
+          "C:\\Program Files\\OpenSC Project\\OpenSC\\pkcs11\\opensc-pkcs11.dll"
+        ],
+        "linux-x64": [
+          "/usr/lib/x86_64-linux-gnu/opensc-pkcs11.so",
+          "/usr/lib64/opensc-pkcs11.so"
+        ]
+      },
+      "notes": "Generic driver for cards in any PC/SC reader, so no USB id routes to it; the path scan reaches it. Listed last because OpenSC also drives ePass2003 and HYP2003 tokens, which should go to their vendor drivers first. The pkg's copy in /usr/local/lib is left out: Homebrew makes that directory user-writable on Intel Macs. Not yet tested with hardware."
     }
   ]
 }

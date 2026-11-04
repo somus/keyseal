@@ -250,6 +250,12 @@ The catalogue is published as the `catalogue` release; its version is the
 
 ### [Unreleased][catalogue-unreleased]
 
+#### Added
+
+- YubiKey PIV through Yubico's `ykcs11`, by USB id, and OpenSC for PIV,
+  national eID and other smart cards, by path. OpenSC is listed after the DSC
+  token drivers, since it also drives ePass2003 and HYP2003 tokens.
+
 ### [2][catalogue-2] - 2026-10-26
 
 #### Added

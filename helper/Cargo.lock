@@ -4056,7 +4056,7 @@ dependencies = [
 
 [[package]]
 name = "keyseal-core"
-version = "0.1.4"
+version = "0.2.0"
 dependencies = [
  "base64 0.23.1",
  "cryptoki",
@@ -4081,7 +4081,7 @@ dependencies = [
 
 [[package]]
 name = "keyseal-helper"
-version = "0.1.4"
+version = "0.2.0"
 dependencies = [
  "base64 0.23.1",
  "embed-resource",
@@ -4097,7 +4097,7 @@ dependencies = [
 
 [[package]]
 name = "keyseal-token-worker"
-version = "0.1.4"
+version = "0.2.0"
 dependencies = [
  "keyseal-core",
  "libc",
@@ -4107,7 +4107,7 @@ dependencies = [
 
 [[package]]
 name = "keyseal-ui"
-version = "0.1.4"
+version = "0.2.0"
 dependencies = [
  "futures",
  "gpui-kit",

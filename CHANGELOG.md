@@ -19,6 +19,8 @@ lines under the new version with the release date.
 
 ### [Unreleased][helper-unreleased]
 
+### [0.2.0][helper-0.2.0] - 2026-11-04
+
 #### Added
 
 - Keys that need the PIN for every signature (`CKA_ALWAYS_AUTHENTICATE`)
@@ -126,6 +128,8 @@ lines under the new version with the release date.
 
 ### [Unreleased][service-unreleased]
 
+### [0.3.0][service-0.3.0] - 2026-11-04
+
 #### Added
 
 - ECDSA keys on brainpoolP256r1 (SHA-256) and brainpoolP384r1 (SHA-384), as
@@ -212,6 +216,8 @@ lines under the new version with the release date.
 ## @keyseal/server
 
 ### [Unreleased][server-unreleased]
+
+### [0.4.0][server-0.4.0] - 2026-11-04
 
 #### Added
 
@@ -332,20 +338,23 @@ The catalogue is published as the `catalogue` release; its version is the
   mToken CryptoID, InnaIT Key (PK32XX), SafeNet eToken 5110 and eToken PRO
   72K / SafeNet eToken 5100, and TrustKey.
 
-[helper-unreleased]: https://github.com/somus/keyseal/compare/helper-v0.1.4...HEAD
+[helper-unreleased]: https://github.com/somus/keyseal/compare/helper-v0.2.0...HEAD
+[helper-0.2.0]: https://github.com/somus/keyseal/releases/tag/helper-v0.2.0
 [helper-0.1.4]: https://github.com/somus/keyseal/releases/tag/helper-v0.1.4
 [helper-0.1.3]: https://github.com/somus/keyseal/releases/tag/helper-v0.1.3
 [helper-0.1.2]: https://github.com/somus/keyseal/releases/tag/helper-v0.1.2
 [helper-0.1.1]: https://github.com/somus/keyseal/releases/tag/helper-v0.1.1
 [helper-0.1.0]: https://github.com/somus/keyseal/releases/tag/helper-v0.1.0
-[service-unreleased]: https://github.com/somus/keyseal/compare/service-v0.2.3...HEAD
+[service-unreleased]: https://github.com/somus/keyseal/compare/service-v0.3.0...HEAD
+[service-0.3.0]: https://github.com/somus/keyseal/compare/service-v0.2.3...service-v0.3.0
 [service-0.2.3]: https://github.com/somus/keyseal/compare/service-v0.2.2...service-v0.2.3
 [service-0.2.2]: https://github.com/somus/keyseal/compare/service-v0.2.1...service-v0.2.2
 [service-0.2.1]: https://github.com/somus/keyseal/compare/service-v0.2.0...service-v0.2.1
 [service-0.2.0]: https://github.com/somus/keyseal/compare/service-v0.1.1...service-v0.2.0
 [service-0.1.1]: https://github.com/somus/keyseal/compare/service-v0.1.0...service-v0.1.1
 [service-0.1.0]: https://github.com/somus/keyseal/tree/service-v0.1.0
-[server-unreleased]: https://github.com/somus/keyseal/compare/server-v0.3.0...HEAD
+[server-unreleased]: https://github.com/somus/keyseal/compare/server-v0.4.0...HEAD
+[server-0.4.0]: https://github.com/somus/keyseal/compare/server-v0.3.0...server-v0.4.0
 [server-0.3.0]: https://github.com/somus/keyseal/compare/server-v0.2.0...server-v0.3.0
 [server-0.2.0]: https://github.com/somus/keyseal/compare/server-v0.1.1...server-v0.2.0
 [server-0.1.1]: https://github.com/somus/keyseal/tree/server-v0.1.1

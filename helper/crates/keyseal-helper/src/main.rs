@@ -322,8 +322,8 @@ impl Ui for Headless {
 /// `keyseal list`: the certificates on the token, before login, or after
 /// logging in with `KEYSEAL_PIN` when none are visible.
 fn list() -> Result<(), String> {
-    let backend =
-        flow::open_backend(&mut || Ok(()), &mut |_, _| {}).map_err(|failure| failure.message)?;
+    let backend = flow::open_backend(KeyUsage::DigitalSignature, &mut || Ok(()), &mut |_, _| {})
+        .map_err(|failure| failure.message)?;
     let token = backend.token();
     let mut certificates = token.certificates(false)?;
     if certificates.is_empty()

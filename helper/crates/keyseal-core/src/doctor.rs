@@ -14,6 +14,7 @@ use crate::catalogue::{self, Source};
 use crate::flow;
 use crate::modules::{self, Attempt, Candidate};
 use crate::origin;
+use crate::protocol::KeyUsage;
 use crate::token;
 use crate::trust::{Record, TrustStore};
 use crate::worker;
@@ -204,9 +205,15 @@ fn gather(gpu: Result<Option<String>, String>) -> Facts {
     if candidates.is_ok() {
         // Opened as a job would: each found module in turn, then on Windows
         // the certificate store.
-        let backend = flow::open_backend(&mut || Ok(()), &mut |attempt, outcome| {
-            tried.push((attempt.clone(), outcome.map_err(str::to_owned)));
-        });
+        // The loosest usage, so the report shows every certificate a job
+        // could use.
+        let backend = flow::open_backend(
+            KeyUsage::DigitalSignature,
+            &mut || Ok(()),
+            &mut |attempt, outcome| {
+                tried.push((attempt.clone(), outcome.map_err(str::to_owned)));
+            },
+        );
         opened = match backend {
             Ok(backend) => {
                 let used = tried.iter().find(|(_, outcome)| outcome.is_ok());

@@ -53,11 +53,14 @@ pub trait KeyStore {
 
 pub struct Cng<S> {
     store: S,
+    /// The key usage the job asks for, so a store with no certificate the
+    /// job accepts reads as empty and the flow moves on.
+    usage: KeyUsage,
 }
 
 impl<S: KeyStore> Cng<S> {
-    pub fn new(store: S) -> Self {
-        Self { store }
+    pub fn new(store: S, usage: KeyUsage) -> Self {
+        Self { store, usage }
     }
 }
 
@@ -71,17 +74,15 @@ impl<S: KeyStore> TokenBackend for Cng<S> {
         None
     }
 
-    /// Signing certificates whose key is on a smart card or token, with
-    /// either key usage a job may ask for (the flow applies the job's); each
-    /// has its private key, so `with_private_key` changes nothing.
+    /// Signing certificates with the job's key usage whose key is on a smart
+    /// card or token; each has its private key, so `with_private_key`
+    /// changes nothing.
     fn certificates(&self, _with_private_key: bool) -> Result<Vec<TokenCertificate>, TokenError> {
         Ok(self
             .store
             .certificates()?
             .into_iter()
-            .filter(|c| {
-                c.hardware_key && token::is_signing_certificate(&c.der, KeyUsage::DigitalSignature)
-            })
+            .filter(|c| c.hardware_key && token::is_signing_certificate(&c.der, self.usage))
             .map(|c| TokenCertificate {
                 sha256: token::sha256_hex(&c.der),
                 der: c.der,
@@ -418,16 +419,19 @@ mod tests {
     }
 
     fn cng(signature: Vec<u8>) -> Cng<FakeStore> {
-        Cng::new(FakeStore {
-            signature,
-            ..FakeStore::default()
-        })
+        Cng::new(
+            FakeStore {
+                signature,
+                ..FakeStore::default()
+            },
+            KeyUsage::default(),
+        )
     }
 
     #[test]
     fn offers_signing_certificates_with_hardware_keys() {
         const DIGITAL_SIGNATURE: &[u8] = include_bytes!("../tests/fixtures/digital-signature.der");
-        let cng = Cng::new(FakeStore {
+        let store = || FakeStore {
             certificates: vec![
                 (NON_REPUDIATION, true),
                 (RSA, false),
@@ -435,13 +439,31 @@ mod tests {
                 (include_bytes!("../tests/fixtures/no-key-usage.der"), true),
             ],
             ..FakeStore::default()
-        });
-        // A job's policy may accept digitalSignature; the flow applies it.
-        let offered = cng.certificates(false).unwrap();
-        assert_eq!(offered.len(), 2);
+        };
+        let offered = Cng::new(store(), KeyUsage::NonRepudiation)
+            .certificates(false)
+            .unwrap();
+        assert_eq!(offered.len(), 1);
         assert_eq!(offered[0].der, NON_REPUDIATION);
         assert_eq!(offered[0].sha256, token::sha256_hex(NON_REPUDIATION));
+        // A job whose policy accepts digitalSignature also sees that one.
+        let offered = Cng::new(store(), KeyUsage::DigitalSignature)
+            .certificates(false)
+            .unwrap();
+        assert_eq!(offered.len(), 2);
         assert_eq!(offered[1].der, DIGITAL_SIGNATURE);
+        // With only a digitalSignature certificate, a default job finds the
+        // store empty, so the flow tries the next place.
+        let only = FakeStore {
+            certificates: vec![(DIGITAL_SIGNATURE, true)],
+            ..FakeStore::default()
+        };
+        assert!(
+            Cng::new(only, KeyUsage::NonRepudiation)
+                .certificates(false)
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]

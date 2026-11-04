@@ -43,6 +43,10 @@ lines under the new version with the release date.
 
 - The trust prompt for an insecure test site is tall enough for its
   buttons, which the warning banner pushed out of the window.
+- On Windows, the certificate store is used only when it holds a certificate
+  with the job's key usage, so a store whose only hardware certificate has
+  digitalSignature without nonRepudiation no longer fails a default job
+  before a later place is tried.
 
 ### [0.1.4][helper-0.1.4] - 2026-11-04
 

@@ -63,7 +63,7 @@ On Debian and Ubuntu the SoftHSM module is `/usr/lib/softhsm/libsofthsm2.so`. Wi
 
 ## End-to-end test
 
-`scripts/ci/e2e.sh` is the end-to-end CI job and runs locally as well. It builds the signing service image and runs it in Docker with a throwaway CA as its only trust root, starts the reference server with Bun, creates a SoftHSM token with RSA-2048, P-256 and P-384 certificates, and has the headless helper complete a sign job for each key, a batch job of three documents, enrol jobs and jobs that must fail on a wrong expected certificate or an unmet certificate policy, checking that every signed PDF validates as intact and trusted and has the `/Reason` its job passed in `signatureDetails`.
+`scripts/ci/e2e.sh` is the end-to-end CI job and runs locally as well. It builds the signing service image and runs it in Docker with a throwaway CA as its only trust root, starts the reference server with Bun, creates a SoftHSM token with RSA-2048, P-256, P-384, brainpoolP256r1 and brainpoolP384r1 certificates, an RSA key that needs the PIN for every signature and a certificate with digitalSignature only, and has the headless helper complete a sign job for each key, batch jobs of three documents (one on the per-signature PIN key), a `keyUsage: "digitalSignature"` job, enrol jobs and jobs that must fail on a wrong expected certificate, a digitalSignature-only certificate on a default job or an unmet certificate policy, checking that every signed PDF validates as intact and trusted and has the `/Reason` its job passed in `signatureDetails`.
 
 It needs docker, bun, cargo, curl, jq, openssl, softhsm2-util and pkcs11-tool. Run `bun install` first, then:
 

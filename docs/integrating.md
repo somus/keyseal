@@ -22,7 +22,7 @@ docker run -p 127.0.0.1:8090:8080 \
   ghcr.io/somus/keyseal-service:0.2
 ```
 
-It trusts the CCA India roots by default; for another PKI, set `SIGNING_TRUST_ROOTS_DIR` to a directory of its roots and intermediates. [service/README.md](../service/README.md) covers its routes, environment, timestamp authority and plugins (extra stamp styles and routes in a derived image).
+It trusts the CCA India roots by default; for another PKI, set `SIGNING_TRUST_ROOTS_DIR` to a directory of its roots and intermediates, or `SIGNING_EXTRA_TRUST_ROOTS_DIR` to trust it alongside them. [service/README.md](../service/README.md) covers its routes, environment, timestamp authority and plugins (extra stamp styles and routes in a derived image).
 
 ## 2. Serve the job endpoint
 

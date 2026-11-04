@@ -46,11 +46,11 @@ The helper never talks to the signing service, and the PIN never leaves the sign
 
 ## Supported tokens and keys
 
-The helper loads PKCS#11 drivers from system and vendor directories only, matched to the plugged-in token through the driver catalogue, and falls back to the Windows certificate store (CNG) for keys on hardware. It signs with RSA (PKCS#1 v1.5 or PSS) and ECDSA P-256 or P-384 keys. Signatures are PAdES B-T, with B-LTA available from the service.
+The helper loads PKCS#11 drivers from system and vendor directories only, matched to the plugged-in token through the driver catalogue, and falls back to the Windows certificate store (CNG) for keys on hardware. It signs with RSA (PKCS#1 v1.5 or PSS) and ECDSA keys on P-256, P-384, brainpoolP256r1 or brainpoolP384r1, including keys that need the PIN for every signature, which it asks for once per job. Signatures are PAdES B-T, with B-LTA available from the service.
 
 Any token or smart card with a PKCS#11 driver can sign. The catalogue names the drivers of the common Indian DSC tokens, plus OpenSC and Yubico's `ykcs11`, which cover PIV cards, YubiKeys and many national eID cards. Only the DSC tokens have been tested with hardware so far. A driver the catalogue doesn't list works once its path is set as `module` in the helper's `config.json` (`keyseal doctor` prints the config directory), or registered with p11-kit on Linux.
 
-The signing service trusts the CCA India roots by default. For another PKI, point `SIGNING_TRUST_ROOTS_DIR` at its roots and intermediates ([service/README.md](service/README.md)), and set the job's certificate policy to that PKI's OIDs ([docs/integrating.md](docs/integrating.md#3-create-jobs)).
+The signing service trusts the CCA India roots by default. For another PKI, point `SIGNING_TRUST_ROOTS_DIR` at its roots and intermediates to replace them, or `SIGNING_EXTRA_TRUST_ROOTS_DIR` to trust both ([service/README.md](service/README.md)), and set the job's certificate policy to that PKI's OIDs or issuers ([docs/integrating.md](docs/integrating.md#3-create-jobs)). Certificates need nonRepudiation by default; a job whose policy sets `keyUsage: "digitalSignature"` also accepts certificates with digitalSignature only, as company PIV cards often have.
 
 ## Download
 

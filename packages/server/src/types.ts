@@ -14,6 +14,14 @@ export type SignatureAlgorithm = "rsa-pkcs1-v1_5" | "rsa-pss" | "ecdsa";
 
 export type RsaPadding = "pkcs1" | "pss";
 
+/**
+ * Protocol section 8.2: the KeyUsage bit a certificate must assert.
+ * `nonRepudiation` requires that bit; `digitalSignature` accepts either.
+ */
+export type KeyUsage = "nonRepudiation" | "digitalSignature";
+
+export type EcCurve = "P-256" | "P-384" | "brainpoolP256r1" | "brainpoolP384r1";
+
 /** What PDF viewers show in their signature panel, from the signature dictionary. */
 export interface SignatureDetails {
   /** `/Reason`, such as "Approved as Director"; the built-in stamp shows it too. */
@@ -83,7 +91,7 @@ export type JobPatch = Partial<Omit<Job, "id" | "kind" | "createdAt">>;
 /**
  * Protocol section 8.2: what the certificate must show when the job cannot
  * name one in advance. Every member present must hold; strings compare
- * exactly.
+ * exactly. Without `keyUsage`, the certificate must assert nonRepudiation.
  */
 export interface CertificatePolicy {
   /** Dotted-decimal OIDs; the certificatePolicies extension must hold one of them. */
@@ -92,6 +100,8 @@ export interface CertificatePolicy {
   issuerCommonNames?: string[];
   /** The certificate subject's O must equal this. */
   subjectOrganization?: string;
+  /** The KeyUsage the certificate must assert; defaults to `nonRepudiation`. */
+  keyUsage?: KeyUsage;
 }
 
 export interface CertificateFacts {
@@ -113,7 +123,14 @@ export interface CertificateFacts {
   serialNumber: string;
   notBefore: Date;
   notAfter: Date;
-  key: { type: "rsa"; bits: number } | { type: "ec"; curve: "P-256" | "P-384" };
+  /**
+   * The digitalSignature and nonRepudiation bits its KeyUsage extension
+   * asserts; null without the extension.
+   */
+  keyUsage: KeyUsage[] | null;
+  /** Whether its basicConstraints extension marks it a CA. */
+  ca: boolean;
+  key: { type: "rsa"; bits: number } | { type: "ec"; curve: EcCurve };
   /**
    * Whether the signing service found revocation data that checked out for
    * the certificate and every CA on its path that names a CRL or OCSP

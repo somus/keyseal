@@ -117,9 +117,25 @@ await keyseal.createEnrolJob({
 });
 ```
 
-Every member you give must hold. The helper offers only certificates that satisfy the policy and tells the signer when none on their token does; the server refuses anything else with 422 and fails the job. The policy narrows the job to a class, an issuer or an organization, not to a person, so check the enrolled certificate against the signer in `onCompleted` and pin it afterwards.
+Every member you give must hold, and a policy may hold only `keyUsage`. The helper offers only certificates that satisfy the policy and tells the signer when none on their token does; the server refuses anything else with 422 and fails the job. The policy narrows the job to a class, an issuer or an organization, not to a person, so check the enrolled certificate against the signer in `onCompleted` and pin it afterwards.
 
 Indian DSCs mark their class with CCA India certificate policy OIDs: `2.16.356.100.2.2` for Class 2 and `2.16.356.100.2.3` for Class 3, from the CCA's [OID Hierarchy for India PKI](https://cca.gov.in/sites/files/pdf/guidelines/CCA-OID.pdf). Under the CCA's [interoperability guidelines](https://cca.gov.in/sites/files/pdf/guidelines/CCA-IOG.pdf) a certificate carries the OID of its class and of every lower class, so `["2.16.356.100.2.3"]` admits Class 3 only. This is an example; check the OIDs and CA names your signers' certificates carry before relying on them.
+
+Every job also requires a key usage. By default the certificate's KeyUsage extension must assert nonRepudiation, as Indian DSCs and qualified signing certificates do. Some tokens sign with a certificate that asserts digitalSignature only, such as the PIV Authentication certificate on a corporate PIV card; set `keyUsage: "digitalSignature"` to accept those as well as nonRepudiation ones:
+
+```ts
+await keyseal.createSignJob({
+  title: "Purchase order 4471",
+  signer: "Asha Rao",
+  documents: [{ pdf, fieldName: "Signature1" }],
+  certificatePolicy: {
+    keyUsage: "digitalSignature", // digitalSignature or nonRepudiation; the default is "nonRepudiation"
+    issuerCommonNames: ["Example Corp PIV Issuing CA"],
+  },
+});
+```
+
+A certificate without a KeyUsage extension, or a CA certificate, never qualifies. The server passes the job's key usage to the signing service's certificate check in both rounds; when you validate a signed PDF yourself, pass the same value as `service.validate(pdf, base, keyUsage)`.
 
 In `onCompleted`, check the result against your own rules (for example, that the certificate is in the signer's name) and throw `JobRefused` to fail the job with a message the user sees.
 

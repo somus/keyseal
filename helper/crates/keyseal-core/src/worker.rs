@@ -517,13 +517,11 @@ mod tests {
             "flood"
         );
         assert!(error(open("silent", &[":"])).contains("stopped"), "silent");
-        assert!(
-            error(open(
-                "refusal",
-                &[r#"echo '{"Err":"No DSC token is plugged in."}'"#]
-            ))
-            .contains("No DSC token")
+        let refusal = format!(
+            "echo '{}'",
+            serde_json::json!({ "Err": crate::token::NO_TOKEN })
         );
+        assert_eq!(error(open("refusal", &[&refusal])), crate::token::NO_TOKEN);
 
         let token = open("later", &[opened, r#"echo '{"Ok":"Done"}'"#]).unwrap();
         assert_eq!(token.certificates(false).err().unwrap().0, OUT_OF_TURN);

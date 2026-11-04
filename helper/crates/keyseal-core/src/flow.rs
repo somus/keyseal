@@ -318,7 +318,7 @@ fn sign(
     // does.
     let reached =
         |ui: &mut dyn Ui, step| show_step(ui, view, step, CANCELLED).inspect_err(|_| token.close());
-    let mut certificates = signing_certificates(token, false)?;
+    let mut certificates = signing_certificates(token, job, false)?;
     let login_first = match &backend {
         Backend::Pkcs11(_) if certificates.is_empty() => {
             let prompt = PinPrompt {
@@ -332,7 +332,7 @@ fn sign(
                 .prompt_pin(&prompt)
                 .ok_or_else(|| Failure::cancelled(CANCELLED))?;
             token.login(pin)?;
-            certificates = signing_certificates(token, true)?;
+            certificates = signing_certificates(token, job, true)?;
             true
         }
         _ => false,
@@ -424,10 +424,22 @@ fn enrol(
                 .prompt_pin(&prompt)
                 .ok_or_else(|| Failure::cancelled(ENROLMENT_CANCELLED))?;
             token.login(pin)?;
-            choose(ui, view, signing_certificates(token, true)?, job, false)?
+            choose(
+                ui,
+                view,
+                signing_certificates(token, job, true)?,
+                job,
+                false,
+            )?
         }
         #[cfg(any(windows, test))]
-        Backend::Cng(_) => choose(ui, view, signing_certificates(token, false)?, job, true)?,
+        Backend::Cng(_) => choose(
+            ui,
+            view,
+            signing_certificates(token, job, false)?,
+            job,
+            true,
+        )?,
     };
     let chain = chain(token, &certificate)?;
     token.close();
@@ -555,14 +567,21 @@ fn open_first(
     })))
 }
 
-/// Certificates the job may use: signing certificates, and after login
-/// only those with a private key beside them.
+/// Certificates the job may use: signing certificates with the key usage
+/// its certificate policy asks for (nonRepudiation without one), and after
+/// login only those with a private key beside them.
 fn signing_certificates(
     token: &dyn TokenBackend,
+    job: &JobDescription,
     logged_in: bool,
 ) -> Result<Vec<TokenCertificate>, String> {
+    let usage = job
+        .certificate_policy
+        .as_ref()
+        .and_then(|policy| policy.key_usage)
+        .unwrap_or_default();
     let mut found = token.certificates(logged_in)?;
-    found.retain(|certificate| token::is_signing_certificate(&certificate.der));
+    found.retain(|certificate| token::is_signing_certificate(&certificate.der, usage));
     Ok(found)
 }
 
@@ -1412,6 +1431,36 @@ mod tests {
             1
         );
         assert!(!requests.iter().any(|r| r.ends_with("/certificate")));
+    }
+
+    /// A certificate whose key usage has digitalSignature without
+    /// nonRepudiation is offered only to a job whose policy asks for
+    /// digitalSignature.
+    #[test]
+    fn filters_certificates_by_the_job_key_usage() {
+        const DIGITAL_SIGNATURE: &[u8] = include_bytes!("../tests/fixtures/digital-signature.der");
+        let token = FakeToken::new(vec![RSA, DIGITAL_SIGNATURE], vec![]);
+        let offered = |policy: serde_json::Value| {
+            let job = serde_json::from_value::<JobDescription>(json!({
+                "kind": "enrol",
+                "title": "Enrolment",
+                "signer": "Asha Rao",
+                "claimNonce": NONCE,
+                "certificatePolicy": policy,
+            }))
+            .unwrap();
+            signing_certificates(&token, &job, false)
+                .unwrap()
+                .into_iter()
+                .map(|certificate| certificate.der)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(offered(json!(null)), [RSA]);
+        assert_eq!(offered(json!({ "keyUsage": "nonRepudiation" })), [RSA]);
+        assert_eq!(
+            offered(json!({ "keyUsage": "digitalSignature" })),
+            [RSA, DIGITAL_SIGNATURE]
+        );
     }
 
     /// Runs a sign link against `origin` with a token showing `public`

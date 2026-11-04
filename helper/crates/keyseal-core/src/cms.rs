@@ -1,6 +1,7 @@
 //! The CMS pieces the helper handles itself: checking the SignedAttributes
 //! the server asks the token to sign (section 10), the key, digest and
-//! scheme pairings of section 11, and encoding ECDSA signatures.
+//! scheme pairings of section 11, and encoding ECDSA signatures and the
+//! DigestInfo of an RSA PKCS#1 v1.5 signature.
 //!
 //! The token signs whatever bytes it is given, so before the digest is shown
 //! the helper checks they are attributes for a plain document, signed with
@@ -8,7 +9,7 @@
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256, Sha384};
-use x509_parser::asn1_rs::{Any, Class, FromDer, Tag, oid};
+use x509_parser::asn1_rs::{Any, Class, FromDer, Oid, Tag, oid};
 use x509_parser::oid_registry::{OID_EC_P256, OID_NIST_EC_P384};
 use x509_parser::public_key::PublicKey;
 
@@ -33,6 +34,23 @@ impl DigestAlgorithm {
             Self::Sha384 => 48,
         }
     }
+
+    /// The DER DigestInfo of `data`'s digest, which an RSA PKCS#1 v1.5
+    /// signature pads and signs (RFC 8017 section 9.2): the AlgorithmIdentifier
+    /// with NULL parameters, then the digest as an OCTET STRING.
+    pub fn digest_info(self, data: &[u8]) -> Vec<u8> {
+        let prefix: &[u8] = match self {
+            Self::Sha256 => &[
+                0x30, 0x31, 0x30, 0x0d, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02,
+                0x01, 0x05, 0x00, 0x04, 0x20,
+            ],
+            Self::Sha384 => &[
+                0x30, 0x41, 0x30, 0x0d, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02,
+                0x02, 0x05, 0x00, 0x04, 0x30,
+            ],
+        };
+        [prefix, &self.digest(data)].concat()
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
@@ -51,7 +69,12 @@ pub enum KeyKind {
     Rsa,
     P256,
     P384,
+    BrainpoolP256r1,
+    BrainpoolP384r1,
 }
+
+const BRAINPOOL_P256R1: Oid<'static> = oid!(1.3.36.3.3.2.8.1.1.7);
+const BRAINPOOL_P384R1: Oid<'static> = oid!(1.3.36.3.3.2.8.1.1.11);
 
 impl KeyKind {
     /// The kind of key in a DER certificate's SubjectPublicKeyInfo.
@@ -71,7 +94,12 @@ impl KeyKind {
                 match curve {
                     Some(oid) if oid == OID_EC_P256 => Ok(Self::P256),
                     Some(oid) if oid == OID_NIST_EC_P384 => Ok(Self::P384),
-                    _ => Err("The certificate's EC key isn't on P-256 or P-384.".into()),
+                    Some(oid) if oid == BRAINPOOL_P256R1 => Ok(Self::BrainpoolP256r1),
+                    Some(oid) if oid == BRAINPOOL_P384R1 => Ok(Self::BrainpoolP384r1),
+                    _ => Err(
+                        "The certificate's EC key isn't on P-256, P-384, brainpoolP256r1 or brainpoolP384r1."
+                            .into(),
+                    ),
                 }
             }
             _ => Err("The certificate's key is neither RSA nor EC.".into()),
@@ -87,11 +115,21 @@ impl KeyKind {
         use {DigestAlgorithm as D, SignatureAlgorithm as S};
         match (self, signature, digest) {
             (Self::Rsa, S::RsaPkcs1v15 | S::RsaPss, _)
-            | (Self::P256, S::Ecdsa, D::Sha256)
-            | (Self::P384, S::Ecdsa, D::Sha384) => Ok(()),
+            | (Self::P256 | Self::BrainpoolP256r1, S::Ecdsa, D::Sha256)
+            | (Self::P384 | Self::BrainpoolP384r1, S::Ecdsa, D::Sha384) => Ok(()),
             _ => Err(format!(
                 "The server asked for {signature:?} with {digest:?}, which a {self:?} key doesn't sign."
             )),
+        }
+    }
+
+    /// The length of an ECDSA signature's r||s for the key's curve; `None`
+    /// for RSA.
+    pub fn ecdsa_len(self) -> Option<usize> {
+        match self {
+            Self::Rsa => None,
+            Self::P256 | Self::BrainpoolP256r1 => Some(64),
+            Self::P384 | Self::BrainpoolP384r1 => Some(96),
         }
     }
 }
@@ -688,6 +726,53 @@ mod tests {
         );
     }
 
+    /// `brainpool-p256r1.der` and `brainpool-p384r1.der` are self-signed,
+    /// made with `openssl req -x509 -newkey ec -pkeyopt
+    /// ec_paramgen_curve:brainpoolP256r1` (and P384r1).
+    #[test]
+    fn reads_the_curve_of_a_certificate() {
+        for (der, kind) in [
+            (
+                &include_bytes!("../tests/fixtures/chain-signer.der")[..],
+                KeyKind::P256,
+            ),
+            (
+                include_bytes!("../tests/fixtures/brainpool-p256r1.der"),
+                KeyKind::BrainpoolP256r1,
+            ),
+            (
+                include_bytes!("../tests/fixtures/brainpool-p384r1.der"),
+                KeyKind::BrainpoolP384r1,
+            ),
+            (
+                include_bytes!("../tests/fixtures/rsa-non-repudiation.der"),
+                KeyKind::Rsa,
+            ),
+        ] {
+            assert_eq!(KeyKind::of_certificate(der).unwrap(), kind);
+        }
+        assert_eq!(KeyKind::BrainpoolP256r1.ecdsa_len(), Some(64));
+        assert_eq!(KeyKind::BrainpoolP384r1.ecdsa_len(), Some(96));
+    }
+
+    /// The DigestInfo encodings RFC 8017 section 9.2 note 1 lists, then
+    /// the digest.
+    #[test]
+    fn encodes_digest_info() {
+        let info = DigestAlgorithm::Sha256.digest_info(b"abc");
+        assert_eq!(
+            hex::encode(&info[..19]),
+            "3031300d060960864801650304020105000420"
+        );
+        assert_eq!(info[19..], Sha256::digest(b"abc")[..]);
+        let info = DigestAlgorithm::Sha384.digest_info(b"abc");
+        assert_eq!(
+            hex::encode(&info[..19]),
+            "3041300d060960864801650304020205000430"
+        );
+        assert_eq!(info[19..], Sha384::digest(b"abc")[..]);
+    }
+
     #[test]
     fn pairs_keys_digests_and_schemes() {
         use {DigestAlgorithm as D, KeyKind as K, SignatureAlgorithm as S};
@@ -698,6 +783,8 @@ mod tests {
             (K::Rsa, D::Sha384, S::RsaPss),
             (K::P256, D::Sha256, S::Ecdsa),
             (K::P384, D::Sha384, S::Ecdsa),
+            (K::BrainpoolP256r1, D::Sha256, S::Ecdsa),
+            (K::BrainpoolP384r1, D::Sha384, S::Ecdsa),
         ] {
             assert!(
                 key.check(digest, signature).is_ok(),
@@ -710,6 +797,9 @@ mod tests {
             (K::P384, D::Sha256, S::Ecdsa),
             (K::P256, D::Sha256, S::RsaPkcs1v15),
             (K::P384, D::Sha384, S::RsaPss),
+            (K::BrainpoolP256r1, D::Sha384, S::Ecdsa),
+            (K::BrainpoolP384r1, D::Sha256, S::Ecdsa),
+            (K::BrainpoolP256r1, D::Sha256, S::RsaPkcs1v15),
         ] {
             assert!(
                 key.check(digest, signature).is_err(),

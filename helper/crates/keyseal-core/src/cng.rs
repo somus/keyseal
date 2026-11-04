@@ -12,6 +12,7 @@
 //! signature encoding are tested on every platform.
 
 use crate::cms::{self, DigestAlgorithm, KeyKind, SignatureAlgorithm};
+use crate::protocol::KeyUsage;
 use crate::token::{self, TokenBackend, TokenCertificate, TokenError};
 
 #[cfg(windows)]
@@ -70,14 +71,17 @@ impl<S: KeyStore> TokenBackend for Cng<S> {
         None
     }
 
-    /// Signing certificates whose key is on a smart card or token; each
+    /// Signing certificates whose key is on a smart card or token, with
+    /// either key usage a job may ask for (the flow applies the job's); each
     /// has its private key, so `with_private_key` changes nothing.
     fn certificates(&self, _with_private_key: bool) -> Result<Vec<TokenCertificate>, TokenError> {
         Ok(self
             .store
             .certificates()?
             .into_iter()
-            .filter(|c| c.hardware_key && token::is_signing_certificate(&c.der))
+            .filter(|c| {
+                c.hardware_key && token::is_signing_certificate(&c.der, KeyUsage::DigitalSignature)
+            })
             .map(|c| TokenCertificate {
                 sha256: token::sha256_hex(&c.der),
                 der: c.der,
@@ -110,10 +114,9 @@ impl<S: KeyStore> TokenBackend for Cng<S> {
         self.store
             .sign_hashes(certificate, &hashes, padding, window)?
             .into_iter()
-            .map(|signature| match kind {
-                KeyKind::Rsa => Ok(signature),
-                KeyKind::P256 => Ok(cms::ecdsa_signature(&signature, 64)?),
-                KeyKind::P384 => Ok(cms::ecdsa_signature(&signature, 96)?),
+            .map(|signature| match kind.ecdsa_len() {
+                None => Ok(signature),
+                Some(len) => Ok(cms::ecdsa_signature(&signature, len)?),
             })
             .collect()
     }
@@ -423,22 +426,22 @@ mod tests {
 
     #[test]
     fn offers_signing_certificates_with_hardware_keys() {
+        const DIGITAL_SIGNATURE: &[u8] = include_bytes!("../tests/fixtures/digital-signature.der");
         let cng = Cng::new(FakeStore {
             certificates: vec![
                 (NON_REPUDIATION, true),
                 (RSA, false),
-                (
-                    include_bytes!("../tests/fixtures/digital-signature.der"),
-                    true,
-                ),
+                (DIGITAL_SIGNATURE, true),
                 (include_bytes!("../tests/fixtures/no-key-usage.der"), true),
             ],
             ..FakeStore::default()
         });
+        // A job's policy may accept digitalSignature; the flow applies it.
         let offered = cng.certificates(false).unwrap();
-        assert_eq!(offered.len(), 1);
+        assert_eq!(offered.len(), 2);
         assert_eq!(offered[0].der, NON_REPUDIATION);
         assert_eq!(offered[0].sha256, token::sha256_hex(NON_REPUDIATION));
+        assert_eq!(offered[1].der, DIGITAL_SIGNATURE);
     }
 
     #[test]

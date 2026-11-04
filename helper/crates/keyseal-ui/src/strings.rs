@@ -37,6 +37,7 @@ strings! {
     PIN = "Token PIN";
     PIN_PLACEHOLDER = "Enter your token's PIN";
     PIN_PAD = "Enter your PIN on the token's keypad when it asks.";
+    PIN_PAD_BATCH = "Enter your PIN on the token's keypad when it asks. Some tokens ask once for each document.";
     DIGEST_NEXT = "You'll check the document once more before it's signed.";
     DIGESTS_NEXT = "You'll check the documents once more before they're signed.";
     ENROL_NOTE = "Your PIN unlocks your token so KeySeal can find your certificate.";

@@ -7,6 +7,7 @@ license.workspace = true
 [dependencies]
 base64.workspace = true
 cryptoki.workspace = true
+cryptoki-sys.workspace = true
 dirs.workspace = true
 ed25519-dalek.workspace = true
 hex.workspace = true

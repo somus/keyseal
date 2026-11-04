@@ -320,7 +320,7 @@ fn p11_kit_modules(config: &[&str]) -> Vec<PathBuf> {
 
 /// How the error when no module is installed starts, for front ends that
 /// add advice to it.
-pub const NO_DRIVER: &str = "No DSC token driver was found.";
+pub const NO_DRIVER: &str = "No token or smart card driver was found.";
 
 #[cfg(test)]
 mod tests {

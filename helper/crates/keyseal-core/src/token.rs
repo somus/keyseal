@@ -1,29 +1,34 @@
-//! The user's DSC token through PKCS#11, and the [`TokenBackend`] seam the
-//! flow signs through. The PIN is used to log in and dropped; nothing from
-//! the token is written to disk.
+//! The user's token or smart card through PKCS#11, and the
+//! [`TokenBackend`] seam the flow signs through. The PIN is kept, zeroised
+//! when dropped, from login until the job's signatures are made, for keys
+//! that need it for each signature; nothing from the token is written to
+//! disk.
 
+use std::cell::RefCell;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use cryptoki::context::{CInitializeArgs, CInitializeFlags, Pkcs11};
-use cryptoki::error::RvError;
+use cryptoki::context::{CInitializeArgs, CInitializeFlags, Function, Pkcs11};
+use cryptoki::error::{Rv, RvError};
 use cryptoki::mechanism::rsa::{PkcsMgfType, PkcsPssParams};
 use cryptoki::mechanism::{Mechanism, MechanismType};
 use cryptoki::object::{Attribute, AttributeType, KeyType, ObjectClass, ObjectHandle};
 use cryptoki::session::{Session, UserType};
 use cryptoki::types::AuthPin;
+use cryptoki_sys::{CK_C_Sign, CK_ULONG, CKR_OK};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
 use crate::cms::{self, DigestAlgorithm, KeyKind, SignatureAlgorithm};
+use crate::protocol::KeyUsage;
 use crate::worker::{self, Backend, WorkerToken};
 
 #[derive(Debug)]
 pub struct TokenError(pub String);
 
 /// The error when no token is plugged in, also as relayed by the worker.
-pub const NO_TOKEN: &str = "No DSC token is plugged in.";
+pub const NO_TOKEN: &str = "No token or smart card is plugged in.";
 
 impl std::fmt::Display for TokenError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -48,9 +53,9 @@ pub fn sha256_hex(data: &[u8]) -> String {
 }
 
 /// Whether a certificate can be offered for signing: a supported key
-/// (section 11), not a CA, and a key usage with nonRepudiation, which the
-/// server's certificate check requires.
-pub fn is_signing_certificate(der: &[u8]) -> bool {
+/// (section 11), not a CA, and a KeyUsage extension asserting what `usage`
+/// asks for, as the server's certificate check requires.
+pub fn is_signing_certificate(der: &[u8], usage: KeyUsage) -> bool {
     if KeyKind::of_certificate(der).is_err() {
         return false;
     }
@@ -58,9 +63,16 @@ pub fn is_signing_certificate(der: &[u8]) -> bool {
         return false;
     };
     let ca = matches!(certificate.basic_constraints(), Ok(Some(ext)) if ext.value.ca);
-    let non_repudiation =
-        matches!(certificate.key_usage(), Ok(Some(ext)) if ext.value.non_repudiation());
-    !ca && non_repudiation
+    let asserted = match certificate.key_usage() {
+        Ok(Some(ext)) => match usage {
+            KeyUsage::NonRepudiation => ext.value.non_repudiation(),
+            KeyUsage::DigitalSignature => {
+                ext.value.digital_signature() || ext.value.non_repudiation()
+            }
+        },
+        _ => false,
+    };
+    !ca && asserted
 }
 
 /// The certificates among `others` that form the issuer chain of `der`,
@@ -134,12 +146,17 @@ pub trait TokenBackend {
     /// those with a private key beside them, which login makes visible.
     fn certificates(&self, with_private_key: bool) -> Result<Vec<TokenCertificate>, TokenError>;
     /// Logs in with `pin`, or through the PIN pad when the token has one.
-    /// The PIN is dropped, and so zeroised, after the call.
+    /// A PKCS#11 token keeps the PIN, zeroised when dropped, until
+    /// [`sign`](Self::sign) or [`close`](Self::close), for a key that needs
+    /// it again for each signature (CKA_ALWAYS_AUTHENTICATE).
     fn login(&self, pin: Zeroizing<String>) -> Result<(), TokenError>;
     /// The signature value over each item of `data`, in order, with the
     /// private key of `certificate` (DER), encoded as section 11.1 says. The
     /// key is found once and every item is signed in the same session (on
     /// CNG, through one key handle), so one login covers a job's documents.
+    /// A PKCS#11 key with CKA_ALWAYS_AUTHENTICATE gets the kept PIN, or on a
+    /// PIN pad the pad's prompt, before each signature; the PIN is dropped
+    /// after the call.
     /// `window` is the `HWND` a CNG provider's PIN dialog belongs to; PKCS#11
     /// ignores it.
     fn sign(
@@ -150,7 +167,7 @@ pub trait TokenBackend {
         scheme: SignatureAlgorithm,
         window: Option<isize>,
     ) -> Result<Vec<Vec<u8>>, TokenError>;
-    /// Ends the session; for PKCS#11, logs out.
+    /// Ends the session; for PKCS#11, logs out and drops the kept PIN.
     fn close(&self);
 }
 
@@ -173,6 +190,8 @@ pub fn open(path: &Path, wait: Duration) -> Result<Box<dyn TokenBackend>, TokenE
 /// A loaded and initialised PKCS#11 module.
 pub struct Module {
     pkcs11: Pkcs11,
+    /// The module's C_Sign, which [`Token::sign_raw`] calls itself.
+    c_sign: CK_C_Sign,
 }
 
 impl Module {
@@ -192,7 +211,10 @@ impl Module {
             Err(e) => return Err(err("Couldn't start the token driver", e)),
         }
         std::mem::forget(pkcs11.clone());
-        Ok(Self { pkcs11 })
+        Ok(Self {
+            pkcs11,
+            c_sign: c_sign(path),
+        })
     }
 
     /// Opens a session on the first initialised token, listing the slots
@@ -220,6 +242,9 @@ impl Module {
             .pkcs11
             .open_ro_session(slot)
             .map_err(|e| err("Couldn't open the token", e))?;
+        // Read once per session; a driver that can't list them is taken to
+        // have every mechanism.
+        let mechanisms = self.pkcs11.get_mechanism_list(slot).unwrap_or_default();
         let pin_warning = if info.user_pin_locked() {
             Some(PinWarning::Locked)
         } else if info.user_pin_final_try() {
@@ -233,8 +258,55 @@ impl Module {
             session,
             pin_pad: info.protected_authentication_path(),
             pin_warning,
+            mechanisms,
+            c_sign: self.c_sign,
+            pin: RefCell::new(None),
         })
     }
+}
+
+/// The C_Sign of the module at `path`, from its function list. cryptoki's
+/// `Session::sign` makes C_SignInit and C_Sign in one call, and a
+/// context-specific login has to come between them. The library is loaded
+/// again, which finds the one already loaded, and never unloaded, as in
+/// [`Module::load`].
+fn c_sign(path: &Path) -> CK_C_Sign {
+    // SAFETY: the same library cryptoki loaded and initialised; only its
+    // function list is read.
+    unsafe {
+        let library = cryptoki_sys::Pkcs11::new(path).ok()?;
+        let mut list = std::ptr::null_mut();
+        let rv = library.C_GetFunctionList(&mut list);
+        std::mem::forget(library);
+        if rv != CKR_OK || list.is_null() {
+            return None;
+        }
+        (*list).C_Sign
+    }
+}
+
+/// Whether an RSA PKCS#1 v1.5 signature with `digest` is made over a
+/// DigestInfo hashed on the host with CKM_RSA_PKCS: when the slot's
+/// `mechanisms` lack the combined hash-and-sign mechanism but have
+/// CKM_RSA_PKCS. The signature is the same either way.
+fn pkcs1_on_host(mechanisms: &[MechanismType], digest: DigestAlgorithm) -> bool {
+    let combined = match digest {
+        DigestAlgorithm::Sha256 => MechanismType::SHA256_RSA_PKCS,
+        DigestAlgorithm::Sha384 => MechanismType::SHA384_RSA_PKCS,
+    };
+    !mechanisms.contains(&combined) && mechanisms.contains(&MechanismType::RSA_PKCS)
+}
+
+/// The mechanism and input of an RSA PKCS#1 v1.5 signature over `data`.
+fn pkcs1(on_host: bool, data: &[u8], digest: DigestAlgorithm) -> (Mechanism<'static>, Vec<u8>) {
+    if on_host {
+        return (Mechanism::RsaPkcs, digest.digest_info(data));
+    }
+    let mechanism = match digest {
+        DigestAlgorithm::Sha256 => Mechanism::Sha256RsaPkcs,
+        DigestAlgorithm::Sha384 => Mechanism::Sha384RsaPkcs,
+    };
+    (mechanism, data.to_vec())
 }
 
 /// What the driver says about remaining PIN attempts.
@@ -270,6 +342,12 @@ pub struct Token {
     pub pin_pad: bool,
     /// What the driver says about remaining PIN attempts.
     pub pin_warning: Option<PinWarning>,
+    /// The slot's mechanisms, read when the session opened.
+    mechanisms: Vec<MechanismType>,
+    c_sign: CK_C_Sign,
+    /// The PIN from login until the job's signatures are made, for a key
+    /// with CKA_ALWAYS_AUTHENTICATE. `AuthPin` zeroises it when dropped.
+    pin: RefCell<Option<AuthPin>>,
 }
 
 impl Token {
@@ -342,13 +420,17 @@ impl TokenBackend for Token {
         // zeroises; `AuthPin::from(String)` would shrink the String and free
         // its old buffer without zeroising it.
         let pin = AuthPin::from(Box::<str>::from(pin.as_str()));
-        let pin = if self.pin_pad { None } else { Some(&pin) };
         self.session
-            .login(UserType::User, pin)
-            .map_err(|e| err("The token refused the PIN", e))
+            .login(UserType::User, (!self.pin_pad).then_some(&pin))
+            .map_err(|e| err("The token refused the PIN", e))?;
+        if !self.pin_pad {
+            *self.pin.borrow_mut() = Some(pin);
+        }
+        Ok(())
     }
 
     fn close(&self) {
+        self.pin.take();
         let _ = self.session.logout();
     }
 
@@ -360,6 +442,8 @@ impl TokenBackend for Token {
         scheme: SignatureAlgorithm,
         _window: Option<isize>,
     ) -> Result<Vec<Vec<u8>>, TokenError> {
+        // Taken first, so the PIN is dropped when this call returns.
+        let pin = self.pin.take();
         let kind = KeyKind::of_certificate(certificate)?;
         kind.check(digest, scheme)?;
         let sha256 = sha256_hex(certificate);
@@ -371,27 +455,36 @@ impl TokenBackend for Token {
         let key = self.private_key(&on_token)?.ok_or_else(|| {
             TokenError("The token holds no private key for the certificate.".into())
         })?;
-        let key_type = match self
+        let mut key_type = None;
+        let mut always_authenticate = false;
+        for attribute in self
             .session
-            .get_attributes(key, &[AttributeType::KeyType])
+            .get_attributes(
+                key,
+                &[AttributeType::KeyType, AttributeType::AlwaysAuthenticate],
+            )
             .map_err(|e| err("Couldn't read the key", e))?
-            .first()
         {
-            Some(Attribute::KeyType(key_type)) => *key_type,
-            _ => {
-                return Err(TokenError(
-                    "The token didn't say what kind of key it holds.".into(),
-                ));
+            match attribute {
+                Attribute::KeyType(value) => key_type = Some(value),
+                Attribute::AlwaysAuthenticate(value) => always_authenticate = value,
+                _ => {}
             }
-        };
+        }
+        let key_type = key_type
+            .ok_or_else(|| TokenError("The token didn't say what kind of key it holds.".into()))?;
+        let reauthenticate = always_authenticate.then_some(pin.as_ref());
         data.iter()
-            .map(|data| self.sign_one(key, kind, key_type, data, digest, scheme))
+            .map(|data| self.sign_one(key, kind, key_type, data, digest, scheme, reauthenticate))
             .collect()
     }
 }
 
 impl Token {
     /// One signature with `key`, whose type the token reported as `key_type`.
+    /// `reauthenticate` is `Some` for a key with CKA_ALWAYS_AUTHENTICATE,
+    /// holding the PIN kept from login, which is `None` on a PIN pad.
+    #[expect(clippy::too_many_arguments, reason = "one signature's inputs")]
     fn sign_one(
         &self,
         key: ObjectHandle,
@@ -400,19 +493,20 @@ impl Token {
         data: &[u8],
         digest: DigestAlgorithm,
         scheme: SignatureAlgorithm,
+        reauthenticate: Option<Option<&AuthPin>>,
     ) -> Result<Vec<u8>, TokenError> {
-        let sign = |mechanism: &Mechanism, input: &[u8]| {
-            self.session
+        let sign = |mechanism: &Mechanism, input: &[u8]| match reauthenticate {
+            None => self
+                .session
                 .sign(mechanism, key, input)
-                .map_err(|e| err("The token couldn't sign", e))
+                .map_err(|e| err("The token couldn't sign", e)),
+            Some(pin) => self.sign_raw(mechanism, key, input, pin),
         };
         match (kind, key_type, scheme) {
             (KeyKind::Rsa, KeyType::RSA, SignatureAlgorithm::RsaPkcs1v15) => {
-                let mechanism = match digest {
-                    DigestAlgorithm::Sha256 => Mechanism::Sha256RsaPkcs,
-                    DigestAlgorithm::Sha384 => Mechanism::Sha384RsaPkcs,
-                };
-                sign(&mechanism, data)
+                let (mechanism, input) =
+                    pkcs1(pkcs1_on_host(&self.mechanisms, digest), data, digest);
+                sign(&mechanism, &input)
             }
             (KeyKind::Rsa, KeyType::RSA, SignatureAlgorithm::RsaPss) => {
                 // CKM_RSA_PKCS_PSS signs a digest the helper computes; MGF1
@@ -428,15 +522,77 @@ impl Token {
                 };
                 sign(&Mechanism::RsaPkcsPss(params), &digest.digest(data))
             }
-            (KeyKind::P256 | KeyKind::P384, KeyType::EC, SignatureAlgorithm::Ecdsa) => {
+            (
+                KeyKind::P256 | KeyKind::P384 | KeyKind::BrainpoolP256r1 | KeyKind::BrainpoolP384r1,
+                KeyType::EC,
+                SignatureAlgorithm::Ecdsa,
+            ) => {
                 let raw = sign(&Mechanism::Ecdsa, &digest.digest(data))?;
-                let len = if kind == KeyKind::P256 { 64 } else { 96 };
+                let len = kind.ecdsa_len().expect("an EC key");
                 Ok(cms::ecdsa_signature(&raw, len)?)
             }
             _ => Err(TokenError(
                 "The key on the token isn't the kind its certificate names.".into(),
             )),
         }
+    }
+
+    /// C_SignInit, the context-specific login a key with
+    /// CKA_ALWAYS_AUTHENTICATE needs (with `pin`, or `None` for the PIN pad's
+    /// prompt), then C_Sign, which asks the length before signing.
+    fn sign_raw(
+        &self,
+        mechanism: &Mechanism,
+        key: ObjectHandle,
+        input: &[u8],
+        pin: Option<&AuthPin>,
+    ) -> Result<Vec<u8>, TokenError> {
+        if !self.pin_pad && pin.is_none() {
+            return Err(TokenError(
+                "The key needs the PIN for each signature, and none was kept from login.".into(),
+            ));
+        }
+        let c_sign = self
+            .c_sign
+            .ok_or_else(|| TokenError("The token driver has no C_Sign.".into()))?;
+        self.session
+            .sign_init(mechanism, key)
+            .map_err(|e| err("The token couldn't sign", e))?;
+        self.session
+            .login(UserType::ContextSpecific, pin)
+            .map_err(|e| err("The token refused the PIN for this signature", e))?;
+        let check = |rv| {
+            Rv::from(rv)
+                .into_result(Function::Sign)
+                .map_err(|e| err("The token couldn't sign", e))
+        };
+        let input_len =
+            CK_ULONG::try_from(input.len()).map_err(|e| err("The token couldn't sign", e))?;
+        let mut len: CK_ULONG = 0;
+        // SAFETY: the session's handle with a sign operation started on it,
+        // `input` for its length, and a null buffer to ask the length.
+        check(unsafe {
+            c_sign(
+                self.session.handle(),
+                input.as_ptr().cast_mut(),
+                input_len,
+                std::ptr::null_mut(),
+                &mut len,
+            )
+        })?;
+        let mut signature = vec![0; len as usize];
+        // SAFETY: as above, with a buffer of the length the token gave.
+        check(unsafe {
+            c_sign(
+                self.session.handle(),
+                input.as_ptr().cast_mut(),
+                input_len,
+                signature.as_mut_ptr(),
+                &mut len,
+            )
+        })?;
+        signature.truncate(len as usize);
+        Ok(signature)
     }
 }
 
@@ -445,16 +601,156 @@ mod tests {
     use super::*;
 
     #[test]
-    fn signing_certificates_need_non_repudiation() {
-        assert!(is_signing_certificate(include_bytes!(
-            "../tests/fixtures/non-repudiation.der"
-        )));
-        assert!(!is_signing_certificate(include_bytes!(
-            "../tests/fixtures/digital-signature.der"
-        )));
-        assert!(!is_signing_certificate(include_bytes!(
-            "../tests/fixtures/no-key-usage.der"
-        )));
+    fn signing_certificates_need_the_key_usage() {
+        const NON_REPUDIATION: &[u8] = include_bytes!("../tests/fixtures/non-repudiation.der");
+        const DIGITAL_SIGNATURE: &[u8] = include_bytes!("../tests/fixtures/digital-signature.der");
+        const NO_KEY_USAGE: &[u8] = include_bytes!("../tests/fixtures/no-key-usage.der");
+        assert!(is_signing_certificate(
+            NON_REPUDIATION,
+            KeyUsage::NonRepudiation
+        ));
+        assert!(!is_signing_certificate(
+            DIGITAL_SIGNATURE,
+            KeyUsage::NonRepudiation
+        ));
+        assert!(!is_signing_certificate(
+            NO_KEY_USAGE,
+            KeyUsage::NonRepudiation
+        ));
+        assert!(is_signing_certificate(
+            NON_REPUDIATION,
+            KeyUsage::DigitalSignature
+        ));
+        assert!(is_signing_certificate(
+            DIGITAL_SIGNATURE,
+            KeyUsage::DigitalSignature
+        ));
+        assert!(!is_signing_certificate(
+            NO_KEY_USAGE,
+            KeyUsage::DigitalSignature
+        ));
+    }
+
+    /// CKM_RSA_PKCS over the DigestInfo hashed here gives the signature the
+    /// combined mechanism gives. SoftHSM has both, so the inputs come from
+    /// [`pkcs1`] directly. Runs when `KEYSEAL_SOFTHSM_MODULE` names
+    /// libsofthsm2, with softhsm2-util and pkcs11-tool on the PATH. The test
+    /// sets up a token, then runs itself in a process of its own with
+    /// `SOFTHSM2_CONF` set, as the other tests' threads share this one's
+    /// environment.
+    #[test]
+    fn signs_pkcs1_on_the_host_as_the_token_does() {
+        use std::process::Command;
+        const PIN: &str = "1234";
+        let Ok(module) = std::env::var("KEYSEAL_SOFTHSM_MODULE") else {
+            eprintln!("skipped: set KEYSEAL_SOFTHSM_MODULE to libsofthsm2 to run");
+            return;
+        };
+        if std::env::var_os("KEYSEAL_PKCS1_TOKEN").is_none() {
+            let dir = std::env::temp_dir().join(format!("keyseal-pkcs1-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(dir.join("tokens")).unwrap();
+            let conf = dir.join("softhsm2.conf");
+            std::fs::write(
+                &conf,
+                format!("directories.tokendir = {}\n", dir.join("tokens").display()),
+            )
+            .unwrap();
+            let run = |command: &mut Command| {
+                let output = command.env("SOFTHSM2_CONF", &conf).output().unwrap();
+                assert!(
+                    output.status.success(),
+                    "{command:?}: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                String::from_utf8_lossy(&output.stdout).into_owned()
+            };
+            run(Command::new("softhsm2-util").args([
+                "--init-token",
+                "--free",
+                "--label",
+                "pkcs1",
+                "--pin",
+                PIN,
+                "--so-pin",
+                "5678",
+            ]));
+            run(Command::new("pkcs11-tool")
+                .args(["--module", &module, "--login", "--pin", PIN])
+                .args([
+                    "--keypairgen",
+                    "--key-type",
+                    "rsa:2048",
+                    "--id",
+                    "01",
+                    "--usage-sign",
+                ]));
+            let child = run(Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "token::tests::signs_pkcs1_on_the_host_as_the_token_does",
+                ])
+                .env("KEYSEAL_PKCS1_TOKEN", "1"));
+            assert!(child.contains("1 passed"), "{child}");
+            std::fs::remove_dir_all(&dir).unwrap();
+            return;
+        }
+        let token = Module::load(Path::new(&module))
+            .unwrap()
+            .open(Duration::ZERO)
+            .unwrap();
+        assert!(token.mechanisms.contains(&MechanismType::SHA384_RSA_PKCS));
+        token.login(Zeroizing::new(PIN.into())).unwrap();
+        let key = token
+            .session
+            .find_objects(&[Attribute::Class(ObjectClass::PRIVATE_KEY)])
+            .unwrap()[0];
+        for digest in [DigestAlgorithm::Sha256, DigestAlgorithm::Sha384] {
+            let sign = |on_host| {
+                let (mechanism, input) = pkcs1(on_host, b"signed attributes", digest);
+                token.session.sign(&mechanism, key, &input).unwrap()
+            };
+            assert_eq!(sign(true), sign(false), "{digest:?}");
+        }
+        token.close();
+    }
+
+    /// Any PKCS#11 token or smart card, not only India's DSC tokens.
+    #[test]
+    fn names_tokens_generically() {
+        assert_eq!(NO_TOKEN, "No token or smart card is plugged in.");
+        assert_eq!(
+            crate::modules::NO_DRIVER,
+            "No token or smart card driver was found."
+        );
+    }
+
+    #[test]
+    fn hashes_on_the_host_only_without_the_combined_mechanism() {
+        use MechanismType as M;
+        let all = [M::RSA_PKCS, M::SHA256_RSA_PKCS, M::SHA384_RSA_PKCS];
+        let raw_only = [M::RSA_PKCS, M::ECDSA];
+        for digest in [DigestAlgorithm::Sha256, DigestAlgorithm::Sha384] {
+            assert!(!pkcs1_on_host(&all, digest));
+            assert!(pkcs1_on_host(&raw_only, digest));
+            // No list, or neither mechanism: the combined one, as before.
+            assert!(!pkcs1_on_host(&[], digest));
+            assert!(!pkcs1_on_host(&[M::ECDSA], digest));
+        }
+        assert!(pkcs1_on_host(
+            &[M::RSA_PKCS, M::SHA256_RSA_PKCS],
+            DigestAlgorithm::Sha384
+        ));
+        assert!(!pkcs1_on_host(
+            &[M::RSA_PKCS, M::SHA256_RSA_PKCS],
+            DigestAlgorithm::Sha256
+        ));
+        let (mechanism, input) = pkcs1(true, b"abc", DigestAlgorithm::Sha384);
+        assert_eq!(mechanism.mechanism_type(), M::RSA_PKCS);
+        assert_eq!(input, DigestAlgorithm::Sha384.digest_info(b"abc"));
+        let (mechanism, input) = pkcs1(false, b"abc", DigestAlgorithm::Sha384);
+        assert_eq!(mechanism.mechanism_type(), M::SHA384_RSA_PKCS);
+        assert_eq!(input, b"abc");
     }
 
     // chain-*.der: a P-256 root, a sub CA it issued, a signer the sub CA

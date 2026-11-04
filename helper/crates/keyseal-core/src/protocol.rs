@@ -161,6 +161,19 @@ pub struct CertificatePolicy {
     pub policy_oids: Option<Vec<String>>,
     pub issuer_common_names: Option<Vec<String>>,
     pub subject_organization: Option<String>,
+    /// The key usage the certificate must assert; see [`KeyUsage`].
+    pub key_usage: Option<KeyUsage>,
+}
+
+/// The key usage a signing certificate must assert (section 8.2): with
+/// `NonRepudiation`, the default, nonRepudiation; with `DigitalSignature`,
+/// digitalSignature or nonRepudiation.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum KeyUsage {
+    #[default]
+    NonRepudiation,
+    DigitalSignature,
 }
 
 impl CertificatePolicy {
@@ -767,8 +780,8 @@ mod tests {
                 .unwrap()
                 .extend(extra.as_object().unwrap().clone());
             serde_json::from_value::<JobDescription>(value)
-                .unwrap()
-                .check(&job_url)
+                .map_err(|e| e.to_string())
+                .and_then(|description| description.check(&job_url))
         };
         assert!(description(json!({})).is_ok());
         assert!(
@@ -813,10 +826,20 @@ mod tests {
                 "policyOids": ["2.16.356.100.2.3", "0.0"],
                 "issuerCommonNames": ["x".repeat(200)],
                 "subjectOrganization": "Acme, Inc.",
+                "keyUsage": "nonRepudiation",
                 "unknown": 1,
             } }))
             .is_ok()
         );
+        let policy = |policy| {
+            description(json!({ "certificatePolicy": policy }))
+                .map(|description| description.certificate_policy.unwrap().key_usage)
+        };
+        assert_eq!(
+            policy(json!({ "keyUsage": "digitalSignature" })).unwrap(),
+            Some(KeyUsage::DigitalSignature)
+        );
+        assert_eq!(policy(json!({ "policyOids": ["2.5"] })).unwrap(), None);
         for policy in [
             json!({ "policyOids": [] }),
             json!({ "policyOids": ["2.16.356.100.02.3"] }),
@@ -829,6 +852,8 @@ mod tests {
             json!({ "issuerCommonNames": [""] }),
             json!({ "issuerCommonNames": ["x".repeat(201)] }),
             json!({ "subjectOrganization": "" }),
+            json!({ "keyUsage": "keyEncipherment" }),
+            json!({ "keyUsage": "NonRepudiation" }),
         ] {
             assert!(
                 description(json!({ "certificatePolicy": policy })).is_err(),

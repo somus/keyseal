@@ -13,7 +13,7 @@ use keyseal_core::flow::{
     self, DigestConfirm, Environment, Failure, JobView, Outcome, PinPrompt, Ui,
 };
 use keyseal_core::origin::{self, Origin};
-use keyseal_core::protocol::Kind;
+use keyseal_core::protocol::{KeyUsage, Kind};
 use keyseal_core::token;
 use keyseal_core::trust::TrustStore;
 use keyseal_core::{doctor, install, update};
@@ -336,7 +336,7 @@ fn list() -> Result<(), String> {
         println!("No certificates are visible on the token. Set KEYSEAL_PIN to look after login.");
     }
     for certificate in certificates {
-        let role = if token::is_signing_certificate(&certificate.der) {
+        let role = if token::is_signing_certificate(&certificate.der, KeyUsage::default()) {
             "signing"
         } else {
             "other"

@@ -18,6 +18,7 @@ hash() { sha256sum "$1" | cut -d' ' -f1; }
 mac="keyseal-helper-$version-macos-universal.zip"
 win="keyseal-helper-$version-windows-x64.exe"
 linux="keyseal-helper-$version-linux-x64.AppImage"
+linux_arm="keyseal-helper-$version-linux-arm64.AppImage"
 # Each download under a name without the version, so a site can link to
 # releases/latest/download/<name> once: copies of the versioned files.
 fixed=(
@@ -25,6 +26,8 @@ fixed=(
   "keyseal-windows-x64.zip=keyseal-helper-$version-windows-x64.zip"
   "keyseal-linux-x64.AppImage=$linux"
   "keyseal_amd64.deb=keyseal_${version}_amd64.deb"
+  "keyseal-linux-arm64.AppImage=$linux_arm"
+  "keyseal_arm64.deb=keyseal_${version}_arm64.deb"
 )
 # Everything the release publishes besides SHA256SUMS and the signatures.
 assets=(
@@ -32,12 +35,15 @@ assets=(
   SHA256SUMS-unsigned
   "$linux"
   "keyseal-helper-$version-linux-x64.tar.gz"
+  "$linux_arm"
+  "keyseal-helper-$version-linux-arm64.tar.gz"
   "keyseal-helper-$version-macos-universal.dmg"
   "$mac"
   "$win"
   "keyseal-helper-$version-windows-x64.zip"
   keyseal-update.json
   "keyseal_${version}_amd64.deb"
+  "keyseal_${version}_arm64.deb"
   "${fixed[@]%%=*}"
 )
 for pair in "${fixed[@]}"; do
@@ -51,15 +57,18 @@ done
 mac_sha="$(hash "$dir/$mac")"
 win_sha="$(hash "$dir/$win")"
 linux_sha="$(hash "$dir/$linux")"
+linux_arm_sha="$(hash "$dir/$linux_arm")"
 mkdir -p "$out"
 jq -cn --arg version "$version" \
   --arg mac "$mac" --arg mac_sha "$mac_sha" \
   --arg win "$win" --arg win_sha "$win_sha" \
   --arg linux "$linux" --arg linux_sha "$linux_sha" \
+  --arg linux_arm "$linux_arm" --arg linux_arm_sha "$linux_arm_sha" \
   '{format: 1, version: $version, platforms: {
      "macos-universal": {file: $mac, sha256: $mac_sha},
      "windows-x64": {file: $win, sha256: $win_sha},
-     "linux-x64": {file: $linux, sha256: $linux_sha}}}' \
+     "linux-x64": {file: $linux, sha256: $linux_sha},
+     "linux-arm64": {file: $linux_arm, sha256: $linux_arm_sha}}}' \
   >"$out/keyseal-update.json"
 
 for asset in "${assets[@]}"; do

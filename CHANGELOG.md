@@ -27,6 +27,9 @@ lines under the new version with the release date.
   no PIN there: it shows the job and digests for confirmation, and macOS
   shows its own PIN dialog. `keyseal doctor` lists the keychain as a place
   it tried.
+- Linux arm64 builds: an AppImage, which is also the update asset, a deb and
+  a tarball, built and reproduced like the x64 ones. The helper looks for
+  p11-kit modules in `/usr/lib/aarch64-linux-gnu/pkcs11` too.
 
 ### [0.2.0][helper-0.2.0] - 2026-11-04
 
@@ -330,6 +333,11 @@ The catalogue is published as the `catalogue` release; its version is the
 `version` field in `catalogue/catalogue.json`.
 
 ### [Unreleased][catalogue-unreleased]
+
+#### Added
+
+- `linux-arm64` module paths, for YubiKey (`ykcs11`) and OpenSC as Debian,
+  Ubuntu and Fedora install them.
 
 ### [3][catalogue-3] - 2026-11-04
 

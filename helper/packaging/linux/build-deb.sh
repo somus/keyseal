@@ -12,6 +12,15 @@ out="$2"
 here="$(cd "$(dirname "$0")" && pwd)"
 version="$(awk -F'"' '/^version = /{print $2; exit}' "$here/../../Cargo.toml")"
 : "${SOURCE_DATE_EPOCH:?}"
+# build-release.sh names the binary for its platform, linux-x64 or linux-arm64.
+case "$binary" in
+  *-linux-x64) deb_arch=amd64 ;;
+  *-linux-arm64) deb_arch=arm64 ;;
+  *)
+    echo "$binary isn't a linux-x64 or linux-arm64 build." >&2
+    exit 2
+    ;;
+esac
 
 root="$(mktemp -d)"
 trap 'rm -rf "$root"' EXIT
@@ -22,7 +31,7 @@ mkdir -p "$root/DEBIAN"
 cat >"$root/DEBIAN/control" <<CONTROL
 Package: keyseal
 Version: $version
-Architecture: amd64
+Architecture: $deb_arch
 Maintainer: KeySeal maintainers
 Depends: libc6 (>= 2.35)
 Recommends: p11-kit, desktop-file-utils
@@ -34,5 +43,5 @@ CONTROL
 # dpkg-deb only clamps mtimes to SOURCE_DATE_EPOCH; set them outright.
 find "$root" -exec touch -h -d "@$SOURCE_DATE_EPOCH" {} +
 mkdir -p "$out"
-dpkg-deb --root-owner-group -Zxz --build "$root" "$out/keyseal_${version}_amd64.deb" >/dev/null
-echo "$out/keyseal_${version}_amd64.deb"
+dpkg-deb --root-owner-group -Zxz --build "$root" "$out/keyseal_${version}_${deb_arch}.deb" >/dev/null
+echo "$out/keyseal_${version}_${deb_arch}.deb"

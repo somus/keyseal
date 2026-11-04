@@ -12,7 +12,16 @@ binary="$1"
 out="$2"
 here="$(cd "$(dirname "$0")" && pwd)"
 version="$(awk -F'"' '/^version = /{print $2; exit}' "$here/../../Cargo.toml")"
-name="keyseal-helper-$version-linux-x64"
+# build-release.sh names the binary for its platform, linux-x64 or linux-arm64.
+case "$binary" in
+  *-linux-x64) platform=linux-x64 ;;
+  *-linux-arm64) platform=linux-arm64 ;;
+  *)
+    echo "$binary isn't a linux-x64 or linux-arm64 build." >&2
+    exit 2
+    ;;
+esac
+name="keyseal-helper-$version-$platform"
 : "${SOURCE_DATE_EPOCH:?}"
 
 work="$(mktemp -d)"

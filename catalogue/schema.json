@@ -42,6 +42,7 @@
             "macos-arm64": { "$ref": "#/$defs/posixPaths" },
             "macos-x64": { "$ref": "#/$defs/posixPaths" },
             "linux-x64": { "$ref": "#/$defs/posixPaths" },
+            "linux-arm64": { "$ref": "#/$defs/posixPaths" },
             "windows-x64": { "$ref": "#/$defs/windowsPaths" }
           }
         },

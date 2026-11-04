@@ -493,7 +493,8 @@ Each release publishes two files in the KeySeal GitHub release:
   "platforms": {
     "macos-universal": { "file": "keyseal-helper-1.4.0-macos-universal.zip", "sha256": "<hex>" },
     "windows-x64": { "file": "keyseal-helper-1.4.0-windows-x64.exe", "sha256": "<hex>" },
-    "linux-x64": { "file": "keyseal-helper-1.4.0-linux-x64.AppImage", "sha256": "<hex>" }
+    "linux-x64": { "file": "keyseal-helper-1.4.0-linux-x64.AppImage", "sha256": "<hex>" },
+    "linux-arm64": { "file": "keyseal-helper-1.4.0-linux-arm64.AppImage", "sha256": "<hex>" }
   }
 }
 ```

@@ -35,7 +35,7 @@
 
 - `version` is an integer that only increases. The helper keeps the highest version it has verified and refuses an older one, which blocks rollback to a catalogue with a removed or corrected path.
 - `usb` ids are lowercase 4-digit hex. Each `vid:pid` pair belongs to at most one token; `tools/catalogue.ts` checks that across tokens because JSON Schema cannot. An empty `usb` array means no public source states the ids; ids are never guessed. Such tokens are still useful for the path scan.
-- `modules` keys are `macos-arm64`, `macos-x64`, `windows-x64` and `linux-x64`. Each value is an ordered list of absolute paths, tried first to last. A token may omit platforms its vendor does not support.
+- `modules` keys are `macos-arm64`, `macos-x64`, `windows-x64`, `linux-x64` and `linux-arm64`. Each value is an ordered list of absolute paths, tried first to last. A token may omit platforms its vendor does not support.
 - `cng: true` marks a Windows token known to work only through CNG, with no usable PKCS#11 module.
 
 ## How the helper uses it

@@ -130,6 +130,7 @@ fn platform_of(os: &str, arch: &str) -> Option<&'static str> {
         ("macos", "x86_64") => Some("macos-x64"),
         ("windows", "x86_64") => Some("windows-x64"),
         ("linux", "x86_64") => Some("linux-x64"),
+        ("linux", "aarch64") => Some("linux-arm64"),
         _ => None,
     }
 }
@@ -386,7 +387,7 @@ mod tests {
         assert_eq!(platform_of("macos", "x86_64"), Some("macos-x64"));
         assert_eq!(platform_of("windows", "x86_64"), Some("windows-x64"));
         assert_eq!(platform_of("linux", "x86_64"), Some("linux-x64"));
-        assert_eq!(platform_of("linux", "aarch64"), None);
+        assert_eq!(platform_of("linux", "aarch64"), Some("linux-arm64"));
         assert_eq!(platform_of("windows", "aarch64"), None);
 
         let parsed = Catalogue::parse(&catalogue(1)).unwrap();

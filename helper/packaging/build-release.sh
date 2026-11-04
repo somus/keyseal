@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Builds the unsigned release binary for one platform, reproducibly:
 #
-#   helper/packaging/build-release.sh <macos-universal|windows-x64|linux-x64> <out dir>
+#   helper/packaging/build-release.sh <macos-universal|windows-x64|linux-x64|linux-arm64> <out dir>
 #
 # CI and maintainers run this same script, so a rebuild matches the
 # release byte for byte given the pinned Rust toolchain (rust-toolchain.toml),
@@ -99,10 +99,11 @@ case "$platform" in
       echo "Windows SDK $(find "/c/Program Files (x86)/Windows Kits/10/Lib" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort -V | tail -1)"
     } >>"$out/BUILDINFO"
     ;;
-  linux-x64)
-    build keyseal-helper x86_64-unknown-linux-gnu
-    binary="$out/keyseal-helper-$version-linux-x64"
-    cp "$target_dir/x86_64-unknown-linux-gnu/release/keyseal" "$binary"
+  linux-x64 | linux-arm64)
+    target="$([ "$platform" = linux-x64 ] && echo x86_64 || echo aarch64)-unknown-linux-gnu"
+    build keyseal-helper "$target"
+    binary="$out/keyseal-helper-$version-$platform"
+    cp "$target_dir/$target/release/keyseal" "$binary"
     { ldd --version | sed -n 1p; cc --version | sed -n 1p; } >>"$out/BUILDINFO"
     ;;
   *)

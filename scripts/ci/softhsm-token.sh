@@ -6,7 +6,10 @@
 #
 # Writes <dir>/softhsm2.conf (export it as SOFTHSM2_CONF), the token in
 # <dir>/tokens, the CA certificate alone in <dir>/roots/ca.pem (for the
-# service's SIGNING_TRUST_ROOTS_DIR) and <name>.der for rsa, p256 and p384.
+# service's SIGNING_TRUST_ROOTS_DIR) and <name>.der for rsa, p256, p384,
+# bp256 and bp384 (brainpoolP256r1 and P384r1), auth (an RSA key with
+# CKA_ALWAYS_AUTHENTICATE, which needs the PIN for every signature) and dsig
+# (P-256, whose certificate has digitalSignature without nonRepudiation).
 # The token's user PIN is 1234. Needs openssl, softhsm2-util and pkcs11-tool.
 set -euo pipefail
 
@@ -31,19 +34,24 @@ cat >leaf.ext <<'EOF'
 basicConstraints=critical,CA:FALSE
 keyUsage=critical,digitalSignature,nonRepudiation
 EOF
+cat >dsig.ext <<'EOF'
+basicConstraints=critical,CA:FALSE
+keyUsage=critical,digitalSignature
+EOF
 
-# name, id, then the -newkey arguments.
+# name, id, then the -newkey arguments. `ext` names another extension file,
+# and a non-empty `always_auth` marks the private key CKA_ALWAYS_AUTHENTICATE.
 issue() {
   local name="$1" id="$2"
   shift 2
   openssl req -new -nodes -subj "/C=IN/CN=keyseal e2e $name" "$@" \
     -keyout "$name.pem" -out "$name.csr" 2>/dev/null
   openssl x509 -req -in "$name.csr" -CA roots/ca.pem -CAkey ca.key \
-    -set_serial "0x$(openssl rand -hex 8)" -days 2 -extfile leaf.ext \
+    -set_serial "0x$(openssl rand -hex 8)" -days 2 -extfile "${ext:-leaf.ext}" \
     -outform DER -out "$name.der" 2>/dev/null
   openssl pkey -in "$name.pem" -outform DER -out "$name.key"
   write "$name.der" cert "$id" "$name"
-  write "$name.key" privkey "$id" "$name" --usage-sign
+  write "$name.key" privkey "$id" "$name" --usage-sign ${always_auth:+--always-auth}
 }
 
 write() {
@@ -56,4 +64,8 @@ write() {
 issue rsa 01 -newkey rsa:2048
 issue p256 02 -newkey ec -pkeyopt ec_paramgen_curve:P-256
 issue p384 03 -newkey ec -pkeyopt ec_paramgen_curve:P-384
+issue bp256 04 -newkey ec -pkeyopt ec_paramgen_curve:brainpoolP256r1
+issue bp384 05 -newkey ec -pkeyopt ec_paramgen_curve:brainpoolP384r1
+always_auth=1 issue auth 06 -newkey rsa:2048
+ext=dsig.ext issue dsig 07 -newkey ec -pkeyopt ec_paramgen_curve:P-256
 write ca.der cert 09 ca

@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 # End to end: the signing service image, the reference server and the
 # headless helper complete sign jobs with SoftHSM RSA-2048 (PKCS#1 v1.5 and
-# PSS), P-256 and P-384 keys, a batch of three documents signed in one token
-# session, two enrol jobs, one of them with a certificate policy, and two
-# jobs that must fail, and every signed PDF validates as intact and trusted
-# and carries the reason its job asked for.
+# PSS), P-256, P-384, brainpoolP256r1 and brainpoolP384r1 keys, batches of
+# three documents signed in one token session, one of them on a key that
+# needs the PIN for every signature, a job that accepts a certificate with
+# digitalSignature but not nonRepudiation, two enrol jobs, one of them with a
+# certificate policy, and three jobs that must fail, and every signed PDF
+# validates as intact and trusted and carries the reason its job asked for.
 #
 #   KEYSEAL_SOFTHSM_MODULE=/path/to/libsofthsm2.so scripts/ci/e2e.sh
 #
@@ -126,9 +128,11 @@ run_helper() {
 
 # Checks that the signed PDF `$1` validates as intact and trusted, signed
 # with the certificate whose SHA-256 is `$2`, with the reason "Approved in e2e".
+# `$3`, when given, is the key usage the validation accepts.
 check_signed() {
   local report
-  report="$(curl -fsS -H "Authorization: Bearer $service_token" --data-binary "@$1" "$service/validate")"
+  report="$(curl -fsS -H "Authorization: Bearer $service_token" --data-binary "@$1" \
+    "$service/validate${3:+?keyUsage=$3}")"
   jq --arg sha "$2" -e '
     .status == "valid"
     and (.signatures | length) == 1
@@ -162,7 +166,7 @@ final_status() {
   fi
 }
 
-for name in rsa rsa-pss p256 p384; do
+for name in rsa rsa-pss p256 p384 bp256 bp384; do
   step "Sign with $name"
   key="${name%-pss}"
   padding=pkcs1
@@ -180,24 +184,49 @@ for name in rsa rsa-pss p256 p384; do
   echo "$name: signed PDF is intact and trusted, with its reason"
 done
 
+# Signs a batch of three documents with the key `$1` and checks each signed
+# PDF is the one its job asked for.
+sign_batch() {
+  local fingerprint job status signed
+  fingerprint="$(sha256 "$work/token/$1.der")"
+  job="$(create /jobs "$(jq -n --arg pdf "$sample" --arg sha "$fingerprint" --arg title "e2e batch, 3 documents, $1" \
+    '{documents: [range(1; 4) | {pdf: $pdf, title: "e2e batch document \(.)",
+        signatureDetails: {reason: "Approved in e2e", location: "Batch \(.)"}}],
+      title: $title, signer: "keyseal e2e", expectedCertificateSha256: $sha}')")"
+  run_helper "$job"
+  status="$(final_status "$(jq -r .id <<<"$job")" completed)"
+  jq -e '.outputs | length == 3' <<<"$status" >/dev/null
+  for index in 0 1 2; do
+    signed="$root/examples/reference-server/$(jq -r --argjson index "$index" '.outputs[$index]' <<<"$status")"
+    check_signed "$signed" "$fingerprint"
+    grep -aq "/Location (Batch $((index + 1)))" "$signed" || {
+      echo "batch document $index is not the PDF its job asked for" >&2
+      exit 1
+    }
+  done
+  echo "batch with $1: all three signed PDFs are intact and trusted, in order"
+}
+
 step "Sign a batch of three documents with p256"
-fingerprint="$(sha256 "$work/token/p256.der")"
+sign_batch p256
+
+step "Sign a batch of three documents with a key that needs the PIN for each signature"
+sign_batch auth
+
+step "Sign with a digitalSignature-only certificate under keyUsage digitalSignature"
+fingerprint="$(sha256 "$work/token/dsig.der")"
 job="$(create /jobs "$(jq -n --arg pdf "$sample" --arg sha "$fingerprint" \
-  '{documents: [range(1; 4) | {pdf: $pdf, title: "e2e batch document \(.)",
-      signatureDetails: {reason: "Approved in e2e", location: "Batch \(.)"}}],
-    title: "e2e batch, 3 documents", signer: "keyseal e2e", expectedCertificateSha256: $sha}')")"
+  '{documents: [{pdf: $pdf, signatureDetails: {reason: "Approved in e2e", location: "CI"}}],
+    title: "e2e digitalSignature", signer: "keyseal e2e", expectedCertificateSha256: $sha,
+    certificatePolicy: {keyUsage: "digitalSignature"}}')")"
 run_helper "$job"
 status="$(final_status "$(jq -r .id <<<"$job")" completed)"
-jq -e '.outputs | length == 3' <<<"$status" >/dev/null
-for index in 0 1 2; do
-  signed="$root/examples/reference-server/$(jq -r --argjson index "$index" '.outputs[$index]' <<<"$status")"
-  check_signed "$signed" "$fingerprint"
-  grep -aq "/Location (Batch $((index + 1)))" "$signed" || {
-    echo "batch document $index is not the PDF its job asked for" >&2
-    exit 1
-  }
-done
-echo "batch: all three signed PDFs are intact and trusted, in order"
+signed="$root/examples/reference-server/$(jq -r '.outputs[0]' <<<"$status")"
+check_signed "$signed" "$fingerprint" digitalSignature
+# Validated with the default key usage, the same signer isn't trusted.
+curl -fsS -H "Authorization: Bearer $service_token" --data-binary "@$signed" "$service/validate" |
+  jq -e '.signatures[0] | .intact and (.trusted | not)' >/dev/null
+echo "digitalSignature: signed, and trusted only when the validation accepts it"
 
 step "Enrol"
 job="$(create /enrol-jobs "$(jq -n --arg sha "$(sha256 "$work/token/p256.der")" \
@@ -226,6 +255,17 @@ job="$(create /jobs "$(jq -n --arg pdf "$sample" --arg sha "$wrong" \
   '{documents: [{pdf: $pdf}], title: "e2e mismatch", signer: "keyseal e2e", expectedCertificateSha256: $sha}')")"
 if run_helper "$job"; then
   echo "the helper signed a job for a certificate the token doesn't hold" >&2
+  exit 1
+fi
+final_status "$(jq -r .id <<<"$job")" failed | jq -r '"failed job message: \(.message)"'
+
+step "digitalSignature-only certificate without keyUsage"
+# Without keyUsage a job needs nonRepudiation, so the helper offers no
+# certificate and fails the job.
+job="$(create /jobs "$(jq -n --arg pdf "$sample" --arg sha "$(sha256 "$work/token/dsig.der")" \
+  '{documents: [{pdf: $pdf}], title: "e2e no keyUsage", signer: "keyseal e2e", expectedCertificateSha256: $sha}')")"
+if run_helper "$job"; then
+  echo "the helper signed with a digitalSignature-only certificate on a default job" >&2
   exit 1
 fi
 final_status "$(jq -r .id <<<"$job")" failed | jq -r '"failed job message: \(.message)"'

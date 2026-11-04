@@ -13,7 +13,8 @@ interface Status extends JobStatus {
 // Fixed names on the latest release (docs/integrating.md, section 5).
 const latest = "https://github.com/somus/keyseal/releases/latest/download";
 const downloads = {
-  linux: `${latest}/keyseal-linux-x64.AppImage`,
+  "linux-x64": `${latest}/keyseal-linux-x64.AppImage`,
+  "linux-arm64": `${latest}/keyseal-linux-arm64.AppImage`,
   macos: `${latest}/keyseal-macos-universal.dmg`,
   windows: `${latest}/keyseal-windows-x64.zip`,
 };
@@ -98,8 +99,8 @@ form.addEventListener("submit", async (event) => {
         if (status.state !== "pending") notOpened.hidden = true;
       },
       // The helper may still be open on its trust prompt, so the status stays.
-      onNotClaimed: () => {
-        const platform = helperDownloadFor(navigator.userAgent);
+      onNotClaimed: async () => {
+        const platform = await helperDownloadFor(navigator);
         if (platform !== "unsupported") {
           element<HTMLAnchorElement>("download").href = downloads[platform];
           notOpened.hidden = false;

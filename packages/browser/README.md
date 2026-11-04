@@ -11,11 +11,13 @@ The type declarations need TypeScript 4.7 or later. They are found through `expo
 ```ts
 type JobState = "pending" | "claimed" | "prepared" | "completed" | "failed" | "expired";
 interface JobStatus { state: JobState; message?: string }
+// `navigator` fits; userAgentData is Chromium's client hints.
+interface PlatformSource { userAgent: string; userAgentData?: { getHighEntropyValues(hints: string[]): Promise<{ architecture?: string }> } }
 
 launchHelper(link: string, options?: { allowInsecureOrigins?: boolean }): void;
 watchJob(options: WatchOptions): Promise<JobStatus>;
 signWithHelper(options: WatchOptions & { link: string; allowInsecureOrigins?: boolean }): Promise<JobStatus>;
-helperDownloadFor(userAgent: string): "macos" | "windows" | "linux" | "unsupported";
+helperDownloadFor(source: PlatformSource): Promise<"macos" | "windows" | "linux-x64" | "linux-arm64" | "unsupported">;
 ```
 
 `launchHelper` throws a `TypeError` unless the link is `keyseal://sign?job=...` or `keyseal://enrol?job=...` with an `https` job URL on a domain name (not an IP address or `localhost`) of the form `<base>/v1/jobs/<token>`, without empty path segments (spec sections 3 and 4). `allowInsecureOrigins` also accepts `http://localhost` and `http://127.0.0.1`, for use with the helper's `KEYSEAL_ALLOW_INSECURE_ORIGINS=1` development override. The link opens in a hidden iframe, so an unregistered scheme cannot replace the page with an error page. Call it soon after the click that starts the job, since Chrome wants a recent user gesture before launching an app. A Content-Security-Policy must allow that frame: add `keyseal:` to `frame-src` (or to `child-src` or `default-src`, whichever applies), such as `frame-src 'self' keyseal:`. Otherwise the browser blocks the link without an error, and the helper never opens.
@@ -47,7 +49,8 @@ const latest = "https://github.com/somus/keyseal/releases/latest/download";
 const downloads = {
   macos: `${latest}/keyseal-macos-universal.dmg`,
   windows: `${latest}/keyseal-windows-x64.zip`, // unzip and run install.cmd
-  linux: `${latest}/keyseal-linux-x64.AppImage`,
+  "linux-x64": `${latest}/keyseal-linux-x64.AppImage`,
+  "linux-arm64": `${latest}/keyseal-linux-arm64.AppImage`,
 };
 
 button.addEventListener("click", async () => {
@@ -62,8 +65,8 @@ button.addEventListener("click", async () => {
       if (state !== "pending") notOpened.hidden = true;
     },
     // The helper may still be open on its trust prompt, so keep the status visible.
-    onNotClaimed: () => {
-      const platform = helperDownloadFor(navigator.userAgent);
+    onNotClaimed: async () => {
+      const platform = await helperDownloadFor(navigator);
       if (platform !== "unsupported") {
         downloadLink.href = downloads[platform];
         notOpened.hidden = false; // "Didn't open? Download the helper", beside the status

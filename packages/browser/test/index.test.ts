@@ -317,7 +317,11 @@ test.each([
   ],
   [
     "Mozilla/5.0 (X11; Linux x86_64; rv:144.0) Gecko/20100101 Firefox/144.0",
-    "linux",
+    "linux-x64",
+  ],
+  [
+    "Mozilla/5.0 (X11; Linux aarch64; rv:144.0) Gecko/20100101 Firefox/144.0",
+    "linux-arm64",
   ],
   [
     "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Mobile Safari/537.36",
@@ -332,6 +336,51 @@ test.each([
     "unsupported",
   ],
   ["curl/8.7.1", "unsupported"],
-] as const)("helperDownloadFor(%s)", (userAgent, platform) => {
-  expect(helperDownloadFor(userAgent)).toBe(platform);
+] as const)("helperDownloadFor(%s)", async (userAgent, platform) => {
+  expect(await helperDownloadFor({ userAgent })).toBe(platform);
+});
+
+const CHROME_LINUX =
+  "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36";
+
+function hints(architecture: Promise<string>) {
+  return {
+    getHighEntropyValues: async (requested: string[]) => {
+      expect(requested).toEqual(["architecture"]);
+      return { architecture: await architecture };
+    },
+  };
+}
+
+test.each([
+  ["arm", "linux-arm64"],
+  ["x86", "linux-x64"],
+] as const)(
+  "helperDownloadFor takes Chromium's architecture hint %s over its user agent",
+  async (architecture, platform) => {
+    expect(
+      await helperDownloadFor({
+        userAgent: CHROME_LINUX,
+        userAgentData: hints(Promise.resolve(architecture)),
+      })
+    ).toBe(platform);
+  }
+);
+
+test("helperDownloadFor falls back to the user agent when the hints fail", async () => {
+  expect(
+    await helperDownloadFor({
+      userAgent: "Mozilla/5.0 (X11; Linux aarch64) Chrome/141.0.0.0",
+      userAgentData: hints(Promise.reject(new Error("denied"))),
+    })
+  ).toBe("linux-arm64");
+});
+
+test("helperDownloadFor asks for hints only on Linux", async () => {
+  expect(
+    await helperDownloadFor({
+      userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+      userAgentData: hints(Promise.resolve("arm")),
+    })
+  ).toBe("windows");
 });

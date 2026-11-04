@@ -41,6 +41,9 @@ await runAdapterConformance(() =>
   createMemoryAdapter({ onCompleted: async () => {} })
 );
 
-assert.equal(helperDownloadFor("Mozilla/5.0 (Windows NT 10.0)"), "windows");
+assert.equal(
+  await helperDownloadFor({ userAgent: "Mozilla/5.0 (Windows NT 10.0)" }),
+  "windows"
+);
 
 console.log(`node ${process.version}: @keyseal/server and @keyseal/browser OK`);

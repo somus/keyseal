@@ -29,7 +29,8 @@ use crate::manifest::{self, Branding};
 use crate::modules::{self, Attempt};
 use crate::origin::Origin;
 use crate::protocol::{
-    self, DocumentEntry, JobClient, JobDescription, Kind, PreparedSignature, ProtocolError,
+    self, DocumentEntry, JobClient, JobDescription, KeyUsage, Kind, PreparedSignature,
+    ProtocolError,
 };
 use crate::token::{self, TokenBackend, TokenCertificate, TokenError};
 use crate::trust::TrustStore;
@@ -199,14 +200,15 @@ pub enum Outcome {
 type BeforeCng<'a> = &'a mut dyn FnMut() -> Result<(), Failure>;
 
 /// Opens where the job's key is.
-type Open<'a> = &'a dyn Fn(BeforeCng) -> Result<Backend, Failure>;
+/// Opens where the key is, for a job that asks for `KeyUsage`.
+type Open<'a> = &'a dyn Fn(KeyUsage, BeforeCng) -> Result<Backend, Failure>;
 
 /// Runs the job in `link`. Any failure is reported to the server once the
 /// job is claimed, shown through `ui` unless the user cancelled, and
 /// returned.
 pub fn run(link: &str, ui: &mut dyn Ui, env: &Environment) -> Result<Outcome, Failure> {
-    run_with(link, ui, env, &|before_cng| {
-        open_backend(before_cng, &mut |_, _| {})
+    run_with(link, ui, env, &|usage, before_cng| {
+        open_backend(usage, before_cng, &mut |_, _| {})
     })
 }
 
@@ -312,7 +314,7 @@ fn sign(
     open: Open,
 ) -> Result<Outcome, Failure> {
     show_step(ui, view, Step::OpeningToken, CANCELLED)?;
-    let backend = open(&mut || Ok(()))?;
+    let backend = open(key_usage(job), &mut || Ok(()))?;
     let token = backend.token();
     // Cancelling once the token is open logs out, as declining the digests
     // does.
@@ -403,7 +405,7 @@ fn enrol(
     open: Open,
 ) -> Result<Outcome, Failure> {
     show_step(ui, view, Step::OpeningToken, ENROLMENT_CANCELLED)?;
-    let backend = open(&mut || {
+    let backend = open(key_usage(job), &mut || {
         if ui.confirm_enrol(view) {
             Ok(())
         } else {
@@ -486,22 +488,26 @@ impl Backend {
 /// The error of a CNG attempt that finds no signing certificate on hardware.
 const NO_CNG_CERTIFICATE: &str = "The certificate store holds no signing certificate on hardware.";
 
-/// Opens the first of [`modules::attempts`] that reaches a token.
+/// Opens the first of [`modules::attempts`] that reaches a token; the
+/// certificate store counts only when it holds a certificate with `usage`.
 /// `before_cng` runs before the certificate store is read; `seen` hears
 /// how each attempt went.
 pub fn open_backend(
+    usage: KeyUsage,
     before_cng: BeforeCng,
     seen: &mut dyn FnMut(&Attempt, Result<(), &str>),
 ) -> Result<Backend, Failure> {
-    open_first(&modules::attempts()?, &open_attempt, before_cng, seen)
+    let open = |attempt: &Attempt, wait| open_attempt(attempt, wait, usage);
+    open_first(&modules::attempts()?, &open, before_cng, seen)
 }
 
-fn open_attempt(attempt: &Attempt, wait: Duration) -> Result<Backend, String> {
+#[cfg_attr(not(windows), allow(unused_variables))]
+fn open_attempt(attempt: &Attempt, wait: Duration, usage: KeyUsage) -> Result<Backend, String> {
     match attempt {
         Attempt::Module(candidate) => Ok(Backend::Pkcs11(token::open(&candidate.path, wait)?)),
         #[cfg(windows)]
         Attempt::Cng => {
-            let cng = Cng::new(SystemStore);
+            let cng = Cng::new(SystemStore, usage);
             if cng.certificates(false)?.is_empty() {
                 return Err(NO_CNG_CERTIFICATE.into());
             }
@@ -567,6 +573,15 @@ fn open_first(
     })))
 }
 
+/// The key usage the job's certificate policy asks for, nonRepudiation
+/// without one (section 8.2).
+fn key_usage(job: &JobDescription) -> KeyUsage {
+    job.certificate_policy
+        .as_ref()
+        .and_then(|policy| policy.key_usage)
+        .unwrap_or_default()
+}
+
 /// Certificates the job may use: signing certificates with the key usage
 /// its certificate policy asks for (nonRepudiation without one), and after
 /// login only those with a private key beside them.
@@ -575,11 +590,7 @@ fn signing_certificates(
     job: &JobDescription,
     logged_in: bool,
 ) -> Result<Vec<TokenCertificate>, String> {
-    let usage = job
-        .certificate_policy
-        .as_ref()
-        .and_then(|policy| policy.key_usage)
-        .unwrap_or_default();
+    let usage = key_usage(job);
     let mut found = token.certificates(logged_in)?;
     found.retain(|certificate| token::is_signing_certificate(&certificate.der, usage));
     Ok(found)
@@ -1150,7 +1161,7 @@ mod tests {
             )
             .collect();
             let mut ui = CancellingUi::new(cancel_at);
-            let open = |before_cng: BeforeCng| {
+            let open = |_: KeyUsage, before_cng: BeforeCng| {
                 let token = Box::new(FakeToken::new(public.clone(), private.clone()));
                 if !cng {
                     return Ok(Backend::Pkcs11(token));
@@ -1219,7 +1230,7 @@ mod tests {
             )
             .collect();
             let mut ui = CancellingUi::new(Stage::Enrol);
-            let open = |_: BeforeCng| {
+            let open = |_: KeyUsage, _: BeforeCng| {
                 Ok(Backend::Pkcs11(Box::new(FakeToken::new(
                     public.clone(),
                     private.clone(),
@@ -1410,7 +1421,7 @@ mod tests {
             format!("{origin}/api/keyseal/v1/jobs/{TOKEN}").as_bytes(),
         )
         .collect();
-        let open = |_: BeforeCng| {
+        let open = |_: KeyUsage, _: BeforeCng| {
             Ok(Backend::Pkcs11(Box::new(FakeToken::new(
                 vec![RSA, P256],
                 vec![],
@@ -1431,6 +1442,43 @@ mod tests {
             1
         );
         assert!(!requests.iter().any(|r| r.ends_with("/certificate")));
+    }
+
+    /// The backend is opened for the job's key usage, so the certificate
+    /// store on Windows is skipped when it holds none the job accepts.
+    #[test]
+    fn opens_the_backend_for_the_job_key_usage() {
+        for (policy, expected) in [
+            (
+                json!({ "keyUsage": "digitalSignature" }),
+                KeyUsage::DigitalSignature,
+            ),
+            (
+                json!({ "issuerCommonNames": ["Test CA"] }),
+                KeyUsage::NonRepudiation,
+            ),
+        ] {
+            let (origin, _requests) = serve("sign", policy);
+            let config_dir = std::env::temp_dir()
+                .join(format!("keyseal-usage-{}-{expected:?}", std::process::id()));
+            let env = Environment {
+                allow_insecure: true,
+                config_dir: config_dir.clone(),
+            };
+            let link: String = url::form_urlencoded::byte_serialize(
+                format!("{origin}/api/keyseal/v1/jobs/{TOKEN}").as_bytes(),
+            )
+            .collect();
+            let asked = Cell::new(None);
+            let open = |usage: KeyUsage, _: BeforeCng| {
+                asked.set(Some(usage));
+                Err(Failure::from(token::NO_TOKEN.to_owned()))
+            };
+            let mut ui = CancellingUi::new(Stage::Choose);
+            let _ = run_with(&format!("keyseal://sign?job={link}"), &mut ui, &env, &open);
+            let _ = std::fs::remove_dir_all(&config_dir);
+            assert_eq!(asked.get(), Some(expected));
+        }
     }
 
     /// A certificate whose key usage has digitalSignature without
@@ -1486,7 +1534,7 @@ mod tests {
         let token = FakeToken::new(public, private);
         let signed = token.signed.clone();
         let token = std::cell::RefCell::new(Some(token));
-        let open = |_: BeforeCng| {
+        let open = |_: KeyUsage, _: BeforeCng| {
             Ok(Backend::Pkcs11(Box::new(
                 token.borrow_mut().take().expect("one token per job"),
             )))

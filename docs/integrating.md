@@ -162,9 +162,9 @@ Signers install the helper once. Each release carries its downloads under fixed 
 | --- | --- | --- |
 | macOS | `https://github.com/somus/keyseal/releases/latest/download/keyseal-macos-universal.dmg`, the universal app | When the app is first opened |
 | Windows | `https://github.com/somus/keyseal/releases/latest/download/keyseal-windows-x64.zip`, with `keyseal.exe` and `install.cmd` | `install.cmd` |
-| Linux | `https://github.com/somus/keyseal/releases/latest/download/keyseal-linux-x64.AppImage` or `keyseal_amd64.deb`; the tarball is on the release page | The deb on install; `keyseal install` for the AppImage and tarball |
+| Linux | `https://github.com/somus/keyseal/releases/latest/download/keyseal-linux-x64.AppImage` or `keyseal_amd64.deb`, and on arm64 `keyseal-linux-arm64.AppImage` or `keyseal_arm64.deb`; the tarballs are on the release page | The deb on install; `keyseal install` for the AppImage and tarball |
 
-`helperDownloadFor(navigator.userAgent)` from `@keyseal/browser` says which one suits the signer's platform.
+`helperDownloadFor(navigator.userAgent)` from `@keyseal/browser` says which one suits the signer's platform. It answers `linux` on any architecture, so link the x64 AppImage and mention the arm64 one beside it.
 
 The helper updates itself. Raising `minHelperVersion` makes older helpers update before they can sign, so raise it only once that release exists.
 

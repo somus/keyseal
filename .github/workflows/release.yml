@@ -129,7 +129,24 @@ jobs:
   # and maintainers can reproduce it with the same image.
   build-linux:
     needs: check
-    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        include:
+          # rustup-init, appimagetool and the AppImage runtime for each
+          # architecture, pinned by hash.
+          - platform: linux-x64
+            runner: ubuntu-24.04
+            arch: x86_64
+            rustup: 5be191e8c70a5007074254cb74d78dbfdd25cd5a61c27de7b8e5410122ec24f4
+            appimagetool: ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0
+            runtime: 2fca8b443c92510f1483a883f60061ad09b46b978b2631c807cd873a47ec260d
+          - platform: linux-arm64
+            runner: ubuntu-24.04-arm
+            arch: aarch64
+            rustup: a9c168dbea81a84671c6b7a5c1795cb0eb699020110d107ddfca427bd797e697
+            appimagetool: f0837e7448a0c1e4e650a93bb3e85802546e60654ef287576f46c71c126a9158
+            runtime: 00cbdfcf917cc6c0ff6d3347d59e0ca1f7f45a6df1a428a0d6d8a78664d87444
+    runs-on: ${{ matrix.runner }}
     # By digest, so maintainers reproduce with the same image
     # (docs/releasing.md).
     container: ubuntu:22.04@sha256:0a9887931b0e38af2e3487ed39e29436b0535c4f3f52e57745baaf79d1898956
@@ -148,8 +165,8 @@ jobs:
           # rustup-init pinned by version and hash; it installs the
           # toolchain rust-toolchain.toml pins.
           curl --proto '=https' --tlsv1.2 -fsSLo rustup-init \
-            https://static.rust-lang.org/rustup/archive/1.29.2/x86_64-unknown-linux-gnu/rustup-init
-          echo "5be191e8c70a5007074254cb74d78dbfdd25cd5a61c27de7b8e5410122ec24f4  rustup-init" | sha256sum -c -
+            "https://static.rust-lang.org/rustup/archive/1.29.2/${{ matrix.arch }}-unknown-linux-gnu/rustup-init"
+          echo "${{ matrix.rustup }}  rustup-init" | sha256sum -c -
           chmod +x rustup-init
           ./rustup-init -y --profile minimal --default-toolchain none
           rm rustup-init
@@ -157,7 +174,7 @@ jobs:
       - working-directory: helper
         run: rustup toolchain install
       - id: build
-        run: echo "binary=$(helper/packaging/build-release.sh linux-x64 dist)" >>"$GITHUB_OUTPUT"
+        run: echo "binary=$(helper/packaging/build-release.sh ${{ matrix.platform }} dist)" >>"$GITHUB_OUTPUT"
       - name: Tarball, deb and AppImage
         run: |
           SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)"
@@ -166,18 +183,18 @@ jobs:
           helper/packaging/linux/build-tarball.sh "$binary" dist
           helper/packaging/linux/build-deb.sh "$binary" dist
           # appimagetool would fetch the newest runtime; pin both by hash.
-          curl -fsSLo appimagetool https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-x86_64.AppImage
-          curl -fsSLo runtime-x86_64 https://github.com/AppImage/type2-runtime/releases/download/20251108/runtime-x86_64
-          sha256sum -c - <<'SUMS'
-          ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0  appimagetool
-          2fca8b443c92510f1483a883f60061ad09b46b978b2631c807cd873a47ec260d  runtime-x86_64
+          curl -fsSLo appimagetool "https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-${{ matrix.arch }}.AppImage"
+          curl -fsSLo runtime "https://github.com/AppImage/type2-runtime/releases/download/20251108/runtime-${{ matrix.arch }}"
+          sha256sum -c - <<SUMS
+          ${{ matrix.appimagetool }}  appimagetool
+          ${{ matrix.runtime }}  runtime
           SUMS
           chmod +x appimagetool
-          APPIMAGETOOL="$PWD/appimagetool" APPIMAGETOOL_RUNTIME_FILE="$PWD/runtime-x86_64" \
+          APPIMAGETOOL="$PWD/appimagetool" APPIMAGETOOL_RUNTIME_FILE="$PWD/runtime" \
             helper/packaging/linux/build-appimage.sh "$binary" dist
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: unsigned-linux-x64
+          name: unsigned-${{ matrix.platform }}
           path: dist/
 
   sign-macos:
@@ -258,8 +275,9 @@ jobs:
             unsigned-macos-universal/keyseal-* \
             "unsigned-windows-x64/keyseal-helper-$version-windows-x64.exe" \
             "unsigned-linux-x64/keyseal-helper-$version-linux-x64" \
+            "unsigned-linux-arm64/keyseal-helper-$version-linux-arm64" \
             | sed 's#  unsigned-[^/]*/#  #') >dist/SHA256SUMS-unsigned
-          for platform in macos-universal windows-x64 linux-x64; do
+          for platform in macos-universal windows-x64 linux-x64 linux-arm64; do
             cat "artifacts/unsigned-$platform/BUILDINFO"
             echo
           done >dist/BUILDINFO
@@ -267,14 +285,18 @@ jobs:
           cp artifacts/signed-macos-universal/* dist/
           cp artifacts/unsigned-windows-x64/keyseal-helper-* dist/
           # The AppImage is also the Linux update asset.
-          cp artifacts/unsigned-linux-x64/keyseal-helper-*.AppImage artifacts/unsigned-linux-x64/keyseal-helper-*.tar.gz \
-            artifacts/unsigned-linux-x64/keyseal_* dist/
+          for platform in linux-x64 linux-arm64; do
+            cp "artifacts/unsigned-$platform/"keyseal-helper-*.AppImage "artifacts/unsigned-$platform/"keyseal-helper-*.tar.gz \
+              "artifacts/unsigned-$platform/"keyseal_* dist/
+          done
           # The downloads again without the version, for links to
           # releases/latest/download/<name> (make-manifest.sh lists them).
           cp "dist/keyseal-helper-$version-macos-universal.dmg" dist/keyseal-macos-universal.dmg
           cp "dist/keyseal-helper-$version-windows-x64.zip" dist/keyseal-windows-x64.zip
           cp "dist/keyseal-helper-$version-linux-x64.AppImage" dist/keyseal-linux-x64.AppImage
           cp "dist/keyseal_${version}_amd64.deb" dist/keyseal_amd64.deb
+          cp "dist/keyseal-helper-$version-linux-arm64.AppImage" dist/keyseal-linux-arm64.AppImage
+          cp "dist/keyseal_${version}_arm64.deb" dist/keyseal_arm64.deb
           helper/packaging/make-manifest.sh "$version" dist
           cat dist/SHA256SUMS-unsigned dist/SHA256SUMS dist/keyseal-update.json
       - name: Draft release
@@ -347,6 +369,8 @@ jobs:
           cp "dist/keyseal-helper-$version-windows-x64.zip" dist/keyseal-windows-x64.zip
           cp "dist/keyseal-helper-$version-linux-x64.AppImage" dist/keyseal-linux-x64.AppImage
           cp "dist/keyseal_${version}_amd64.deb" dist/keyseal_amd64.deb
+          cp "dist/keyseal-helper-$version-linux-arm64.AppImage" dist/keyseal-linux-arm64.AppImage
+          cp "dist/keyseal_${version}_arm64.deb" dist/keyseal_arm64.deb
           helper/packaging/make-manifest.sh "$version" dist expected
           cmp expected/keyseal-update.json dist/keyseal-update.json
           cmp expected/SHA256SUMS dist/SHA256SUMS

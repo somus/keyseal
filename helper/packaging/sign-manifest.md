@@ -101,7 +101,8 @@ the unsigned binaries you build in step 2.
      asset, hold the unsigned binary as `keyseal`. Run these on Linux, in the
      build container for instance, with `dpkg-deb` and `unsquashfs`
      (squashfs-tools). The AppImage is unpacked where its runtime's ELF ends,
-     not run: it is the file under check.
+     not run: it is the file under check. For arm64, the same with
+     `linux-arm64` and `keyseal_<v>_arm64.deb`.
 
      ```sh
      b=rebuilt/keyseal-helper-<v>-linux-x64

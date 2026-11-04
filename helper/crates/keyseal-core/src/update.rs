@@ -54,6 +54,8 @@ pub const PLATFORM: Option<&str> = if cfg!(target_os = "macos") {
     Some("windows-x64")
 } else if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
     Some("linux-x64")
+} else if cfg!(all(target_os = "linux", target_arch = "aarch64")) {
+    Some("linux-arm64")
 } else {
     None
 };
@@ -85,7 +87,8 @@ static NOTICE: Mutex<Option<String>> = Mutex::new(None);
 pub struct UpdateManifest {
     pub format: u64,
     pub version: String,
-    /// Keyed by platform id: `macos-universal`, `windows-x64`, `linux-x64`.
+    /// Keyed by platform id: `macos-universal`, `windows-x64`, `linux-x64`,
+    /// `linux-arm64`.
     pub platforms: BTreeMap<String, PlatformFile>,
 }
 

@@ -61,20 +61,22 @@ revocation are described in `docs/code-signing-policy.md`.
    git tag helper-v1.4.0 && git push origin helper-v1.4.0
    ```
 
-3. The `release` workflow builds the three platforms, waits for approval of
+3. The `release` workflow builds the four platforms (Linux on x64 and arm64), waits for approval of
    `release-macos`, signs and notarizes the macOS app and disk image, and
    creates a draft release with:
    - `keyseal-helper-<v>-macos-universal.dmg` (download) and `.zip` (update)
    - `keyseal-helper-<v>-windows-x64.zip` (download) and `.exe` (update)
    - `keyseal-helper-<v>-linux-x64.tar.gz` and `keyseal_<v>_amd64.deb`
      (downloads) and `keyseal-helper-<v>-linux-x64.AppImage` (download and
-     update). An AppImage replaces itself; a deb or tarball install keeps
+     update), and the same for arm64: `keyseal-helper-<v>-linux-arm64.tar.gz`,
+     `keyseal_<v>_arm64.deb` and `keyseal-helper-<v>-linux-arm64.AppImage`. An AppImage replaces itself; a deb or tarball install keeps
      its binary, and the helper leaves the AppImage in its config
      directory with one notice per version.
    - `keyseal-update.json`, `SHA256SUMS`, `SHA256SUMS-unsigned`, `BUILDINFO`
    - the downloads again without the version, for fixed links:
      `keyseal-macos-universal.dmg`, `keyseal-windows-x64.zip`,
-     `keyseal-linux-x64.AppImage` and `keyseal_amd64.deb`
+     `keyseal-linux-x64.AppImage`, `keyseal_amd64.deb`,
+     `keyseal-linux-arm64.AppImage` and `keyseal_arm64.deb`
 4. Check, sign and publish with one script on a Mac, with Bitwarden
    unlocked and Docker running:
 
@@ -129,7 +131,12 @@ what `BUILDINFO` in the draft records.
   helper.
 
 - Linux, in the same container image and rustup-init CI uses (both pinned
-  in `.github/workflows/release.yml`):
+  in `.github/workflows/release.yml`). For arm64, use `--platform
+  linux/arm64`, rustup-init's `aarch64-unknown-linux-gnu` build with SHA-256
+  `a9c168dbea81a84671c6b7a5c1795cb0eb699020110d107ddfca427bd797e697`, and
+  `build-release.sh linux-arm64`; a Docker that won't pull the arm64 image by
+  the index digest takes its own,
+  `ubuntu@sha256:88881eb36da489f9ff8746ece8048ca16cc94f80e8cd3ae7e8335d8822631591`.
 
   ```sh
   docker run --rm --platform linux/amd64 -v "$PWD":/src -w /src \

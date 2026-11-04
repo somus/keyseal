@@ -145,25 +145,33 @@ step "Linux"
 if $skip_rebuild; then
   echo "Skipped the rebuild (--skip-rebuild)."
 else
-  # The same image and rustup-init as release.yml and docs/releasing.md. The
-  # container gets a copy of the source in /w/src and the packages in
-  # /w/draft, and its last line is the rebuilt binary's SHA-256.
-  image=ubuntu:22.04@sha256:0a9887931b0e38af2e3487ed39e29436b0535c4f3f52e57745baaf79d1898956
-  linux="keyseal-helper-$version-linux-x64"
-  cat >"$work/rebuild.sh" <<SCRIPT
+  # The same image and rustup-init as release.yml and docs/releasing.md,
+  # once per architecture. The image is release.yml's
+  # ubuntu:22.04@sha256:0a9887931b0e38af2e3487ed39e29436b0535c4f3f52e57745baaf79d1898956,
+  # by the digest of that index's image for the architecture, which some
+  # Docker stores can't keep two of under one index digest. The container
+  # gets a copy of the source in /w/src and the packages in /w/draft, and its
+  # last line is the rebuilt binary's SHA-256.
+  for build in \
+    "linux-x64 amd64 x86_64 5be191e8c70a5007074254cb74d78dbfdd25cd5a61c27de7b8e5410122ec24f4 98510ac07bb4545e389be502a8918b385c018bfe4ceeb5ac7e0375c782268b04" \
+    "linux-arm64 arm64 aarch64 a9c168dbea81a84671c6b7a5c1795cb0eb699020110d107ddfca427bd797e697 88881eb36da489f9ff8746ece8048ca16cc94f80e8cd3ae7e8335d8822631591"; do
+    read -r platform deb_arch arch rustup_sha256 image_digest <<<"$build"
+    image="ubuntu@sha256:$image_digest"
+    linux="keyseal-helper-$version-$platform"
+    cat >"$work/rebuild.sh" <<SCRIPT
 set -e
 apt-get update -qq && apt-get install -y -qq --no-install-recommends build-essential ca-certificates curl file git \\
   pkg-config libasound2-dev libfontconfig-dev libvulkan1 libwayland-dev libx11-xcb-dev libxkbcommon-x11-dev \\
   squashfs-tools >/dev/null
-curl -fsSLo /tmp/rustup-init https://static.rust-lang.org/rustup/archive/1.29.2/x86_64-unknown-linux-gnu/rustup-init
-echo "5be191e8c70a5007074254cb74d78dbfdd25cd5a61c27de7b8e5410122ec24f4  /tmp/rustup-init" | sha256sum -c -
+curl -fsSLo /tmp/rustup-init https://static.rust-lang.org/rustup/archive/1.29.2/$arch-unknown-linux-gnu/rustup-init
+echo "$rustup_sha256  /tmp/rustup-init" | sha256sum -c -
 chmod +x /tmp/rustup-init && /tmp/rustup-init -y -q --profile minimal --default-toolchain none
 . "\$HOME/.cargo/env" && git config --global --add safe.directory /w/src
 cd /w/src && (cd helper && rustup toolchain install)
-helper/packaging/build-release.sh linux-x64 /w/rebuilt >/dev/null
+helper/packaging/build-release.sh $platform /w/rebuilt >/dev/null
 binary=/w/rebuilt/$linux
 tar -xzOf /w/draft/$linux.tar.gz $linux/keyseal | cmp - "\$binary"
-dpkg-deb --fsys-tarfile /w/draft/keyseal_${version}_amd64.deb | tar -xO ./usr/bin/keyseal | cmp - "\$binary"
+dpkg-deb --fsys-tarfile /w/draft/keyseal_${version}_$deb_arch.deb | tar -xO ./usr/bin/keyseal | cmp - "\$binary"
 # The AppImage's file system starts where its runtime's ELF ends (the end of
 # the section header table); unpacking it there doesn't run the runtime.
 appimage=/w/draft/$linux.AppImage
@@ -174,20 +182,21 @@ unsquashfs -q -n -o \$((shoff + shentsize * shnum)) -d /tmp/appimage "\$appimage
 cmp /tmp/appimage/usr/bin/keyseal "\$binary"
 sha256sum "\$binary"
 SCRIPT
-  # Streamed in rather than mounted: nothing in the container can change
-  # the scripts and files this script runs and signs afterwards.
-  inputs=(src rebuild.sh "draft/$linux.tar.gz" "draft/keyseal_${version}_amd64.deb" "draft/$linux.AppImage")
-  container="docker run -i --rm --platform linux/amd64 $image sh -c 'mkdir /w && tar -xf - -C /w && sh /w/rebuild.sh'"
-  if [ -n "$rebuild_host" ]; then
-    echo "Rebuilding on $rebuild_host."
-    rebuilt="$(tar -C "$work" -cf - "${inputs[@]}" | ssh "$rebuild_host" "$container" | tail -1)" \
-      || fail "the Linux rebuild or its packages on $rebuild_host"
-  else
-    rebuilt="$(tar -C "$work" -cf - "${inputs[@]}" | sh -c "$container" | tail -1)" \
-      || fail "the Linux rebuild or its packages"
-  fi
-  [ "${rebuilt%% *}" = "$(unsigned_hash "$linux")" ] || fail "the Linux rebuild differs from the release"
-  echo "The rebuild equals the release binary, and the tarball, deb and AppImage hold it."
+    # Streamed in rather than mounted: nothing in the container can change
+    # the scripts and files this script runs and signs afterwards.
+    inputs=(src rebuild.sh "draft/$linux.tar.gz" "draft/keyseal_${version}_$deb_arch.deb" "draft/$linux.AppImage")
+    container="docker run -i --rm --platform linux/$deb_arch $image sh -c 'mkdir /w && tar -xf - -C /w && sh /w/rebuild.sh'"
+    if [ -n "$rebuild_host" ]; then
+      echo "Rebuilding $platform on $rebuild_host."
+      rebuilt="$(tar -C "$work" -cf - "${inputs[@]}" | ssh "$rebuild_host" "$container" | tail -1)" \
+        || fail "the $platform rebuild or its packages on $rebuild_host"
+    else
+      rebuilt="$(tar -C "$work" -cf - "${inputs[@]}" | sh -c "$container" | tail -1)" \
+        || fail "the $platform rebuild or its packages"
+    fi
+    [ "${rebuilt%% *}" = "$(unsigned_hash "$linux")" ] || fail "the $platform rebuild differs from the release"
+    echo "The $platform rebuild equals the release binary, and the tarball, deb and AppImage hold it."
+  done
 fi
 
 step "Signing with \"$key\""

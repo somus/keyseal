@@ -92,9 +92,8 @@ describe("schema", () => {
     upper.tokens[0]!.usb[0]!.vid = "096E";
     expect(validate(upper)).not.toEqual([]);
     const platform = fixture();
-    (platform.tokens[0]!.modules as Record<string, string[]>)["linux-arm64"] = [
-      "/usr/lib/liba.so",
-    ];
+    (platform.tokens[0]!.modules as Record<string, string[]>)["windows-arm64"] =
+      ["/usr/lib/liba.so"];
     expect(validate(platform)).not.toEqual([]);
   });
 });

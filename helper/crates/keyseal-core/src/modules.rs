@@ -89,6 +89,7 @@ const P11_KIT_CONFIG: &[&str] = &[];
 /// Where p11-kit resolves a relative `module:`, depending on the distribution.
 const P11_KIT_MODULES: &[&str] = &[
     "/usr/lib/x86_64-linux-gnu/pkcs11",
+    "/usr/lib/aarch64-linux-gnu/pkcs11",
     "/usr/lib64/pkcs11",
     "/usr/lib/pkcs11",
 ];

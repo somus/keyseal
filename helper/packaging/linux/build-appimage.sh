@@ -3,8 +3,9 @@
 #
 #   helper/packaging/linux/build-appimage.sh <linux binary> <out dir>
 #
-# APPIMAGETOOL names the appimagetool-x86_64.AppImage to use and
-# APPIMAGETOOL_RUNTIME_FILE the type2 runtime to embed (the release workflow
+# APPIMAGETOOL names the appimagetool AppImage to use, for the build host's
+# architecture, and APPIMAGETOOL_RUNTIME_FILE the type2 runtime to embed, for
+# the binary's (the release workflow
 # downloads both, pinned by hash). appimagetool reads the runtime only from
 # --runtime-file; without it, it downloads the newest. It runs extracted, so
 # the build host needs no FUSE.
@@ -15,6 +16,15 @@ out="$2"
 here="$(cd "$(dirname "$0")" && pwd)"
 version="$(awk -F'"' '/^version = /{print $2; exit}' "$here/../../Cargo.toml")"
 : "${APPIMAGETOOL:?}" "${APPIMAGETOOL_RUNTIME_FILE:?}"
+# build-release.sh names the binary for its platform, linux-x64 or linux-arm64.
+case "$binary" in
+  *-linux-x64) platform=linux-x64 appimage_arch=x86_64 ;;
+  *-linux-arm64) platform=linux-arm64 appimage_arch=aarch64 ;;
+  *)
+    echo "$binary isn't a linux-x64 or linux-arm64 build." >&2
+    exit 2
+    ;;
+esac
 
 appdir="$(mktemp -d)/keyseal.AppDir"
 trap 'rm -rf "$(dirname "$appdir")"' EXIT
@@ -23,8 +33,8 @@ install -Dm 0644 "$here/keyseal.desktop" "$appdir/keyseal.desktop"
 install -Dm 0644 "$here/keyseal.svg" "$appdir/keyseal.svg"
 ln -s usr/bin/keyseal "$appdir/AppRun"
 mkdir -p "$out"
-appimage="$out/keyseal-helper-$version-linux-x64.AppImage"
-ARCH=x86_64 APPIMAGE_EXTRACT_AND_RUN=1 "$APPIMAGETOOL" --no-appstream \
+appimage="$out/keyseal-helper-$version-$platform.AppImage"
+ARCH=$appimage_arch APPIMAGE_EXTRACT_AND_RUN=1 "$APPIMAGETOOL" --no-appstream \
   --runtime-file "$APPIMAGETOOL_RUNTIME_FILE" "$appdir" "$appimage"
 
 # The AppImage must start with the given runtime. appimagetool fills in its

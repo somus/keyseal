@@ -54,7 +54,7 @@ The signing service trusts the CCA India roots by default. For another PKI, poin
 
 ## Download
 
-Signers install the helper from the [latest release](https://github.com/somus/keyseal/releases/latest): the disk image on macOS, the zip with `install.cmd` on Windows, and the AppImage, deb or tarball on Linux. It updates itself after that. Each release lists every file's SHA-256 in `SHA256SUMS`, signed by the maintainers.
+Signers install the helper from the [latest release](https://github.com/somus/keyseal/releases/latest): the disk image on macOS, the zip with `install.cmd` on Windows, and the AppImage, deb or tarball on Linux, for x64 or arm64. It updates itself after that. Each release lists every file's SHA-256 in `SHA256SUMS`, signed by the maintainers.
 
 The macOS app isn't notarized yet, so macOS asks once to allow it in System Settings, Privacy & Security, Open Anyway. The Windows exe isn't Authenticode signed either, so SmartScreen warns that it protected your PC; choose More info, then Run anyway. Every download is still listed in the maintainers' signed `SHA256SUMS`.
 

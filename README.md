@@ -2,7 +2,7 @@
 
 # KeySeal
 
-KeySeal lets a web application sign PDFs with Indian Digital Signature Certificates (DSC) on USB tokens, without a browser extension or a localhost daemon. A signer clicks Sign on your page, a small desktop helper opens, shows who is asking and what will be signed, takes the token PIN and signs; your backend gets back a PAdES-signed PDF.
+KeySeal lets a web application sign PDFs with a certificate on the signer's USB token or smart card, without a browser extension or a localhost daemon. It works with any token that has a PKCS#11 driver, and with hardware keys in the Windows certificate store, and it is built and tested first for Indian Digital Signature Certificates (DSC). A signer clicks Sign on your page, a small desktop helper opens, shows who is asking and what will be signed, takes the token PIN and signs; your backend gets back a PAdES-signed PDF.
 
 It is white-label: your page, your backend and your branding, with the helper and the signing service shared across integrators.
 
@@ -34,7 +34,7 @@ The helper never talks to the signing service, and the PIN never leaves the sign
 | `@keyseal/server` | [`packages/server/`](packages/server/) | Fetch-API handlers for the manifest and job endpoint, and job creation. Runs on Bun and Node 22+. |
 | `@keyseal/browser` | [`packages/browser/`](packages/browser/) | Opens the link, watches the job and tells the page when to offer the helper download. No dependencies. |
 | Signing service | [`service/`](service/) | pyHanko behind FastAPI in a Docker image: prepare, sign, validate, long-term validation data. |
-| Driver catalogue | [`catalogue/`](catalogue/) | Signed list of DSC token drivers by USB id and platform (HYP2003, ePass2003, ProxKey, SafeNet and others). |
+| Driver catalogue | [`catalogue/`](catalogue/) | Signed list of token drivers by USB id and platform: the Indian DSC tokens (HYP2003, ePass2003, ProxKey, SafeNet and others), YubiKey and OpenSC. |
 | Reference server | [`examples/reference-server/`](examples/reference-server/) | A minimal integrator backend, and the target of the end-to-end test. |
 | Protocol | [`spec/`](spec/) | The `keyseal://` link, trust rules, manifest and job endpoint, with OpenAPI. |
 
@@ -47,6 +47,10 @@ The helper never talks to the signing service, and the PIN never leaves the sign
 ## Supported tokens and keys
 
 The helper loads PKCS#11 drivers from system and vendor directories only, matched to the plugged-in token through the driver catalogue, and falls back to the Windows certificate store (CNG) for keys on hardware. It signs with RSA (PKCS#1 v1.5 or PSS) and ECDSA P-256 or P-384 keys. Signatures are PAdES B-T, with B-LTA available from the service.
+
+Any token or smart card with a PKCS#11 driver can sign. The catalogue names the drivers of the common Indian DSC tokens, plus OpenSC and Yubico's `ykcs11`, which cover PIV cards, YubiKeys and many national eID cards. Only the DSC tokens have been tested with hardware so far. A driver the catalogue doesn't list works once its path is set as `module` in the helper's `config.json` (`keyseal doctor` prints the config directory), or registered with p11-kit on Linux.
+
+The signing service trusts the CCA India roots by default. For another PKI, point `SIGNING_TRUST_ROOTS_DIR` at its roots and intermediates ([service/README.md](service/README.md)), and set the job's certificate policy to that PKI's OIDs ([docs/integrating.md](docs/integrating.md#3-create-jobs)).
 
 ## Download
 

@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "KeySeal driver catalogue",
-  "description": "Maps USB ids of DSC tokens to PKCS#11 module paths per platform. Vendor and product id pairs must be unique across all tokens; JSON Schema cannot express that, so the catalogue tools check it separately.",
+  "description": "Maps USB ids of tokens and smart cards to PKCS#11 module paths per platform. Vendor and product id pairs must be unique across all tokens; JSON Schema cannot express that, so the catalogue tools check it separately.",
   "type": "object",
   "additionalProperties": false,
   "required": ["version", "generatedAt", "tokens"],

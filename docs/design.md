@@ -1,12 +1,13 @@
 # Design
 
-KeySeal lets a web application sign PDFs with Indian Digital Signature Certificates (DSC) held on USB tokens, without a browser extension or a localhost daemon. This document records the design and the security rules the code follows. The wire protocol is specified normatively in [spec/protocol-v1.md](../spec/protocol-v1.md); where the two differ, the spec wins.
+KeySeal lets a web application sign PDFs with a certificate held on a USB token or smart card, through its PKCS#11 driver or, on Windows, the certificate store, without a browser extension or a localhost daemon. Indian Digital Signature Certificates (DSC) are the first target: the driver catalogue, the bundled trust roots and the hardware testing start there. This document records the design and the security rules the code follows. The wire protocol is specified normatively in [spec/protocol-v1.md](../spec/protocol-v1.md); where the two differ, the spec wins.
 
 ## Audience
 
 - Indian NGO and trust dashboards.
 - CA firms and compliance portals.
 - SaaS products that need signatures on contracts, HR documents or lending paperwork.
+- Integrators elsewhere whose signers hold PKCS#11 tokens or smart cards, with the service's trust roots replaced for their PKI.
 
 Out of scope: government-style portals. KeySeal does not coexist with emSigner flows and does not lock the helper to an origin by default.
 
@@ -18,7 +19,7 @@ Out of scope: government-style portals. KeySeal does not coexist with emSigner f
 | `@keyseal/server` | `packages/server/` | Fetch-API `Request`/`Response` handlers for the manifest and the job endpoint, plus job creation. An adapter supplies job storage, blobs and the completion callback. |
 | `@keyseal/browser` | `packages/browser/` | Opens the `keyseal://` link, watches the job and tells the page when no helper claimed it. |
 | Signing service | `service/` | pyHanko behind FastAPI, shipped as a Docker image. Prepares PDFs, builds the CMS around the token's signature, validates and timestamps. |
-| Driver catalogue | `catalogue/` | Signed list of DSC token drivers by USB id and platform, updated separately from the helper. |
+| Driver catalogue | `catalogue/` | Signed list of token drivers by USB id and platform, updated separately from the helper. |
 | Reference server | `examples/reference-server/` | Minimal integrator backend wiring `@keyseal/server` to the service. The end-to-end test drives it. |
 | Spec | `spec/` | Protocol specification, OpenAPI and the decisions it settled. |
 

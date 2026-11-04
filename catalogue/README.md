@@ -1,6 +1,6 @@
 # KeySeal driver catalogue
 
-`catalogue.json` tells the helper which PKCS#11 module to load for a plugged-in DSC token, so integrators never name a driver path. It maps USB vendor and product ids to module paths per OS and architecture, with display names for the token and vendor. It is signed and versioned separately from the helper, so a new token or driver path ships without a helper release.
+`catalogue.json` tells the helper which PKCS#11 module to load for a plugged-in token, so integrators never name a driver path. It maps USB vendor and product ids to module paths per OS and architecture, with display names for the token and vendor. It is signed and versioned separately from the helper, so a new token or driver path ships without a helper release.
 
 ## Files
 

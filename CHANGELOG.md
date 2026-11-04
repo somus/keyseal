@@ -19,6 +19,8 @@ lines under the new version with the release date.
 
 ### [Unreleased][helper-unreleased]
 
+### [0.1.4][helper-0.1.4] - 2026-11-04
+
 #### Fixed
 
 - On macOS, a standard user who can't write to `/Applications` is told about
@@ -256,7 +258,8 @@ The catalogue is published as the `catalogue` release; its version is the
   mToken CryptoID, InnaIT Key (PK32XX), SafeNet eToken 5110 and eToken PRO
   72K / SafeNet eToken 5100, and TrustKey.
 
-[helper-unreleased]: https://github.com/somus/keyseal/compare/helper-v0.1.3...HEAD
+[helper-unreleased]: https://github.com/somus/keyseal/compare/helper-v0.1.4...HEAD
+[helper-0.1.4]: https://github.com/somus/keyseal/releases/tag/helper-v0.1.4
 [helper-0.1.3]: https://github.com/somus/keyseal/releases/tag/helper-v0.1.3
 [helper-0.1.2]: https://github.com/somus/keyseal/releases/tag/helper-v0.1.2
 [helper-0.1.1]: https://github.com/somus/keyseal/releases/tag/helper-v0.1.1

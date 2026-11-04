@@ -204,7 +204,7 @@ fn gather(gpu: Result<Option<String>, String>) -> Facts {
     let mut opened = Ok(None);
     if candidates.is_ok() {
         // Opened as a job would: each found module in turn, then on Windows
-        // the certificate store.
+        // and macOS the certificate store.
         // The loosest usage, so the report shows every certificate a job
         // could use.
         let backend = flow::open_backend(
@@ -433,10 +433,15 @@ fn drivers(facts: &Facts) -> Vec<Driver> {
             }
         })
         .collect();
-    if let Some(state) = state(&Attempt::Cng) {
+    if let Some(state) = state(&Attempt::Store) {
         drivers.push(Driver {
-            name: "Windows certificate store".into(),
-            detail: Attempt::Cng.to_string(),
+            name: if cfg!(target_os = "macos") {
+                "macOS keychain"
+            } else {
+                "Windows certificate store"
+            }
+            .into(),
+            detail: Attempt::Store.to_string(),
             token: None,
             state,
         });

@@ -1,6 +1,6 @@
 # Design
 
-KeySeal lets a web application sign PDFs with a certificate held on a USB token or smart card, through its PKCS#11 driver or, on Windows, the certificate store, without a browser extension or a localhost daemon. Indian Digital Signature Certificates (DSC) are the first target: the driver catalogue, the bundled trust roots and the hardware testing start there. This document records the design and the security rules the code follows. The wire protocol is specified normatively in [spec/protocol-v1.md](../spec/protocol-v1.md); where the two differ, the spec wins.
+KeySeal lets a web application sign PDFs with a certificate held on a USB token or smart card, through its PKCS#11 driver or the system's certificate store (CNG on Windows, CryptoTokenKit on macOS), without a browser extension or a localhost daemon. Indian Digital Signature Certificates (DSC) are the first target: the driver catalogue, the bundled trust roots and the hardware testing start there. This document records the design and the security rules the code follows. The wire protocol is specified normatively in [spec/protocol-v1.md](../spec/protocol-v1.md); where the two differ, the spec wins.
 
 ## Audience
 
@@ -87,11 +87,13 @@ Module resolution, in order:
 4. The catalogue's other module paths for this platform.
 5. The built-in list of known DSC driver paths.
 6. p11-kit's configured modules, on Linux.
-7. CNG, on Windows. A catalogue entry can mark a token as CNG-first.
+7. The system's certificate store: CNG on Windows, where a catalogue entry can mark a token as CNG-first, and the keychain's CryptoTokenKit items on macOS.
 
 The helper uses the first candidate that loads and sees a token, not the first whose file exists, so a stale or broken driver doesn't hide a working one.
 
 On Windows, CNG (`NCryptSignHash`) signs with keys in hardware or removable key storage providers only. The vendor's PIN dialog is accepted there; the helper shows the origin, title, signer, certificate and digests and asks for an explicit confirm before handing off. A batch is signed through one key handle, so a provider that keeps the handle authenticated asks for the PIN once per job; one that asks on every signature by its own policy asks once per document.
+
+On macOS the keychain holds a copy of each plugged-in token's certificates and keys, marked with the token's ID (`kSecAttrTokenID`), from macOS's own PIV driver or a vendor's CryptoTokenKit extension. The helper offers only identities with a token ID that isn't the Secure Enclave's, and signs with `SecKeyCreateSignature`; the system's PIN dialog is accepted there with the same confirm first. A PIV signature key asks for the PIN on every signature, so once per document.
 
 Intel-only macOS drivers run in a separate x86_64 worker process that speaks JSON over pipes, shipped inside the universal app.
 

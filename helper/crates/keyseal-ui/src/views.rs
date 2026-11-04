@@ -2513,8 +2513,8 @@ mod tests {
         assert_eq!(answer.recv(), Err(mpsc::RecvError));
     }
 
-    /// On CNG the digest confirmation, or the enrol go-ahead, is the job's
-    /// first window; Enter confirms neither.
+    /// From the certificate store the digest confirmation, or the enrol
+    /// go-ahead, is the job's first window; Enter confirms neither.
     #[gpui_kit::test]
     fn enter_never_confirms_a_first_window(cx: &mut TestAppContext) {
         let mut windows = setup(cx);

@@ -438,7 +438,8 @@ pub(crate) enum Stage {
         subjects: Vec<String>,
         reply: mpsc::Sender<Option<usize>>,
     },
-    /// Enrol through CNG: the job before the certificate store is read.
+    /// Enrol through the system's certificate store: the job before the
+    /// store is read.
     Enrol { reply: mpsc::Sender<bool> },
     /// Answered; the flow is working until its next step or prompt.
     Busy,

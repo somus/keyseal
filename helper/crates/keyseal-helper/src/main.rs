@@ -306,7 +306,7 @@ impl Ui for Headless {
 
     fn confirm_enrol(&mut self, job: &JobView) -> bool {
         describe(job);
-        eprintln!("Enrolling a certificate from the Windows certificate store (headless).");
+        eprintln!("Enrolling a certificate from the system certificate store (headless).");
         true
     }
 

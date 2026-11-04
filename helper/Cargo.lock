@@ -4059,6 +4059,7 @@ name = "keyseal-core"
 version = "0.2.0"
 dependencies = [
  "base64 0.23.1",
+ "core-foundation 0.10.1",
  "cryptoki",
  "cryptoki-sys",
  "dirs 7.0.0",
@@ -4068,6 +4069,8 @@ dependencies = [
  "objc2 0.6.5",
  "objc2-app-kit 0.3.2",
  "objc2-foundation 0.3.2",
+ "security-framework",
+ "security-framework-sys",
  "semver",
  "serde",
  "serde_json",

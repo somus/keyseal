@@ -9,7 +9,7 @@ This guide adds token signing to a web application. The pieces are the signing s
       ▼                          │ job endpoint, HTTPS
  keyseal helper ───────────────────┘
       │
- USB token (PKCS#11 or Windows CNG)
+ USB token (PKCS#11, Windows CNG or macOS CryptoTokenKit)
 ```
 
 ## 1. Run the signing service

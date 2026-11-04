@@ -333,6 +333,59 @@ def test_certificate_check_needs_a_configured_root(pki: Pki) -> None:
     )
 
 
+def test_certificate_check_applies_the_key_usage_asked_for(pki: Pki) -> None:
+    client = client_for(settings_with(pki))
+    ca = b64(pki.ca.public_bytes(serialization.Encoding.DER))
+
+    def check(cert: Any, **policy: str) -> Any:
+        der = cert.public_bytes(serialization.Encoding.DER)
+        return client.post(
+            "/certificate", headers=AUTH, json={"certificate": b64(der), "chain": [ca], **policy}
+        )
+
+    def trusted(cert: Any, **policy: str) -> bool:
+        response = check(cert, **policy)
+        assert response.status_code == 200
+        return response.json()["trusted"]
+
+    digital_signature = pki.signing_cert({"digital_signature"})
+    non_repudiation = pki.signing_cert({"content_commitment"})
+    no_key_usage = pki.signing_cert(None)
+    assert trusted(digital_signature) is False
+    assert trusted(digital_signature, keyUsage="nonRepudiation") is False
+    assert trusted(digital_signature, keyUsage="digitalSignature") is True
+    assert trusted(non_repudiation) is True
+    assert trusted(non_repudiation, keyUsage="digitalSignature") is True
+    assert trusted(no_key_usage) is False
+    assert trusted(no_key_usage, keyUsage="digitalSignature") is False
+    # A CA's certificate never signs for us, whatever key usage it asserts.
+    ca_cert = pki.signing_cert(
+        {"digital_signature", "content_commitment", "key_cert_sign"}, ca=True
+    )
+    assert trusted(ca_cert, keyUsage="digitalSignature") is False
+    assert check(digital_signature, keyUsage="keyAgreement").status_code == 422
+
+
+def test_validation_trusts_a_signer_with_the_key_usage_asked_for(pki: Pki) -> None:
+    signed = sign(blank_pdf(), pki, cert=pki.signing_cert({"digital_signature"}))
+    client = client_for(settings_with(pki))
+
+    def signature(query: str = "") -> dict[str, Any]:
+        response = client.post(f"/validate{query}", headers=AUTH, content=signed)
+        assert response.status_code == 200
+        [sig] = response.json()["signatures"]
+        return sig
+
+    assert signature()["intact"] is True
+    assert signature()["trusted"] is False
+    assert signature("?keyUsage=nonRepudiation")["trusted"] is False
+    assert signature("?keyUsage=digitalSignature")["trusted"] is True
+    assert client.post("/validate?keyUsage=any", headers=AUTH, content=signed).status_code == 422
+    no_key_usage = sign(blank_pdf(), pki, cert=pki.signing_cert(None))
+    report = validate_pdf(no_key_usage, settings_with(pki), key_usage="digitalSignature")
+    assert report["signatures"][0]["trusted"] is False
+
+
 # ── Income Tax Department signatures ────────────────────────────────────────
 
 

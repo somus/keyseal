@@ -34,9 +34,12 @@ def check_token(token: str) -> None:
         )
 
 
-def trust_settings(roots_dir: Path | None, allow_fetching: bool) -> ValidationSettings:
+def trust_settings(
+    roots_dir: Path | None, allow_fetching: bool, extra_roots_dir: Path | None = None
+) -> ValidationSettings:
     """The bundled CCA India roots and intermediates, or every certificate in
-    `roots_dir`, where self-signed ones are roots and the rest intermediates."""
+    `roots_dir`, where self-signed ones are roots and the rest intermediates,
+    plus every certificate in `extra_roots_dir`, split the same way."""
     if roots_dir is None:
         roots = load_trust_roots(TRUST / "roots")
         intermediates = load_trust_roots(TRUST / "intermediates")
@@ -46,6 +49,20 @@ def trust_settings(roots_dir: Path | None, allow_fetching: bool) -> ValidationSe
         # nobody and reports every signature as untrusted.
         if not roots:
             raise TrustRootsError(f"SIGNING_TRUST_ROOTS_DIR {roots_dir} holds no readable root")
+    if extra_roots_dir is not None:
+        try:
+            extra = load_trust_roots(extra_roots_dir)
+        except OSError as error:
+            raise TrustRootsError(
+                f"SIGNING_EXTRA_TRUST_ROOTS_DIR {extra_roots_dir} is unreadable"
+            ) from error
+        if not extra:
+            raise TrustRootsError(
+                f"SIGNING_EXTRA_TRUST_ROOTS_DIR {extra_roots_dir} holds no readable certificate"
+            )
+        extra_roots, extra_intermediates = split_trust_roots(extra)
+        roots = roots + extra_roots
+        intermediates = intermediates + extra_intermediates
     return ValidationSettings(
         trust_roots=roots, intermediates=intermediates, allow_fetching=allow_fetching
     )
@@ -61,6 +78,7 @@ class Settings:
     @classmethod
     def from_env(cls) -> Settings:
         roots_dir = os.environ.get("SIGNING_TRUST_ROOTS_DIR")
+        extra_roots_dir = os.environ.get("SIGNING_EXTRA_TRUST_ROOTS_DIR")
         tsa_url = os.environ.get("SIGNING_TSA_URL", DEFAULT_TSA_URL)
         return cls(
             token=os.environ.get("SIGNING_SERVICE_TOKEN", ""),
@@ -68,5 +86,6 @@ class Settings:
             validation=trust_settings(
                 Path(roots_dir) if roots_dir else None,
                 os.environ.get("SIGNING_ALLOW_FETCHING") == "true",
+                Path(extra_roots_dir) if extra_roots_dir else None,
             ),
         )

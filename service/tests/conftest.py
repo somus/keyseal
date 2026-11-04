@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import io
+from collections.abc import Collection
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Literal
 
 import pytest
 from asn1crypto import keys, x509 as asn1_x509
@@ -40,6 +42,20 @@ def _name(cn: str) -> x509.Name:
     )
 
 
+#: The arguments of `x509.KeyUsage`, each a flag a certificate may assert.
+KEY_USAGE_FLAGS = (
+    "digital_signature",
+    "content_commitment",
+    "key_encipherment",
+    "data_encipherment",
+    "key_agreement",
+    "key_cert_sign",
+    "crl_sign",
+    "encipher_only",
+    "decipher_only",
+)
+
+
 def _cert(
     subject,
     issuer,
@@ -50,7 +66,10 @@ def _cert(
     encryption_only: bool = False,
     time_stamping: bool = False,
     crl_url: str | None = None,
+    key_usage: Collection[str] | None | Literal["default"] = "default",
 ) -> x509.Certificate:
+    """A certificate; `key_usage` names the KeyUsage flags it asserts, None
+    leaves the extension out."""
     now = datetime.now(UTC)
     builder = (
         x509.CertificateBuilder()
@@ -62,35 +81,16 @@ def _cert(
         .not_valid_after(now + timedelta(days=365))
         .add_extension(x509.BasicConstraints(ca=ca, path_length=None), critical=True)
     )
-    if ca:
+    if key_usage == "default":
+        if ca:
+            key_usage = {"key_cert_sign", "crl_sign"}
+        elif encryption_only:
+            key_usage = {"key_encipherment"}
+        else:
+            key_usage = {"digital_signature", "content_commitment"}
+    if key_usage is not None:
         builder = builder.add_extension(
-            x509.KeyUsage(
-                digital_signature=False,
-                content_commitment=False,
-                key_encipherment=False,
-                data_encipherment=False,
-                key_agreement=False,
-                key_cert_sign=True,
-                crl_sign=True,
-                encipher_only=False,
-                decipher_only=False,
-            ),
-            critical=True,
-        )
-    else:
-        builder = builder.add_extension(
-            x509.KeyUsage(
-                digital_signature=not encryption_only,
-                content_commitment=not encryption_only,
-                key_encipherment=encryption_only,
-                data_encipherment=False,
-                key_agreement=False,
-                key_cert_sign=False,
-                crl_sign=False,
-                encipher_only=False,
-                decipher_only=False,
-            ),
-            critical=True,
+            x509.KeyUsage(**{flag: flag in key_usage for flag in KEY_USAGE_FLAGS}), critical=True
         )
     if crl_url:
         # A certificate without one isn't checked for revocation in soft-fail mode.
@@ -164,6 +164,19 @@ class Pki:
             encryption_only=True,
         )
 
+    def signing_cert(
+        self, key_usage: Collection[str] | None, *, ca: bool = False
+    ) -> x509.Certificate:
+        """The signer's key under the test root with other key usage flags."""
+        return _cert(
+            _name("PRIYA S RAGHAVAN"),
+            _name("Test CCA Root"),
+            self.signer_key.public_key(),
+            self.ca_key,
+            ca=ca,
+            key_usage=key_usage,
+        )
+
     def timestamper(self, at: datetime) -> timestamps.DummyTimeStamper:
         """A TSA under the test root whose timestamps all say `at`."""
         key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
@@ -210,14 +223,14 @@ class Pki:
     def ca_asn1(self) -> asn1_x509.Certificate:
         return _asn1(self.ca)
 
-    def signer(self) -> signers.SimpleSigner:
+    def signer(self, cert: x509.Certificate | None = None) -> signers.SimpleSigner:
         key_der = self.signer_key.private_bytes(
             serialization.Encoding.DER,
             serialization.PrivateFormat.PKCS8,
             serialization.NoEncryption(),
         )
         return signers.SimpleSigner(
-            signing_cert=_asn1(self.signer_cert),
+            signing_cert=_asn1(cert or self.signer_cert),
             signing_key=keys.PrivateKeyInfo.load(key_der),
             cert_registry=SimpleCertificateStore.from_certs([self.ca_asn1]),
         )
@@ -261,12 +274,13 @@ def sign(
     pki: Pki,
     field: str = "Signature1",
     timestamper: timestamps.TimeStamper | None = None,
+    cert: x509.Certificate | None = None,
 ) -> bytes:
     writer = IncrementalPdfFileWriter(io.BytesIO(pdf))
     out = signers.sign_pdf(
         writer,
         signers.PdfSignatureMetadata(field_name=field),
-        signer=pki.signer(),
+        signer=pki.signer(cert),
         timestamper=timestamper,
     )
     return out.getvalue()

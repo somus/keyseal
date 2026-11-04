@@ -82,7 +82,12 @@ def test_deferred_signing_produces_a_valid_signature_in_the_field(pki: Pki) -> N
 
 @pytest.mark.parametrize(
     ("curve", "digest_algorithm", "digest"),
-    [(ec.SECP256R1(), "sha256", hashes.SHA256()), (ec.SECP384R1(), "sha384", hashes.SHA384())],
+    [
+        (ec.SECP256R1(), "sha256", hashes.SHA256()),
+        (ec.SECP384R1(), "sha384", hashes.SHA384()),
+        (ec.BrainpoolP256R1(), "sha256", hashes.SHA256()),
+        (ec.BrainpoolP384R1(), "sha384", hashes.SHA384()),
+    ],
 )
 def test_deferred_ecdsa_signing_produces_a_valid_signature(
     pki: Pki, curve: ec.EllipticCurve, digest_algorithm: str, digest: hashes.HashAlgorithm
@@ -140,7 +145,9 @@ def test_raw_ecdsa_signature_is_refused(pki: Pki) -> None:
 
 def test_an_unsupported_curve_is_refused(pki: Pki) -> None:
     _key, cert = pki.ec_signer(ec.SECP521R1())
-    with pytest.raises(UnsupportedKeyError, match="P-256 and P-384"):
+    with pytest.raises(
+        UnsupportedKeyError, match="P-256, P-384, brainpoolP256r1 and brainpoolP384r1"
+    ):
         asyncio.run(
             begin(prepared(), "Signer_a", b64(cert.public_bytes(serialization.Encoding.DER)), [])
         )
@@ -263,7 +270,7 @@ def test_api_signs_in_two_steps(pki: Pki) -> None:
         json={"certificate": p521_b64, "fieldName": "Signer_a", "pdf": b64(prepared())},
     )
     assert unsupported.status_code == 400
-    assert "P-256 and P-384" in unsupported.json()["detail"]
+    assert "P-256, P-384, brainpoolP256r1 and brainpoolP384r1" in unsupported.json()["detail"]
     refused = client.post("/certificate", headers=auth, json={"certificate": p521_b64})
     assert refused.status_code == 400
     pss = client.post(
@@ -289,6 +296,58 @@ def test_api_signs_in_two_steps(pki: Pki) -> None:
         json={"signature": b64(pss_signature), "state": pss.json()["state"]},
     )
     assert pss_finished.status_code == 200
+
+
+@pytest.mark.parametrize(
+    ("curve", "digest_algorithm", "digest"),
+    [
+        (ec.BrainpoolP256R1(), "sha256", hashes.SHA256()),
+        (ec.BrainpoolP384R1(), "sha384", hashes.SHA384()),
+    ],
+)
+def test_api_signs_and_validates_with_a_brainpool_key(
+    pki: Pki, curve: ec.EllipticCurve, digest_algorithm: str, digest: hashes.HashAlgorithm
+) -> None:
+    client = client_for(ValidationSettings(trust_roots=[pki.ca_asn1]))
+    key, cert = pki.ec_signer(curve)
+    cert_der = b64(cert.public_bytes(serialization.Encoding.DER))
+    prepared_pdf = client.post(
+        "/prepare",
+        headers=AUTH,
+        json={
+            "pdf": b64(blank_pdf()),
+            "fields": [{"name": "Signer_a", "page": -1, "box": [300, 600, 547, 672]}],
+        },
+    )
+    assert prepared_pdf.status_code == 200
+    checked = client.post(
+        "/certificate", headers=AUTH, json={"certificate": cert_der, "chain": [ca_b64(pki)]}
+    )
+    assert checked.json()["trusted"] is True
+    started = client.post(
+        "/sign/start",
+        headers=AUTH,
+        json={
+            "certificate": cert_der,
+            "chain": [ca_b64(pki)],
+            "fieldName": "Signer_a",
+            "pdf": b64(prepared_pdf.content),
+        },
+    )
+    assert started.status_code == 200
+    body = started.json()
+    assert body["digestAlgorithm"] == digest_algorithm
+    assert body["signatureAlgorithm"] == "ecdsa"
+    signature = key.sign(base64.b64decode(body["toSign"]), ec.ECDSA(digest))
+    finished = client.post(
+        "/sign/finish", headers=AUTH, json={"signature": b64(signature), "state": body["state"]}
+    )
+    assert finished.status_code == 200
+    report = client.post("/validate", headers=AUTH, content=finished.content).json()
+    assert report["status"] == "valid"
+    [sig] = report["signatures"]
+    assert sig["intact"] is True
+    assert sig["trusted"] is True
 
 
 def test_an_unreadable_pdf_is_refused_not_a_service_failure(pki: Pki) -> None:

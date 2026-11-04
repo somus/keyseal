@@ -1,0 +1,15 @@
+# Read by `cargo audit --file helper/Cargo.lock`, which audit.yml runs from the
+# repository root. Every advisory listed here marks a crate unmaintained, with
+# no known vulnerability, and reaches the helper only through GPUI and GPUI
+# Kit, so it goes away when they replace it. Vulnerabilities are never listed.
+[advisories]
+ignore = [
+  "RUSTSEC-2024-0384", # instant, through gpui-base and gpui-component
+  "RUSTSEC-2024-0436", # paste, through gpui-component, metal and pulp
+  "RUSTSEC-2025-0134", # rustls-pemfile, through gpui-pre-reqwest
+  "RUSTSEC-2026-0206", # rustybuzz, through usvg in gpui-pre
+  "RUSTSEC-2026-0192", # ttf-parser, through gpui-pre and fontdb
+  "RUSTSEC-2026-0371", # zbus_names, through zbus in gpui-pre-linux
+  "RUSTSEC-2026-0370", # zvariant, through zbus in gpui-pre-linux
+  "RUSTSEC-2026-0372", # zvariant_derive, through zbus in gpui-pre-linux
+]

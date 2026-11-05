@@ -12,7 +12,21 @@ export interface JobStatus {
   message?: string;
 }
 
-export type HelperPlatform = "macos" | "windows" | "linux" | "unsupported";
+export type HelperPlatform =
+  | "macos"
+  | "windows"
+  | "linux-x64"
+  | "linux-arm64"
+  | "unsupported";
+
+/** The parts of `navigator` that `helperDownloadFor` reads. */
+export interface PlatformSource {
+  userAgent: string;
+  /** Chromium's client hints. Its user agent says x86_64 on every Linux machine, so only these give the architecture. */
+  userAgentData?: {
+    getHighEntropyValues(hints: string[]): Promise<{ architecture?: string }>;
+  };
+}
 
 export interface LaunchOptions {
   /** Accept `http://localhost` and `http://127.0.0.1` job URLs, matching the helper's development override (spec section 4.4). */
@@ -233,8 +247,11 @@ export async function signWithHelper(
   return watchJob(options);
 }
 
-/** Which helper build suits the browser's platform, for picking a download link. */
-export function helperDownloadFor(userAgent: string): HelperPlatform {
+/** Which helper build suits the browser's platform, for picking a download link. Pass `navigator`. */
+export async function helperDownloadFor(
+  source: PlatformSource
+): Promise<HelperPlatform> {
+  const { userAgent } = source;
   if (/Android|iPhone|iPad|iPod|CrOS/.test(userAgent)) {
     return "unsupported";
   }
@@ -244,8 +261,14 @@ export function helperDownloadFor(userAgent: string): HelperPlatform {
   if (/Macintosh|Mac OS X/.test(userAgent)) {
     return "macos";
   }
-  if (/Linux|X11/.test(userAgent)) {
-    return "linux";
+  if (!/Linux|X11/.test(userAgent)) {
+    return "unsupported";
   }
-  return "unsupported";
+  const hints = await source.userAgentData
+    ?.getHighEntropyValues(["architecture"])
+    .catch(() => undefined);
+  if (hints?.architecture) {
+    return hints.architecture === "arm" ? "linux-arm64" : "linux-x64";
+  }
+  return /aarch64|arm64/.test(userAgent) ? "linux-arm64" : "linux-x64";
 }

@@ -148,7 +148,7 @@ const status = await signWithHelper({
   link,
   getStatus: () => fetch(`/api/sign-jobs/${jobId}`).then((r) => r.json()),
   onChange: (status) => showStatus(status), // hide the download link once it isn't pending
-  onNotClaimed: () => showDidntOpen(helperDownloadFor(navigator.userAgent)),
+  onNotClaimed: async () => showDidntOpen(await helperDownloadFor(navigator)),
 });
 ```
 
@@ -164,7 +164,7 @@ Signers install the helper once. Each release carries its downloads under fixed 
 | Windows | `https://github.com/somus/keyseal/releases/latest/download/keyseal-windows-x64.zip`, with `keyseal.exe` and `install.cmd` | `install.cmd` |
 | Linux | `https://github.com/somus/keyseal/releases/latest/download/keyseal-linux-x64.AppImage` or `keyseal_amd64.deb`, and on arm64 `keyseal-linux-arm64.AppImage` or `keyseal_arm64.deb`; the tarballs are on the release page | The deb on install; `keyseal install` for the AppImage and tarball |
 
-`helperDownloadFor(navigator.userAgent)` from `@keyseal/browser` says which one suits the signer's platform. It answers `linux` on any architecture, so link the x64 AppImage and mention the arm64 one beside it.
+`await helperDownloadFor(navigator)` from `@keyseal/browser` says which one suits the signer's platform: `macos`, `windows`, `linux-x64`, `linux-arm64` or `unsupported`. On Linux it asks Chromium's client hints for the architecture, since Chromium's user agent says x86_64 on every machine, and reads the user agent in other browsers.
 
 The helper updates itself. Raising `minHelperVersion` makes older helpers update before they can sign, so raise it only once that release exists.
 

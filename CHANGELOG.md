@@ -299,6 +299,16 @@ lines under the new version with the release date.
 
 ### [Unreleased][browser-unreleased]
 
+#### Changed
+
+- `helperDownloadFor` takes `navigator` and returns a promise, and answers
+  `linux-x64` or `linux-arm64` instead of `linux`. It asks Chromium's client
+  hints for the architecture, because Chromium's user agent says x86_64 on
+  every Linux machine, and reads the user agent in other browsers. Callers
+  change `helperDownloadFor(navigator.userAgent)` to
+  `await helperDownloadFor(navigator)` and link
+  `keyseal-linux-arm64.AppImage` for `linux-arm64`.
+
 ### [0.1.3][browser-0.1.3] - 2026-11-04
 
 #### Changed

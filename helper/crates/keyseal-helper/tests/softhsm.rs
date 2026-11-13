@@ -672,7 +672,8 @@ fn runs_jobs_on_softhsm() {
         assert_eq!(downloads.len(), 3, "{:?}", posted.requests);
     }
 
-    // The login-first path with a wrong PIN fails at login, before round 1.
+    // The login-first path with a wrong PIN fails at login, before round 1:
+    // a headless run tries its one PIN once.
     let (output, posted) = setup.run_job(
         &private,
         Job::sign(&hidden, "sha256", "rsa-pkcs1-v1_5"),
@@ -680,11 +681,9 @@ fn runs_jobs_on_softhsm() {
         true,
     );
     assert!(!output.status.success());
-    assert!(
-        posted
-            .failure
-            .unwrap()
-            .starts_with("The token refused the PIN")
+    assert_eq!(
+        posted.failure.as_deref(),
+        Some("The PIN is wrong, so the token refused it.")
     );
     assert!(posted.certificate.is_none());
 
@@ -696,11 +695,9 @@ fn runs_jobs_on_softhsm() {
         true,
     );
     assert!(!output.status.success());
-    assert!(
-        posted
-            .failure
-            .unwrap()
-            .starts_with("The token refused the PIN")
+    assert_eq!(
+        posted.failure.as_deref(),
+        Some("The PIN is wrong, so the token refused it.")
     );
     assert!(posted.signatures.is_none());
 

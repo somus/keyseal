@@ -19,6 +19,19 @@ lines under the new version with the release date.
 
 ### [Unreleased][helper-unreleased]
 
+#### Changed
+
+- A wrong PIN on a PKCS#11 token no longer ends the job: the window clears
+  the field and asks again in the same token session, until the signer
+  enters the right PIN or cancels. The token's own counter is the only
+  limit. Headless runs still try `KEYSEAL_PIN` once.
+- The PIN prompt warns when one more wrong PIN will lock the token, and when
+  a wrong PIN was entered before and few tries remain, reading the token's
+  flags before each prompt.
+- A token whose PIN is locked no longer shows the PIN field: the helper
+  shows an error saying the token's own software or its issuer unlocks it,
+  and reports the failure to the server.
+
 ### [0.3.0][helper-0.3.0] - 2026-11-05
 
 #### Added

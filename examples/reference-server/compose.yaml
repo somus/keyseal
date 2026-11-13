@@ -1,0 +1,39 @@
+# The signing service and the reference server for the quickstart
+# (docs/quickstart.md), built from this checkout. For trying KeySeal out
+# only: the service token below is public, and the service also trusts the
+# throwaway CA that scripts/ci/softhsm-token.sh writes to
+# quickstart/token/roots, so make the token before `docker compose up`.
+name: keyseal-quickstart
+
+x-service-token: &service-token quickstart-only-not-a-secret-0123456789
+
+services:
+  service:
+    build: ../../service
+    environment:
+      SIGNING_SERVICE_TOKEN: *service-token
+      SIGNING_EXTRA_TRUST_ROOTS_DIR: /quickstart-roots
+      # No timestamps unless a TSA is given, so signing works offline.
+      SIGNING_TSA_URL: ${SIGNING_TSA_URL:-none}
+    volumes:
+      # Long syntax, so a missing directory fails instead of being created.
+      - type: bind
+        source: ./quickstart/token/roots
+        target: /quickstart-roots
+        read_only: true
+    ports:
+      - 127.0.0.1:8090:8080
+
+  reference-server:
+    build:
+      context: ../..
+      dockerfile: examples/reference-server/Dockerfile
+    environment:
+      SIGNING_SERVICE_URL: http://service:8080
+      SIGNING_SERVICE_TOKEN: *service-token
+      # The helper runs on the host and reaches the server through the published port.
+      KEYSEAL_ORIGIN: http://127.0.0.1:8787
+    ports:
+      - 127.0.0.1:8787:8787
+    depends_on:
+      - service

@@ -231,7 +231,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 lambda settings: certificate_trusted(cert, chain, settings, body.keyUsage)
             )
         except ValidationLimitError as error:
-            raise HTTPException(422, str(error)) from error
+            # Slow revocation servers, not a bad certificate: @keyseal/server
+            # leaves the job for the helper to retry.
+            raise HTTPException(504, str(error)) from error
         return {"revocationChecked": revocation_checked, "trusted": trusted}
 
     @app.post("/sign/start")

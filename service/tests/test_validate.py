@@ -751,7 +751,7 @@ def _with_local_tsa(pki: Pki, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     return client_for(settings_with(pki), "https://tsa.invalid")
 
 
-def test_a_certificate_check_past_its_budget_is_refused_and_stops(
+def test_a_certificate_check_past_its_budget_stops_and_may_be_retried(
     pki: Pki, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     stopped = threading.Event()
@@ -770,7 +770,7 @@ def test_a_certificate_check_past_its_budget_is_refused_and_stops(
             headers=AUTH,
             json={"certificate": b64(pki.signer_cert.public_bytes(serialization.Encoding.DER))},
         )
-    assert response.status_code == 422
+    assert response.status_code == 504
     assert response.json() == {"detail": "The certificate check took longer than 0.1 seconds"}
     assert stopped.is_set()
 

@@ -21,7 +21,7 @@ Out of scope: government-style portals. KeySeal does not coexist with emSigner f
 | Signing service | `service/` | pyHanko behind FastAPI, shipped as a Docker image. Prepares PDFs, builds the CMS around the token's signature, validates and timestamps. |
 | Driver catalogue | `catalogue/` | Signed list of token drivers by USB id and platform, updated separately from the helper. |
 | Reference server | `examples/reference-server/` | Minimal integrator backend wiring `@keyseal/server` to the service. The end-to-end test drives it. |
-| Spec | `spec/` | Protocol specification, OpenAPI and the decisions it settled. |
+| Spec | `spec/` | Protocol specification and OpenAPI. |
 
 The helper never talks to the signing service; only the integrator backend does, so service credentials and document handling stay on the server side.
 
@@ -57,7 +57,7 @@ Enrol, capturing a certificate without signing, is a single round: `GET` the job
 
 ### Algorithms
 
-RSA PKCS#1 v1.5, RSA-PSS, and ECDSA on P-256, P-384, brainpoolP256r1 and brainpoolP384r1. RSA-PSS uses MGF1 with the message digest and a salt as long as the digest. P-256 and brainpoolP256r1 sign SHA-256, P-384 and brainpoolP384r1 sign SHA-384; ECDSA signatures travel as DER `ECDSA-Sig-Value`.
+RSA PKCS#1 v1.5, RSA-PSS, and ECDSA on P-256, P-384, brainpoolP256r1 and brainpoolP384r1. RSA-PSS uses MGF1 with the message digest and a salt as long as the digest. P-256 and brainpoolP256r1 sign SHA-256, P-384 and brainpoolP384r1 sign SHA-384; ECDSA signatures travel as DER `ECDSA-Sig-Value`. Round 1 names the signature scheme as well as the digest, because an RSA key alone doesn't tell the helper whether the server will embed PKCS#1 v1.5 or PSS.
 
 ## Trust model
 

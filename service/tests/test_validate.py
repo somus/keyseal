@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import threading
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -9,6 +10,8 @@ from typing import Any
 
 import pytest
 from cryptography.hazmat.primitives import serialization
+from pyhanko.pdf_utils.reader import PdfFileReader
+from pyhanko.sign.validation.dss import DocumentSecurityStore
 from pyhanko_certvalidator import ValidationContext
 from pyhanko_certvalidator.fetchers.aiohttp_fetchers import AIOHttpFetcherBackend
 
@@ -809,3 +812,34 @@ def test_finalising_a_pdf_with_too_many_signatures_is_refused(
         response = client.post("/finalize", content=twice, headers=AUTH)
     assert response.status_code == 422
     assert response.json() == {"detail": "More than 1 signatures"}
+
+
+def test_long_term_archive_finalises_and_retimestamps_offline(
+    pki: Pki, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The test root's CRL stands in for a fetch; the TSA is a local one under the same root.
+    with_crl(monkeypatch, pki.crl())
+    signed = sign(blank_pdf(), pki, timestamper=pki.timestamper(datetime.now(UTC)))
+    with _with_local_tsa(pki, monkeypatch) as client:
+        finalised = client.post("/finalize", content=signed, headers=AUTH)
+        assert finalised.status_code == 200
+        archived = client.post("/retimestamp", content=finalised.content, headers=AUTH)
+        assert archived.status_code == 200
+    assert finalised.content.startswith(signed)
+    assert archived.content.startswith(finalised.content)
+
+    reader = PdfFileReader(io.BytesIO(archived.content))
+    dss = DocumentSecurityStore.read_dss(reader)
+    assert len(dss.crls) >= 1
+    assert len(dss.certs) >= 2  # the signer's root and the TSA's certificate
+
+    report = validate_pdf(archived.content, settings_with(pki))
+    assert report["status"] == "valid"
+    [signature] = report["signatures"]
+    assert signature["trusted"] is True
+    assert signature["timestampValid"] is True
+    assert signature["revocationChecked"] is True
+    assert [(t["intact"], t["trusted"]) for t in report["documentTimestamps"]] == [
+        (True, True),
+        (True, True),
+    ]

@@ -361,7 +361,14 @@ fn desktop_entry(exe: &Path) -> Result<String, String> {
     } else {
         exe.to_owned()
     };
-    Ok(DESKTOP_ENTRY.replace("\nExec=keyseal %u\n", &format!("\nExec={exe} %u\n")))
+    // By line, since a Windows checkout gives the packaged file CRLF.
+    Ok(DESKTOP_ENTRY
+        .lines()
+        .map(|line| match line {
+            "Exec=keyseal %u" => format!("Exec={exe} %u\n"),
+            line => format!("{line}\n"),
+        })
+        .collect())
 }
 
 /// Installs to `bin/keyseal` and registers it with a desktop entry and icon
@@ -513,13 +520,12 @@ mod tests {
     #[test]
     fn writes_the_packaged_entry() {
         let written = desktop_entry(Path::new("/home/asha/.local/bin/keyseal")).unwrap();
-        assert_eq!(
-            written,
-            DESKTOP_ENTRY.replace("Exec=keyseal %u", "Exec=/home/asha/.local/bin/keyseal %u")
-        );
-        assert_ne!(written, DESKTOP_ENTRY);
+        let packaged =
+            DESKTOP_ENTRY.replace("Exec=keyseal %u", "Exec=/home/asha/.local/bin/keyseal %u");
+        assert!(written.lines().eq(packaged.lines()), "{written}");
+        assert!(written.contains("\nExec=/home/asha/.local/bin/keyseal %u\n"));
         assert!(!DESKTOP_ENTRY.contains("NoDisplay"));
-        assert!(DESKTOP_ENTRY.contains("\nIcon=keyseal\n"));
+        assert!(DESKTOP_ENTRY.lines().any(|line| line == "Icon=keyseal"));
     }
 
     #[test]

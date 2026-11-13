@@ -10,7 +10,9 @@
 # Contents/MacOS (packaging/README.md). With KEYSEAL_CODESIGN_IDENTITY set
 # ("Developer ID Application: ...") the app is signed for notarization;
 # with NOTARIZE=1 as well, both the app and the disk image are notarized
-# and stapled (see notarize.sh).
+# and stapled (see notarize.sh). With KEYSEAL_NOTICES set, that file goes in
+# Contents/Resources as THIRD-PARTY-NOTICES.txt; releases always set it
+# (third-party-notices.sh).
 # Without an identity everything is ad-hoc signed, for local testing.
 #
 # Writes <out dir>/KeySeal.app, keyseal-helper-<version>-macos-universal.zip
@@ -32,6 +34,9 @@ mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 sed "s/@VERSION@/$version/g" "$here/Info.plist" >"$app/Contents/Info.plist"
 cp "$here/PkgInfo" "$app/Contents/PkgInfo"
 cp "$here/AppIcon.icns" "$app/Contents/Resources/AppIcon.icns"
+if [ -n "${KEYSEAL_NOTICES:-}" ]; then
+  install -m 0644 "$KEYSEAL_NOTICES" "$app/Contents/Resources/THIRD-PARTY-NOTICES.txt"
+fi
 install -m 0755 "$binary" "$app/Contents/MacOS/keyseal"
 if [ -n "$worker" ]; then
   install -m 0755 "$worker" "$app/Contents/MacOS/keyseal-token-worker"

@@ -104,7 +104,7 @@ revocation are described in `docs/code-signing-policy.md`.
    Each of these files has a build provenance attestation
    ([Checking build provenance](#checking-build-provenance)).
 4. Check, sign and publish with one script on a Mac, with Bitwarden
-   unlocked and Docker running:
+   unlocked, Docker running and cargo-about 0.9.3 installed:
 
    ```sh
    export BW_SESSION="$(bw unlock --raw)"
@@ -200,6 +200,25 @@ The signed macOS app can't match byte for byte; compare its executables
 with yours using `helper/packaging/macos/compare-bundle.sh`
 (`sign-manifest.md`, step 4).
 
+### Third-party notices
+
+The helper statically links crates whose licences ask for their notices to
+go with the binary, so every package holds `THIRD-PARTY-NOTICES.txt`: the
+Windows zip beside `keyseal.exe`, the macOS app in `Contents/Resources`.
+The release run's `notices` job makes it once, with cargo-about 0.9.3 from
+`Cargo.lock`, offline, so the same commit gives the same file anywhere.
+`release.sh` makes it again from the tag and compares. To make it yourself,
+with `cargo-about` 0.9.3 on the `PATH`:
+
+```sh
+helper/packaging/third-party-notices.sh /tmp/THIRD-PARTY-NOTICES.txt
+```
+
+`helper/packaging/about.toml` lists the licences accepted for every
+crate, all permissive, and the few accepted for one crate only, with the
+reason. A dependency under any other licence fails the release run's
+`notices` job; review its licence before accepting it there.
+
 ### Checking build provenance
 
 The draft run attests every asset it builds with `actions/attest`: a
@@ -232,6 +251,9 @@ aren't attested.
 - The AppImage is built with appimagetool and runtime versions pinned by
   SHA-256 in the workflow, and `build-appimage.sh` fails unless the
   AppImage starts with that runtime.
+- cargo-about is pinned by version and SHA-256 in the `notices` job
+  (`.sha256` beside each archive on its GitHub release). Change the version
+  in `third-party-notices.sh` and `release.sh` with it.
 - Every action in `release.yml` is pinned by commit SHA with its version in
   a comment, the `ubuntu:22.04` image by digest, and rustup-init by version
   and SHA-256. Update a pin by resolving the new tag yourself

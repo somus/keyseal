@@ -23,6 +23,8 @@ lines under the new version with the release date.
 
 - Every release asset has a build provenance attestation, which
   `gh attestation verify <file> --repo somus/keyseal` checks.
+- The Windows zip and the macOS app include `THIRD-PARTY-NOTICES.txt`, the
+  licences and notices of the open source crates the helper is built from.
 
 ### [0.3.0][helper-0.3.0] - 2026-11-05
 

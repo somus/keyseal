@@ -19,6 +19,11 @@ lines under the new version with the release date.
 
 ### [Unreleased][helper-unreleased]
 
+#### Added
+
+- Every release asset has a build provenance attestation, which
+  `gh attestation verify <file> --repo somus/keyseal` checks.
+
 ### [0.3.0][helper-0.3.0] - 2026-11-05
 
 #### Added

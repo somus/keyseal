@@ -42,8 +42,10 @@ raw="$(printf '%s\n' "$key" | openssl pkey -pubout -outform DER | tail -c 32 | x
 
 case "$where" in
   bitwarden)
+    # The key reaches jq through a pipe, not its arguments, which other
+    # processes can read.
     bw get template item \
-      | jq --arg name "$name" --arg notes "$key" \
+      | jq --arg name "$name" --rawfile notes <(printf '%s' "$key") \
         '.type = 2 | .secureNote = {type: 0} | .name = $name | .notes = $notes | .login = null' \
       | bw encode | bw create item >/dev/null
     echo "Stored the private key in Bitwarden as \"$name\"." >&2 ;;

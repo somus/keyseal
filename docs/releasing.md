@@ -1,15 +1,37 @@
-# Releasing the helper
+# Releasing
 
-The npm packages and the signing service image release on their own: see
-[releasing-npm.md](releasing-npm.md) and
-[releasing-service.md](releasing-service.md).
+Each component is versioned and released on its own, by pushing a tag:
+
+| Component | Tag | Workflow |
+| --- | --- | --- |
+| [Helper](#helper) | `helper-vX.Y.Z` | `.github/workflows/release.yml` |
+| [`@keyseal/server` and `@keyseal/browser`](#npm-packages) | `server-vX.Y.Z`, `browser-vX.Y.Z` | `.github/workflows/npm.yml` |
+| [Signing service image](#signing-service-image) | `service-vX.Y.Z` | `.github/workflows/service.yml` |
+
+Every release goes the same way:
+
+1. Bump the component's version, move its Unreleased entries in
+   `CHANGELOG.md` under the new version and date, and merge the pull
+   request.
+2. Wait for the `checks` and `e2e` runs on the merge commit on `main` to
+   pass. Each workflow stops unless the tag is on `main`, matches the
+   component's version, and both runs passed on that commit
+   (`scripts/ci/ci-passed.sh`); if a run was still going, re-run the failed
+   job once it has passed.
+3. Tag the merge commit and push the tag, for example:
+
+   ```sh
+   git tag server-v0.2.0 && git push origin server-v0.2.0
+   ```
+
+## Helper
 
 A helper release is a tag, a draft made by CI, an offline signature by each
 maintainer, and a manual publish. The signing rules are in
 `docs/code-signing-policy.md`; the signing steps are in
 `helper/packaging/sign-manifest.md`.
 
-## Repository setup
+### Repository setup
 
 This is what the repository has in place for helper releases; check it
 here before changing any of it.
@@ -49,13 +71,14 @@ release a helper signed by the keys the installed helpers already trust.
 Helpers that install it trust the new key from then on. Rotation and
 revocation are described in `docs/code-signing-policy.md`.
 
-## Steps
+### Steps
 
 1. Set `version` in `helper/Cargo.toml` (`[workspace.package]`), update
    `Cargo.lock` (`cargo check` in `helper/`), move the helper's Unreleased
    entries in `CHANGELOG.md` under the new version and date, and merge.
-2. Tag the merge commit on `main` and push the tag. The tag must be
-   `helper-v<version>` on a commit of `main`; the workflow fails otherwise.
+2. Once the checks have passed on it, tag the merge commit on `main` and
+   push the tag. The tag must be `helper-v<version>`; the workflow fails
+   otherwise.
 
    ```sh
    git tag helper-v1.4.0 && git push origin helper-v1.4.0
@@ -77,6 +100,9 @@ revocation are described in `docs/code-signing-policy.md`.
      `keyseal-macos-universal.dmg`, `keyseal-windows-x64.zip`,
      `keyseal-linux-x64.AppImage`, `keyseal_amd64.deb`,
      `keyseal-linux-arm64.AppImage` and `keyseal_arm64.deb`
+
+   Each of these files has a build provenance attestation
+   ([Checking build provenance](#checking-build-provenance)).
 4. Check, sign and publish with one script on a Mac, with Bitwarden
    unlocked and Docker running:
 
@@ -113,7 +139,7 @@ revocation are described in `docs/code-signing-policy.md`.
 7. Installed helpers find the release within a day, or at once after a
    server refuses them with `426`.
 
-## Reproducing a release
+### Reproducing a release
 
 Check out the tag and run the same script CI ran. The pinned Rust toolchain
 comes from `helper/rust-toolchain.toml`; the platform C toolchain must match
@@ -174,7 +200,25 @@ The signed macOS app can't match byte for byte; compare its executables
 with yours using `helper/packaging/macos/compare-bundle.sh`
 (`sign-manifest.md`, step 4).
 
-## Toolchain upkeep
+### Checking build provenance
+
+The draft run attests every asset it builds with `actions/attest`: a
+signed statement, kept by GitHub and logged in Sigstore's public
+transparency log, that the file came from `release.yml` running on the
+tagged commit. Anyone can check a downloaded file with the GitHub CLI:
+
+```sh
+gh attestation verify keyseal-helper-1.4.0-linux-x64.AppImage --repo somus/keyseal \
+  --signer-workflow somus/keyseal/.github/workflows/release.yml \
+  --source-ref refs/tags/helper-v1.4.0
+```
+
+The attestation shows where a file was built; it isn't a release signature.
+Helpers trust only `keyseal-update.json` signed by the pinned keys, and
+`SHA256SUMS.sig` is what maintainers sign. The signatures added at publish
+aren't attested.
+
+### Toolchain upkeep
 
 - Bump `helper/rust-toolchain.toml` and the version `checks.yml` installs
   together, in their own commit; the next release records the new version
@@ -202,3 +246,74 @@ with yours using `helper/packaging/macos/compare-bundle.sh`
   the release, and compare the `cc` and `ldd` lines in `BUILDINFO` with
   yours if the hashes differ. Pinning them would mean pointing apt at a
   dated `snapshot.ubuntu.com` mirror.
+
+## npm packages
+
+`@keyseal/server` and `@keyseal/browser` are released by `npm.yml`, which
+type-checks, tests and builds the package named by the tag and publishes it
+with provenance.
+
+### Steps
+
+1. Bump `version` in `packages/server/package.json` or
+   `packages/browser/package.json`, then release as above.
+2. Check the run in Actions, then the package page on npmjs.com, which shows
+   the provenance of the build.
+
+### One-time setup
+
+The workflow authenticates with trusted publishing (OIDC), so no npm token is
+kept in GitHub. npm only lets you add a trusted publisher to a package that
+already exists, so a new package's first version is published by hand:
+
+1. Turn on two-factor authentication for your npm account, and be a member of
+   the `keyseal` organisation.
+2. Publish the first version from a clean checkout of main, answering the 2FA
+   prompt:
+
+   ```sh
+   cd packages/server && bun run build && npm publish --access public
+   ```
+
+3. Add the trusted publisher, either from the package's Settings page on
+   npmjs.com (repository `somus/keyseal`, workflow `npm.yml`, environment
+   `npm`) or with npm 11.15 or later:
+
+   ```sh
+   npm trust github @keyseal/server --repo somus/keyseal --file npm.yml --env npm --allow-publish
+   ```
+
+4. On the package's Settings page, set Publishing access to "Require
+   two-factor authentication and disallow tokens".
+
+Every later version goes through the steps above.
+
+## Signing service image
+
+`service.yml` runs the service tests, builds `service/Dockerfile` for
+linux/amd64 and linux/arm64, and pushes `ghcr.io/somus/keyseal-service`
+tagged `X.Y.Z` and `X.Y`, with a build provenance attestation. No `latest`
+tag is pushed.
+
+### Steps
+
+1. Bump `version` in `service/pyproject.toml` and run `uv lock` in
+   `service/`, then release as above.
+2. Check the run in Actions. Its summary lists the image digest; check the
+   attestation against it:
+
+   ```sh
+   gh attestation verify oci://ghcr.io/somus/keyseal-service@sha256:<digest> --repo somus/keyseal
+   ```
+
+Integrators who want an image that can't move pin the digest,
+`ghcr.io/somus/keyseal-service@sha256:<digest>`, rather than a tag.
+
+### One-time setup
+
+The workflow pushes with the workflow's `GITHUB_TOKEN`, so no registry token
+is kept in GitHub. The first push creates the package as private and links it
+to the repository through the image's `org.opencontainers.image.source`
+label. After that run, open the package's settings
+(github.com/users/somus/packages/container/keyseal-service/settings) and set
+its visibility to public, so integrators can pull it without logging in.

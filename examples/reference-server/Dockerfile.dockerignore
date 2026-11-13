@@ -5,6 +5,7 @@
 !bun.lock
 !tsconfig.base.json
 !catalogue/package.json
+!site/package.json
 !packages/*/package.json
 !packages/*/tsconfig.json
 !packages/server/src

@@ -19,6 +19,12 @@ lines under the new version with the release date.
 
 ### [Unreleased][helper-unreleased]
 
+#### Fixed
+
+- Edge and Chrome on Windows name KeySeal, not "keyseal", for a helper that
+  was first installed before 0.4.0. Windows had kept the old name in its
+  cache; `keyseal install` and the first start after an update now clear it.
+
 ### [0.4.0][helper-0.4.0] - 2026-11-13
 
 #### Added

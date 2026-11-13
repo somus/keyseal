@@ -1,6 +1,6 @@
 # Quickstart without a token
 
-This page takes you from a clean checkout to a signed PDF without a USB token. Docker Compose runs the signing service and the [reference server](../examples/reference-server/), a SoftHSM software token stands in for the USB token, and a helper built from the checkout signs. Building the helper takes the longest, a few minutes the first time.
+This page takes you from a clean checkout to a signed PDF without a USB token. Docker Compose runs the signing service and the [reference server](../examples/reference-server/), a SoftHSM software token stands in for the USB token, and the released helper signs, run from a terminal without installing it.
 
 The test CA, its certificates and the token are for trying KeySeal out only. Anyone can make the same kind of CA, the token's PIN is `1234`, and the service token in the compose file is public. Don't point the quickstart's service at real documents, and don't trust its CA anywhere else.
 
@@ -20,9 +20,7 @@ These steps are for Linux; [macOS and Windows](#macos-and-windows) differ in how
 
 - Docker with the Compose plugin.
 - SoftHSM 2, OpenSC (for `pkcs11-tool`), OpenSSL, curl and jq: `sudo apt install softhsm2 opensc openssl curl jq`. The SoftHSM module is then `/usr/lib/softhsm/libsofthsm2.so`.
-- Rust through [rustup](https://rustup.rs) (the helper's `rust-toolchain.toml` picks the version) and GPUI's build dependencies: `sudo apt install build-essential libasound2-dev libfontconfig-dev libvulkan1 libwayland-dev libx11-xcb-dev libxkbcommon-x11-dev`.
-
-You don't need Bun or Python: the service and the reference server run in containers.
+You don't need Bun, Python or Rust: the service and the reference server run in containers, and the helper is a download. Only [building the helper yourself](#3-get-the-helper) needs Rust.
 
 ## 1. Make the test token
 
@@ -33,7 +31,7 @@ module=/usr/lib/softhsm/libsofthsm2.so
 ../../scripts/ci/softhsm-token.sh "$PWD/quickstart/token" "$module"
 ```
 
-This is the same script the end-to-end test uses. In `quickstart/token` it writes a SoftHSM token labelled `keyseal-e2e` with the user PIN `1234`, a throwaway CA, and keys on the token with certificates that CA issued: `rsa` (RSA-2048), `p256`, `p384`, `bp256` and `bp384` (brainpoolP256r1 and P384r1), `auth` (an RSA key that needs the PIN for every signature) and `dsig` (a certificate with digitalSignature but not nonRepudiation, which a default job doesn't accept). The CA's certificate is in `quickstart/token/roots/ca.pem`, which the signing service trusts in the next step. The CA and the certificates are valid for two days; to make a new set, run `rm -rf quickstart` and the script again, then `docker compose restart service`.
+This is the same script the end-to-end test uses. In `quickstart/token` it writes a SoftHSM token labelled `keyseal-e2e` with the user PIN `1234`, a throwaway CA, and keys on the token with certificates that CA issued: `rsa` (RSA-2048), `p256`, `p384`, `bp256` and `bp384` (brainpoolP256r1 and P384r1), `auth` (an RSA key that needs the PIN for every signature) and `dsig` (a certificate with digitalSignature but not nonRepudiation, which a default job doesn't accept). The CA's certificate is in `quickstart/token/roots/ca.pem`, which the signing service trusts in the next step. The CA and the certificates are valid for two days; to make a new set, run `rm -rf quickstart/token` and the script again, then `docker compose restart service`.
 
 Check that the token holds the certificates:
 
@@ -51,17 +49,25 @@ curl -fsS http://127.0.0.1:8090/health
 
 The health check answers `{"ok":true,"trustRoots":2}`: the bundled CCA India root and the test CA. If it fails to connect, give the service a few seconds to start and try again.
 
-[compose.yaml](../examples/reference-server/compose.yaml) builds both images from this checkout, so they match the helper you build next; the [published service image](../service/README.md#docker) may be older than the checkout. The service trusts the test CA through `SIGNING_EXTRA_TRUST_ROOTS_DIR`, beside the bundled CCA India roots. It signs without a timestamp, so it works offline; `SIGNING_TSA_URL=http://timestamp.digicert.com docker compose up --build --detach` adds one. Revocation data isn't fetched (`SIGNING_ALLOW_FETCHING` is off), and the test certificates name no CRL or OCSP responder anyway.
+[compose.yaml](../examples/reference-server/compose.yaml) builds both images from this checkout, so the reference server and the service match each other; the [published service image](../service/README.md#docker) may be older than the checkout. The service trusts the test CA through `SIGNING_EXTRA_TRUST_ROOTS_DIR`, beside the bundled CCA India roots. It signs without a timestamp, so it works offline; `SIGNING_TSA_URL=http://timestamp.digicert.com docker compose up --build --detach` adds one. Revocation data isn't fetched (`SIGNING_ALLOW_FETCHING` is off), and the test certificates name no CRL or OCSP responder anyway.
 
 Both containers listen on 127.0.0.1 only. If port 8090 is taken, run `export KEYSEAL_QUICKSTART_SERVICE_PORT=18090` before `docker compose up` and use that port wherever this page says 8090; the service's port is published only so you can check the signed PDF from your computer. The reference server reaches the service at `http://service:8080` with the shared bearer token, and puts `http://127.0.0.1:8787` in its `keyseal://` links, which is where the helper on your computer finds it.
 
-## 3. Build the helper
+## 3. Get the helper
+
+Download the released helper's AppImage. It runs where it is: nothing is installed, and `keyseal://` links aren't registered.
 
 ```sh
-(cd ../../helper && cargo build -p keyseal-helper)
+curl -fsSL -o quickstart/keyseal.AppImage \
+  https://github.com/somus/keyseal/releases/latest/download/keyseal-linux-x64.AppImage
+chmod +x quickstart/keyseal.AppImage
+helper="$PWD/quickstart/keyseal.AppImage"
+"$helper" --version
 ```
 
-The helper is `../../helper/target/debug/keyseal`. It needs four settings for the quickstart, which you give it in the terminal you'll run it from:
+On arm64, download `keyseal-linux-arm64.AppImage` instead. To try a change to the helper, or when the checkout needs a newer helper than the latest release, build it in place of the download: `(cd ../../helper && cargo build -p keyseal-helper)` and `helper="$PWD/../../helper/target/debug/keyseal"`. That needs Rust through [rustup](https://rustup.rs) and GPUI's build dependencies ([development.md](development.md#prerequisites)), and takes a few minutes the first time.
+
+The helper needs four settings for the quickstart, which you give it in the terminal you'll run it from:
 
 ```sh
 export SOFTHSM2_CONF="$PWD/quickstart/token/softhsm2.conf"
@@ -97,12 +103,12 @@ sys.stdout.buffer.write(out.getvalue())
 ' >sample.pdf
 ```
 
-Open http://127.0.0.1:8787/ in a browser, choose the PDF and select Create signing job. The page tries to open the job's link at once, so the browser may ask whether to open `xdg-open` or KeySeal: choose Cancel. A helper started that way wouldn't have the settings above, and a released KeySeal refuses the plain-HTTP origin anyway.
+Open http://127.0.0.1:8787/ in a browser, choose the PDF and select Create signing job. The page tries to open the job's link at once, so the browser may ask whether to open `xdg-open` or KeySeal: choose Cancel. A helper started that way wouldn't have the settings above, so an installed KeySeal refuses the plain-HTTP origin.
 
 The page shows the job as pending, with its `keyseal://sign?job=...` link below. Copy the link and run it through the helper, in single quotes:
 
 ```sh
-../../helper/target/debug/keyseal run 'keyseal://sign?job=...'
+"$helper" run 'keyseal://sign?job=...'
 ```
 
 The helper opens a New site window for `127.0.0.1:8787`, marked as a test site whose connection isn't secure: select Allow. The Sign a document window then lists the certificates on the token that the job accepts. Choose one, such as `keyseal e2e rsa`, select Continue, enter the PIN `1234` and select Sign. The page's state moves from pending through claimed and prepared to completed, and it names the signed PDF, such as `out/6c037b37-...-0.pdf`.
@@ -118,7 +124,7 @@ job="$(jq -n --arg pdf "$(base64 -w0 sample.pdf)" --arg sha "$sha" \
     title: "Quickstart", signer: "Test Signer", expectedCertificateSha256: $sha}' |
   curl -fsS -H 'Content-Type: application/json' --data @- http://127.0.0.1:8787/jobs)"
 KEYSEAL_HEADLESS=1 KEYSEAL_PIN=1234 KEYSEAL_HEADLESS_TRUST_ORIGIN=http://127.0.0.1:8787 \
-  ../../helper/target/debug/keyseal run "$(jq -r .link <<<"$job")"
+  "$helper" run "$(jq -r .link <<<"$job")"
 curl -fsS "http://127.0.0.1:8787/jobs/$(jq -r .id <<<"$job")/status"
 ```
 
@@ -145,7 +151,7 @@ rm -rf quickstart sample.pdf signed.pdf
 
 ## macOS and Windows
 
-The quickstart has been run on Linux only. On the other systems, SoftHSM installs as below, the way the project's CI installs it for the helper's tests; the other steps are the same, with that module path for `module` and `KEYSEAL_PKCS11_MODULE`.
+The quickstart has been run on Linux only. On the other systems, build the helper from the checkout as step 3 describes, since the AppImage is for Linux. SoftHSM installs as below, the way the project's CI installs it for the helper's tests; the other steps are the same, with that module path for `module` and `KEYSEAL_PKCS11_MODULE`.
 
 - **macOS:** `brew install softhsm opensc openssl@3`, with Homebrew's OpenSSL first on the `PATH` as CI puts it: `export PATH="$(brew --prefix openssl@3)/bin:$PATH"`. The module is `$(brew --prefix softhsm)/lib/softhsm/libsofthsm2.so`, as in the `SoftHSM (macOS)` step of [.github/workflows/checks.yml](../.github/workflows/checks.yml) and in [development.md](development.md#checks). Docker Desktop provides Docker and Compose.
 - **Windows:** CI installs SoftHSM2 for Windows 2.5.0 with an administrative install of the MSI that Chocolatey's `softhsm.install` downloads, into `C:\SoftHSM2`, and OpenSC with `choco install opensc`; the module is `C:\SoftHSM2\lib\softhsm2-x64.dll`, and `C:\SoftHSM2\bin`, `C:\SoftHSM2\lib` and OpenSC's `tools` directory go on the `PATH`. See the `SoftHSM (Windows)` step in [.github/workflows/checks.yml](../.github/workflows/checks.yml). The token script is a bash script, and hasn't been run on Windows.

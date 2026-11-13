@@ -22,6 +22,7 @@ use keyseal_core::doctor::Report;
 use keyseal_core::flow::{DigestConfirm, JobView, PinPrompt, Progress, Step, Ui};
 use keyseal_core::origin::Origin;
 use keyseal_core::protocol::{Kind, plain};
+use keyseal_core::token::PinWarning;
 use zeroize::Zeroizing;
 
 actions!(keyseal, [OpenSettings]);
@@ -426,6 +427,8 @@ pub(crate) enum Stage {
         digests: Option<Vec<String>>,
         pin_pad: bool,
         warning: Option<&'static str>,
+        /// The PIN entered last was wrong.
+        wrong_pin: bool,
         reply: mpsc::Sender<Option<Zeroizing<String>>>,
     },
     Confirm {
@@ -501,7 +504,13 @@ impl Ui for WindowUi {
                 certificate: prompt.certificate.as_deref().map(plain),
                 digests: prompt.digests.clone(),
                 pin_pad: prompt.pin_pad,
-                warning: prompt.pin_warning,
+                // The flow fails a locked PIN instead of asking for it.
+                warning: match prompt.pin_warning {
+                    Some(PinWarning::FinalTry) => Some(strings::PIN_FINAL_TRY),
+                    Some(PinWarning::CountLow) => Some(strings::PIN_COUNT_LOW),
+                    Some(PinWarning::Locked) | None => None,
+                },
+                wrong_pin: prompt.wrong_pin,
                 reply,
             },
         })

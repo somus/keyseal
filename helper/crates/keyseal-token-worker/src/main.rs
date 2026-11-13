@@ -8,7 +8,7 @@ use std::fs::File;
 use std::io::{self, Read, Write};
 use std::process::ExitCode;
 
-use keyseal_core::token::{Module, Token, TokenBackend};
+use keyseal_core::token::{LoginError, Module, Token, TokenBackend};
 use keyseal_core::worker::{self, Reply, Request};
 use zeroize::{Zeroize, Zeroizing};
 
@@ -55,7 +55,6 @@ fn handle(token: &mut Option<Token>, request: Request) -> Result<Reply, String> 
         let opened = Module::load(&module)?.open(wait)?;
         let reply = Reply::Opened {
             pin_pad: opened.pin_pad,
-            pin_warning: opened.pin_warning,
         };
         *token = Some(opened);
         return Ok(reply);
@@ -65,10 +64,13 @@ fn handle(token: &mut Option<Token>, request: Request) -> Result<Reply, String> 
         Request::Certificates { with_private_key } => {
             Ok(Reply::Certificates(token.certificates(with_private_key)?))
         }
-        Request::Login { pin } => {
-            token.login(worker::decode_pin(&pin)?)?;
-            Ok(Reply::Done)
-        }
+        Request::PinWarning => Ok(Reply::PinWarning(token.pin_warning())),
+        Request::Login { pin } => match token.login(worker::decode_pin(&pin)?) {
+            Ok(()) => Ok(Reply::Done),
+            Err(LoginError::WrongPin) => Ok(Reply::WrongPin),
+            Err(LoginError::Locked) => Ok(Reply::PinLocked),
+            Err(LoginError::Other(error)) => Err(error.0),
+        },
         Request::Sign {
             certificate,
             data,

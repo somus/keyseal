@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use zeroize::{Zeroize, Zeroizing};
 
 use crate::cms::{DigestAlgorithm, SignatureAlgorithm};
-use crate::token::{PinWarning, TokenBackend, TokenCertificate, TokenError, err};
+use crate::token::{LoginError, PinWarning, TokenBackend, TokenCertificate, TokenError, err};
 
 /// The worker's file name, beside the helper's executable.
 pub const WORKER: &str = "keyseal-token-worker";
@@ -170,6 +170,8 @@ pub enum Request {
     Certificates {
         with_private_key: bool,
     },
+    /// The token's flags, read now.
+    PinWarning,
     /// The only request carrying the PIN, zeroised when dropped. The PIN
     /// is lowercase hex of its UTF-8 bytes, which serde_json writes and
     /// reads without escaping, so no escape buffer of its holds the PIN.
@@ -194,9 +196,13 @@ pub enum Request {
 pub enum Reply {
     Opened {
         pin_pad: bool,
-        pin_warning: Option<PinWarning>,
     },
     Certificates(Vec<TokenCertificate>),
+    PinWarning(Option<PinWarning>),
+    /// The login's PIN was wrong, as [`LoginError::WrongPin`].
+    WrongPin,
+    /// The token's PIN is locked, as [`LoginError::Locked`].
+    PinLocked,
     Signatures(Vec<Vec<u8>>),
     Done,
 }
@@ -225,7 +231,6 @@ pub struct WorkerToken {
     stdin: ChildStdin,
     stdout: RefCell<BufReader<ChildStdout>>,
     pin_pad: bool,
-    pin_warning: Option<PinWarning>,
 }
 
 impl WorkerToken {
@@ -249,21 +254,15 @@ impl WorkerToken {
             stdin,
             stdout: RefCell::new(BufReader::new(stdout)),
             pin_pad: false,
-            pin_warning: None,
         };
         let request = Request::Open {
             module: module.to_owned(),
             wait,
         };
-        let Reply::Opened {
-            pin_pad,
-            pin_warning,
-        } = token.call(&request)?
-        else {
+        let Reply::Opened { pin_pad } = token.call(&request)? else {
             return Err(TokenError(OUT_OF_TURN.into()));
         };
         token.pin_pad = pin_pad;
-        token.pin_warning = pin_warning;
         Ok(token)
     }
 
@@ -308,8 +307,11 @@ impl TokenBackend for WorkerToken {
         self.pin_pad
     }
 
-    fn pin_warning(&self) -> Option<&'static str> {
-        self.pin_warning.map(PinWarning::message)
+    fn pin_warning(&self) -> Option<PinWarning> {
+        match self.call(&Request::PinWarning) {
+            Ok(Reply::PinWarning(warning)) => warning,
+            _ => None,
+        }
     }
 
     fn certificates(&self, with_private_key: bool) -> Result<Vec<TokenCertificate>, TokenError> {
@@ -319,13 +321,19 @@ impl TokenBackend for WorkerToken {
         }
     }
 
-    fn login(&self, pin: Zeroizing<String>) -> Result<(), TokenError> {
+    fn login(&self, pin: Zeroizing<String>) -> Result<(), LoginError> {
         let mut hex = Zeroizing::new(vec![0; pin.len() * 2]);
         hex::encode_to_slice(pin.as_bytes(), &mut hex).expect("the buffer is twice the PIN");
         let hex = String::from_utf8(std::mem::take(&mut *hex)).expect("hex is ASCII");
-        self.call_done(&Request::Login {
+        let request = Request::Login {
             pin: Zeroizing::new(hex),
-        })
+        };
+        match self.call(&request)? {
+            Reply::Done => Ok(()),
+            Reply::WrongPin => Err(LoginError::WrongPin),
+            Reply::PinLocked => Err(LoginError::Locked),
+            _ => Err(TokenError(OUT_OF_TURN.into()).into()),
+        }
     }
 
     fn sign(
@@ -490,7 +498,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn refuses_unreadable_out_of_turn_or_oversized_replies() {
-        let opened = r#"echo '{"Ok":{"Opened":{"pin_pad":false,"pin_warning":null}}}'"#;
+        let opened = r#"echo '{"Ok":{"Opened":{"pin_pad":false}}}'"#;
         let open = |name: &str, replies: &[&str]| {
             WorkerToken::open(
                 &fake_worker(name, replies),
@@ -531,8 +539,26 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            token.login(Zeroizing::new("1234".into())).unwrap_err().0,
+            token
+                .login(Zeroizing::new("1234".into()))
+                .unwrap_err()
+                .to_string(),
             OUT_OF_TURN
         );
+        // A wrong or locked PIN arrives typed, whatever the driver's text.
+        let token = open(
+            "refused",
+            &[
+                opened,
+                r#"echo '{"Ok":"WrongPin"}'"#,
+                r#"echo '{"Ok":"PinLocked"}'"#,
+                r#"echo '{"Err":"The token refused the PIN"}'"#,
+            ],
+        )
+        .unwrap();
+        let login = || token.login(Zeroizing::new("1234".into())).unwrap_err();
+        assert!(matches!(login(), LoginError::WrongPin));
+        assert!(matches!(login(), LoginError::Locked));
+        assert!(matches!(login(), LoginError::Other(_)));
     }
 }

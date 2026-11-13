@@ -17,7 +17,7 @@ const keyseal = createKeySeal({
   }),
   origin: "https://dash.example.org", // https on a domain name; see allowInsecureOrigin below
   basePath: "/api/keyseal", // job URLs are <origin><basePath>/v1/jobs/<token>
-  minHelperVersion: "1.0.0", // optional: older helpers get 426
+  minHelperVersion: "0.3.0", // optional: older helpers get 426
   branding: {
     // optional: served as /.well-known/keyseal.json
     name: "Example Trust",

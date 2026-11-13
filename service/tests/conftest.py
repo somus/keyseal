@@ -17,7 +17,7 @@ from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 from pyhanko.pdf_utils import generic
 from pyhanko.pdf_utils.incremental_writer import IncrementalPdfFileWriter
 from pyhanko.pdf_utils.writer import PdfFileWriter
-from pyhanko.sign import signers, timestamps
+from pyhanko.sign import fields, signers, timestamps
 from fastapi.testclient import TestClient
 from pyhanko_certvalidator.registry import SimpleCertificateStore
 
@@ -264,6 +264,43 @@ def blank_pdf() -> bytes:
         }
     )
     writer.insert_page(page)
+    out = io.BytesIO()
+    writer.write(out)
+    return out.getvalue()
+
+
+def certified_no_changes(pdf: bytes, pki: Pki) -> bytes:
+    """`pdf` certified (DocMDP) so that no later change is allowed."""
+    writer = IncrementalPdfFileWriter(io.BytesIO(pdf))
+    out = signers.sign_pdf(
+        writer,
+        signers.PdfSignatureMetadata(
+            field_name="Author", certify=True, docmdp_permissions=fields.MDPPerm.NO_CHANGES
+        ),
+        signer=pki.signer(),
+    )
+    return out.getvalue()
+
+
+def encrypted_pdf() -> bytes:
+    """A one-page PDF with an empty signature field `Signer_a`, encrypted
+    with an owner password and an empty user password, so it opens without one."""
+    writer = PdfFileWriter()
+    writer.insert_page(
+        generic.DictionaryObject(
+            {
+                generic.NameObject("/Type"): generic.NameObject("/Page"),
+                generic.NameObject("/MediaBox"): generic.ArrayObject(
+                    [generic.NumberObject(n) for n in (0, 0, 595, 842)]
+                ),
+                generic.NameObject("/Resources"): generic.DictionaryObject(),
+            }
+        )
+    )
+    fields.append_signature_field(
+        writer, fields.SigFieldSpec(sig_field_name="Signer_a", on_page=0, box=(300, 600, 547, 672))
+    )
+    writer.encrypt("owner-password", "")
     out = io.BytesIO()
     writer.write(out)
     return out.getvalue()

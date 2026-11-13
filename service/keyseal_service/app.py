@@ -268,6 +268,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             out = await _validating(
                 lambda settings: remote_sign.finalize(pdf, tsa, settings.context())
             )
+        except remote_sign.RemoteSignError as error:
+            raise HTTPException(422, str(error)) from error
         except Exception as error:  # noqa: BLE001 - reported, the PDF stays as it was
             log.exception("Couldn't finalise")
             raise HTTPException(422, f"Couldn't finalise: {type(error).__name__}") from error
@@ -282,6 +284,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             out = await _validating(
                 lambda settings: remote_sign.retimestamp(pdf, tsa, settings.context())
             )
+        except remote_sign.RemoteSignError as error:
+            raise HTTPException(422, str(error)) from error
         except Exception as error:  # noqa: BLE001 - reported, the PDF stays as it was
             log.exception("Couldn't timestamp")
             raise HTTPException(422, f"Couldn't timestamp: {type(error).__name__}") from error

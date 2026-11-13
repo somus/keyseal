@@ -39,6 +39,8 @@ from pyhanko_certvalidator import ValidationContext
 from pyhanko.stamp import BaseStampStyle
 from pyhanko_certvalidator.registry import SimpleCertificateStore
 
+from .prepare import ENCRYPTED, unsignable
+
 #: Room for the CMS: the signature, the certificate chain and the TSA token.
 #: An Indian DSC chain with a TSA token already needs about 13 KB.
 BYTES_RESERVED = 65_536
@@ -196,9 +198,13 @@ async def start(
     chain = [load_cert(c) for c in chain_b64]
     try:
         reader = PdfFileReader(io.BytesIO(pdf))
-        names = [f[0] for f in fields.enumerate_sig_fields(reader, filled_status=False)]
+        reason = unsignable(reader)
+        found = [] if reason else fields.enumerate_sig_fields(reader, filled_status=False)
+        names = [f[0] for f in found]
     except Exception as error:  # noqa: BLE001 - a refusal, not a service failure
         raise RemoteSignError("Not a readable PDF") from error
+    if reason is not None:
+        raise RemoteSignError(reason)
     if field_name not in names:
         raise RemoteSignError(f"The PDF has no empty field {field_name}")
     writer = IncrementalPdfFileWriter(io.BytesIO(pdf))
@@ -361,7 +367,10 @@ async def finalize(
 ) -> bytes:
     """Adds revocation data for every signature and a document timestamp (B-LTA)."""
     buf = io.BytesIO(pdf)
-    count = len(PdfFileReader(io.BytesIO(pdf)).embedded_signatures)
+    reader = PdfFileReader(io.BytesIO(pdf))
+    if reader.encrypted:
+        raise RemoteSignError(ENCRYPTED)
+    count = len(reader.embedded_signatures)
     for index in range(count):
         reader = PdfFileReader(buf)
         sig = reader.embedded_signatures[index]
@@ -386,6 +395,8 @@ async def retimestamp(
 ) -> bytes:
     """Adds revocation data for the last timestamp and a new document timestamp."""
     reader = PdfFileReader(io.BytesIO(pdf))
+    if reader.encrypted:
+        raise RemoteSignError(ENCRYPTED)
     out = io.BytesIO()
     await signers.PdfTimeStamper(timestamper).async_update_archival_timestamp_chain(
         reader, validation_context, output=out

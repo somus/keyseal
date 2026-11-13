@@ -11,16 +11,17 @@ import hashlib
 import hmac
 import io
 import logging
+import ssl
 from collections.abc import AsyncIterator, Collection
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
+from functools import cache
 from pathlib import Path
 from typing import Any, Literal
 
 from asn1crypto import algos, keys, pem, x509
 from cryptography.exceptions import InvalidSignature
-from oscrypto import trust_list
 from pyhanko.pdf_utils import generic
 from pyhanko.pdf_utils.form_tools import enumerate_fields_in
 from pyhanko.pdf_utils.misc import PdfReadError
@@ -109,6 +110,14 @@ def load_trust_roots(directory: Path | None) -> list[x509.Certificate]:
         except Exception:  # noqa: BLE001 - a bad file must not stop the service
             log.warning("trust root unreadable: %s", path.name)
     return roots
+
+
+@cache
+def system_trust_roots() -> tuple[x509.Certificate, ...]:
+    """The platform's trusted roots as OpenSSL finds them by default
+    (`SSL_CERT_FILE`, or the image's ca-certificates bundle), read once."""
+    context = ssl.create_default_context()
+    return tuple(x509.Certificate.load(der) for der in context.get_ca_certs(binary_form=True))
 
 
 def split_trust_roots(
@@ -228,7 +237,7 @@ class ValidationSettings:
         # isn't. The CRLs and OCSP responses a `known` context holds carry
         # over, so a revocation it found still counts if a fetch fails now.
         return ValidationContext(
-            trust_roots=[cert for cert, _, _ in trust_list.get_list()] + self.trust_roots,
+            trust_roots=[*system_trust_roots(), *self.trust_roots],
             other_certs=self.intermediates,
             signature_validator=SIGNATURE_VALIDATOR,
             allow_fetching=self.allow_fetching,

@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import io
+import os
+import subprocess
+import sys
 import threading
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -843,3 +846,22 @@ def test_long_term_archive_finalises_and_retimestamps_offline(
         (True, True),
         (True, True),
     ]
+
+
+def test_system_roots_come_from_openssl_without_oscrypto(pki: Pki, tmp_path: Path) -> None:
+    bundle = pki.write_ca(tmp_path)
+    script = (
+        "import sys\n"
+        "from keyseal_service.validate import ValidationSettings, system_trust_roots\n"
+        "ValidationSettings(trust_roots=[]).context()\n"
+        "print([root.sha256.hex() for root in system_trust_roots()])\n"
+        "print('oscrypto' in sys.modules)\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        env={**os.environ, "SSL_CERT_FILE": str(bundle), "SSL_CERT_DIR": str(tmp_path / "none")},
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert result.stdout.splitlines() == [str([pki.ca_asn1.sha256.hex()]), "False"]

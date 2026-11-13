@@ -2,13 +2,17 @@ name: checks
 
 on:
   push:
+    branches: [main]
   pull_request:
 
 permissions:
   contents: read
 
+# On main each commit has a group of its own, so no run there is cancelled
+# or dropped from the queue: a release needs a passing run for the commit it
+# publishes (scripts/ci/ci-passed.sh).
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
   cancel-in-progress: true
 
 jobs:

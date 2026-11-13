@@ -94,7 +94,7 @@ def router(settings):
 
 ## Docker
 
-Released images are published as `ghcr.io/somus/keyseal-service`, for linux/amd64 and linux/arm64, tagged with the full version and with major.minor; pin the digest for an image that can't change ([docs/releasing-service.md](../docs/releasing-service.md)).
+Released images are published as `ghcr.io/somus/keyseal-service`, for linux/amd64 and linux/arm64, tagged with the full version and with major.minor; pin the digest for an image that can't change ([docs/releasing.md](../docs/releasing.md#signing-service-image)).
 
 ```bash
 docker run --rm -p 8080:8080 \

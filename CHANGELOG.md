@@ -19,6 +19,11 @@ lines under the new version with the release date.
 
 ### [Unreleased][helper-unreleased]
 
+#### Added
+
+- Every release asset has a build provenance attestation, which
+  `gh attestation verify <file> --repo somus/keyseal` checks.
+
 #### Changed
 
 - A wrong PIN on a PKCS#11 token no longer ends the job: the window clears

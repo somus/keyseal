@@ -131,14 +131,18 @@ pub fn launch(
         std::process::exit(1);
     }
     // GPUI panics when it can't set up the GPU, before any window opens;
-    // record that where a browser-started helper can be diagnosed, and the
-    // job thread's panics with where they happened. A panic's message
-    // must never carry the link or the PIN, which the log never holds.
+    // record that where a browser-started helper can be diagnosed. The job
+    // thread's panics are recorded by where they happened only: their
+    // message could quote the link, which the log never holds.
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         match std::thread::current().name() {
             Some("main") => log(&format!("KeySeal stopped: {info}")),
-            Some(JOB_THREAD) => log(&format!("The job stopped: {info}")),
+            Some(JOB_THREAD) => {
+                if let Some(location) = info.location() {
+                    log(&format!("The job stopped at {location}"));
+                }
+            }
             _ => {}
         }
         default_hook(info);

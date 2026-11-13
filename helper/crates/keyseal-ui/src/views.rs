@@ -419,6 +419,18 @@ fn banner(
         .test_support()
 }
 
+/// Under the PIN field when the token refused the PIN entered last.
+fn wrong_pin_line(cx: &App) -> impl IntoElement {
+    div()
+        .id("pin-wrong")
+        .role(Role::Alert)
+        .aria_label(strings::PIN_WRONG)
+        .text_sm()
+        .text_color(cx.theme().danger)
+        .child(strings::PIN_WRONG)
+        .test_support()
+}
+
 fn insecure_banner(cx: &App) -> impl IntoElement {
     banner(
         "insecure",
@@ -1013,6 +1025,7 @@ impl JobWindow {
             Stage::Pin {
                 pin_pad,
                 warning,
+                wrong_pin,
                 digests,
                 ..
             } => body
@@ -1044,6 +1057,7 @@ impl JobWindow {
                                 .child(note(text, cx))
                                 .test_support(),
                         )
+                        .when(*wrong_pin, |this| this.child(wrong_pin_line(cx)))
                     } else {
                         this.child(
                             v_flex()
@@ -1058,7 +1072,8 @@ impl JobWindow {
                                                 .size_4()
                                                 .text_color(cx.theme().muted_foreground),
                                         ),
-                                ),
+                                )
+                                .when(*wrong_pin, |this| this.child(wrong_pin_line(cx))),
                         )
                     }
                 })
@@ -1885,6 +1900,8 @@ pub const GALLERY_VIEWS: &[&str] = &[
     "pin-opaque",
     "pin-pad",
     "pin-warning",
+    "pin-wrong",
+    "pin-final-try",
     "pin-batch",
     "pin-batch-details",
     "confirm",
@@ -1895,6 +1912,7 @@ pub const GALLERY_VIEWS: &[&str] = &[
     "progress-certificate",
     "message",
     "message-driver",
+    "message-pin-locked",
     "busy-message",
     "settings",
     "settings-empty",
@@ -1969,13 +1987,15 @@ pub(crate) fn gallery(view: &str, cx: &mut App) {
         signer: "Asha Rao".into(),
         documents: vec!["Circular 2026/14: Operation of bank accounts".into()],
     };
-    let pin = |certificate: Option<&str>, digest: Option<&str>, pin_pad, warning| Stage::Pin {
-        certificate: certificate.map(Into::into),
-        digests: digest.map(|digest| vec![digest.into()]),
-        pin_pad,
-        warning,
-        reply: mpsc::channel().0,
-    };
+    let pin =
+        |certificate: Option<&str>, digest: Option<&str>, pin_pad, warning, wrong_pin| Stage::Pin {
+            certificate: certificate.map(Into::into),
+            digests: digest.map(|digest| vec![digest.into()]),
+            pin_pad,
+            warning,
+            wrong_pin,
+            reply: mpsc::channel().0,
+        };
     let mut windows = Windows::new(|_| {});
     // pin-details: the signer chose to always see the technical details.
     set_always_show_details(matches!(view, "pin-details" | "pin-batch-details"), cx);
@@ -1999,6 +2019,7 @@ pub(crate) fn gallery(view: &str, cx: &mut App) {
                     digests: Some(digests),
                     pin_pad: false,
                     warning: None,
+                    wrong_pin: false,
                     reply: mpsc::channel().0,
                 },
             },
@@ -2023,14 +2044,16 @@ pub(crate) fn gallery(view: &str, cx: &mut App) {
             );
             return;
         }
-        "message" | "message-driver" => {
-            let message = if view == "message" {
-                "The signing service refused the signature: the certificate has expired.".into()
-            } else {
-                format!(
+        "message" | "message-driver" | "message-pin-locked" => {
+            let message = match view {
+                "message" => {
+                    "The signing service refused the signature: the certificate has expired.".into()
+                }
+                "message-driver" => format!(
                     "{} Install your token's driver, then try again.",
                     modules::NO_DRIVER
-                )
+                ),
+                _ => keyseal_core::token::PIN_LOCKED.into(),
             };
             windows.message(strings::ERROR_HEADING, message, None, cx);
             return;
@@ -2091,14 +2114,18 @@ pub(crate) fn gallery(view: &str, cx: &mut App) {
         // pin-plain: a brand without a logo; pin-opaque: a brand that asks
         // for opaque windows.
         "pin" | "pin-details" | "pin-plain" | "pin-opaque" => {
-            pin(Some(CERTIFICATE), Some(DIGEST), false, None)
+            pin(Some(CERTIFICATE), Some(DIGEST), false, None, false)
         }
-        "pin-pad" => pin(Some(CERTIFICATE), Some(DIGEST), true, None),
-        "pin-warning" => pin(
-            None,
-            None,
+        "pin-pad" => pin(Some(CERTIFICATE), Some(DIGEST), true, None, false),
+        "pin-warning" => pin(None, None, false, Some(strings::PIN_COUNT_LOW), false),
+        // The token refused the PIN just entered, then says one try is left.
+        "pin-wrong" => pin(Some(CERTIFICATE), Some(DIGEST), false, None, true),
+        "pin-final-try" => pin(
+            Some(CERTIFICATE),
+            Some(DIGEST),
             false,
-            Some("A wrong PIN was entered recently; few attempts are left."),
+            Some(strings::PIN_FINAL_TRY),
+            true,
         ),
         "confirm" => Stage::Confirm {
             certificate: CERTIFICATE.into(),
@@ -2367,6 +2394,7 @@ mod tests {
                             digests: Some(digests),
                             pin_pad: true,
                             warning: None,
+                            wrong_pin: false,
                             reply: mpsc::channel().0,
                         },
                     },
@@ -2396,6 +2424,7 @@ mod tests {
                         digests: Some(vec![DIGEST.into()]),
                         pin_pad: false,
                         warning: Some("One PIN attempt is left before the token locks."),
+                        wrong_pin: false,
                         reply,
                     },
                 },
@@ -2498,6 +2527,7 @@ mod tests {
                         digests: None,
                         pin_pad: false,
                         warning: None,
+                        wrong_pin: false,
                         reply,
                     },
                 },
@@ -2511,6 +2541,57 @@ mod tests {
         })
         .unwrap();
         assert_eq!(answer.recv(), Err(mpsc::RecvError));
+    }
+
+    /// After a wrong PIN the same window asks again: the field is empty and
+    /// focused, the message sits by it, and the token's warning shows.
+    #[gpui_kit::test]
+    fn a_wrong_pin_is_asked_for_again_in_the_same_window(cx: &mut TestAppContext) {
+        let mut windows = setup(cx);
+        let pin = |wrong_pin, warning, reply| Request::Job {
+            job: job(),
+            stage: Stage::Pin {
+                certificate: Some("CN=A. Signer".into()),
+                digests: Some(vec![DIGEST.into()]),
+                pin_pad: false,
+                warning,
+                wrong_pin,
+                reply,
+            },
+        };
+        let (reply, answer) = mpsc::channel();
+        cx.update(|cx| windows.handle(pin(false, None, reply), cx));
+        let handle = open_windows(cx)[0];
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            assert!(window.try_find("pin-wrong").is_none());
+            window.input("0000", cx);
+            window.press("enter", cx);
+        })
+        .unwrap();
+        assert_eq!(answer.recv().unwrap().unwrap().as_str(), "0000");
+
+        let (reply, answer) = mpsc::channel();
+        cx.update(|cx| windows.handle(pin(true, Some(strings::PIN_FINAL_TRY), reply), cx));
+        assert_eq!(open_windows(cx), [handle]);
+        pass_input_delay(cx);
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            assert_eq!(window.find("pin-wrong").label(), Some(strings::PIN_WRONG));
+            assert_eq!(
+                window.find("pin-warning").label(),
+                Some(strings::PIN_FINAL_TRY)
+            );
+            assert_eq!(window.find("pin").focused(), Some(true));
+            // The field was cleared, so there is nothing to submit yet.
+            assert_eq!(window.find("submit").disabled(), Some(true));
+            window.input("1234", cx);
+            window.render_frame(cx);
+            assert_ne!(window.find("submit").disabled(), Some(true));
+            window.press("enter", cx);
+        })
+        .unwrap();
+        assert_eq!(answer.recv().unwrap().unwrap().as_str(), "1234");
     }
 
     /// From the certificate store the digest confirmation, or the enrol
@@ -2779,6 +2860,7 @@ mod tests {
                         digests: Some(vec![DIGEST.into()]),
                         pin_pad: false,
                         warning: None,
+                        wrong_pin: false,
                         reply,
                     },
                 },
@@ -2824,6 +2906,7 @@ mod tests {
                         digests: Some(digests.clone()),
                         pin_pad: false,
                         warning: None,
+                        wrong_pin: false,
                         reply,
                     },
                 },
@@ -2871,6 +2954,7 @@ mod tests {
                         digests: None,
                         pin_pad: false,
                         warning: None,
+                        wrong_pin: false,
                         reply,
                     },
                 },
@@ -2941,6 +3025,7 @@ mod tests {
                         digests: Some(vec![DIGEST.into()]),
                         pin_pad: false,
                         warning: None,
+                        wrong_pin: false,
                         reply,
                     },
                 },
@@ -2975,6 +3060,7 @@ mod tests {
                 digests: None,
                 pin_pad: false,
                 warning: None,
+                wrong_pin: false,
                 reply,
             },
         };

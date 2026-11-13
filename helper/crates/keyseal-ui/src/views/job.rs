@@ -122,7 +122,7 @@ fn document_list(titles: &[String], digests: Option<&[String]>, cx: &App) -> Any
 }
 
 /// The window for the rest of the job, one [`Stage`] at a time.
-pub(crate) struct JobWindow {
+pub(super) struct JobWindow {
     job: Job,
     /// The brand's logo, decoded when the job arrives so the first frame
     /// shows it.

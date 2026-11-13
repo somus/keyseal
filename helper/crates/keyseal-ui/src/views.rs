@@ -185,9 +185,8 @@ impl Windows {
         self.busy = Some(self.message(strings::BUSY_HEADING, strings::BUSY.into(), None, cx));
     }
 
-    /// The job is over: closes every window, and the next job starts afresh.
-    /// Closes the job's windows. Settings, which the signer may have opened
-    /// from an error, stays open.
+    /// The job is over: closes its windows, and the next job starts afresh.
+    /// Settings, which the signer may have opened from an error, stays open.
     pub(crate) fn close_all(&mut self, cx: &mut App) {
         let settings = settings_window(cx);
         for handle in cx.windows() {

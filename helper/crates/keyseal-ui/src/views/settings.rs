@@ -55,7 +55,6 @@ pub(crate) fn open_settings(config_dir: PathBuf, log: fn(&str), probe: Probe, cx
 /// keep the platform's accent, or the integrator's.
 const BRAND: u32 = 0x5e5686;
 
-/// A section's heading above its group.
 /// The About group's first row: KeySeal's mark, name and version.
 fn about(cx: &App) -> AnyElement {
     h_flex()
@@ -97,6 +96,7 @@ fn about(cx: &App) -> AnyElement {
         .into_any_element()
 }
 
+/// A section's heading above its group.
 fn section(heading: &'static str, cx: &App) -> impl IntoElement {
     div()
         .px_1()

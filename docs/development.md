@@ -114,3 +114,4 @@ The app icons are generated from the SVGs in [brand/](../brand/) by `scripts/mak
 - Commits follow Conventional Commits (`fix(helper): ...`, `feat(server): ...`, `docs: ...`); see [CONTRIBUTING.md](../CONTRIBUTING.md).
 - A protocol change updates `spec/`, the helper, the packages and the service in the same pull request.
 - Windows strings live in `helper/crates/keyseal-ui/src/strings.rs`, in plain English.
+

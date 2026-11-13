@@ -1,4 +1,5 @@
 //! The protocol-speaking core of the KeySeal helper: link parsing, origin
+// Measurement only, do not merge.
 //! rules, trust on first use, the manifest, the job client, SignedAttributes
 //! checks, PKCS#11 signing with the system certificate store as a fallback
 //! (CNG on Windows, CryptoTokenKit on macOS), and the sign and enrol state

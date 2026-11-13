@@ -579,7 +579,11 @@ pub fn relaunch_if_staged(args: &[&str], log: fn(&str)) -> Option<ExitCode> {
     if std::env::var_os(RELAUNCHED).is_some() {
         // This helper has just replaced the one that started it.
         #[cfg(windows)]
-        crate::install::forget_cached_name(&exe, &mut crate::install::System);
+        if let Err(message) = crate::install::updated(&exe) {
+            log(&format!(
+                "KeySeal wasn't registered again after the update: {message}"
+            ));
+        }
         return None;
     }
     let dir = crate::config_dir().ok()?.join(STAGED);

@@ -24,6 +24,10 @@ lines under the new version with the release date.
 - Edge and Chrome on Windows name KeySeal, not "keyseal", for a helper that
   was first installed before 0.4.0. Windows had kept the old name in its
   cache; `keyseal install` and the first start after an update now clear it.
+- On Windows, the first start after an update registers the helper again,
+  as `keyseal install` does. Apps (Add or remove programs) shows the new
+  version instead of the one first installed, and a helper installed before
+  0.4.0 gets the Start menu shortcut and the Apps entry.
 
 ### [0.4.0][helper-0.4.0] - 2026-11-13
 

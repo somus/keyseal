@@ -78,15 +78,20 @@ Check ($info.FileDescription -eq 'KeySeal') "FileDescription is $($info.FileDesc
 Check ($info.ProductVersion -eq $version) "ProductVersion is $($info.ProductVersion)."
 
 # Started as an update starts the helper it has just installed: with a link
-# and KEYSEAL_UPDATED. Headless, so the link, which names no job, fails
-# without a window.
+# and KEYSEAL_UPDATED. It registers itself again, which here restores what
+# an update leaves stale and what an earlier version's install didn't add.
+# Headless, so the link, which names no job, fails without a window.
 $names.SetValue($name, 'keyseal')
+Set-ItemProperty $apps DisplayVersion '0.0.0'
+Remove-Item $shortcut
 $env:KEYSEAL_UPDATED = '1'
 $env:KEYSEAL_HEADLESS = '1'
 & $exe 'keyseal://updated' | Out-Null
 Check ($LASTEXITCODE -ne 0) 'A link that names no job was run.'
 Remove-Item Env:KEYSEAL_UPDATED, Env:KEYSEAL_HEADLESS
 CheckNameForgotten 'an update'
+Check ((Get-ItemProperty $apps).DisplayVersion -eq $version) 'An update left the Apps entry at the old version.'
+Check (Test-Path $shortcut) 'An update did not put the Start menu shortcut back.'
 
 Keyseal $exe 'uninstall' | Out-Null
 Check (-not (Test-Path $protocol)) "$protocol is still there."

@@ -19,6 +19,8 @@ lines under the new version with the release date.
 
 ### [Unreleased][helper-unreleased]
 
+### [0.4.0][helper-0.4.0] - 2026-11-13
+
 #### Added
 
 - Every release asset has a build provenance attestation, which
@@ -209,6 +211,8 @@ lines under the new version with the release date.
 
 ### [Unreleased][service-unreleased]
 
+### [0.4.0][service-0.4.0] - 2026-11-13
+
 #### Added
 
 - `SIGNING_LOG_LEVEL` sets the level of the service's own log records,
@@ -329,6 +333,8 @@ lines under the new version with the release date.
 
 ### [Unreleased][server-unreleased]
 
+### [0.5.0][server-0.5.0] - 2026-11-13
+
 #### Added
 
 - `keyseal.sweep()` expires old jobs and deletes their blobs, as creating a
@@ -423,6 +429,8 @@ lines under the new version with the release date.
 
 ### [Unreleased][browser-unreleased]
 
+### [0.2.1][browser-0.2.1] - 2026-11-13
+
 #### Fixed
 
 - `watchJob` rejects with a `TypeError` for a status without a known
@@ -501,7 +509,8 @@ The catalogue is published as the `catalogue` release; its version is the
   mToken CryptoID, InnaIT Key (PK32XX), SafeNet eToken 5110 and eToken PRO
   72K / SafeNet eToken 5100, and TrustKey.
 
-[helper-unreleased]: https://github.com/somus/keyseal/compare/helper-v0.3.0...HEAD
+[helper-unreleased]: https://github.com/somus/keyseal/compare/helper-v0.4.0...HEAD
+[helper-0.4.0]: https://github.com/somus/keyseal/releases/tag/helper-v0.4.0
 [helper-0.3.0]: https://github.com/somus/keyseal/releases/tag/helper-v0.3.0
 [helper-0.2.0]: https://github.com/somus/keyseal/releases/tag/helper-v0.2.0
 [helper-0.1.4]: https://github.com/somus/keyseal/releases/tag/helper-v0.1.4
@@ -509,7 +518,8 @@ The catalogue is published as the `catalogue` release; its version is the
 [helper-0.1.2]: https://github.com/somus/keyseal/releases/tag/helper-v0.1.2
 [helper-0.1.1]: https://github.com/somus/keyseal/releases/tag/helper-v0.1.1
 [helper-0.1.0]: https://github.com/somus/keyseal/releases/tag/helper-v0.1.0
-[service-unreleased]: https://github.com/somus/keyseal/compare/service-v0.3.0...HEAD
+[service-unreleased]: https://github.com/somus/keyseal/compare/service-v0.4.0...HEAD
+[service-0.4.0]: https://github.com/somus/keyseal/compare/service-v0.3.0...service-v0.4.0
 [service-0.3.0]: https://github.com/somus/keyseal/compare/service-v0.2.3...service-v0.3.0
 [service-0.2.3]: https://github.com/somus/keyseal/compare/service-v0.2.2...service-v0.2.3
 [service-0.2.2]: https://github.com/somus/keyseal/compare/service-v0.2.1...service-v0.2.2
@@ -517,12 +527,14 @@ The catalogue is published as the `catalogue` release; its version is the
 [service-0.2.0]: https://github.com/somus/keyseal/compare/service-v0.1.1...service-v0.2.0
 [service-0.1.1]: https://github.com/somus/keyseal/compare/service-v0.1.0...service-v0.1.1
 [service-0.1.0]: https://github.com/somus/keyseal/tree/service-v0.1.0
-[server-unreleased]: https://github.com/somus/keyseal/compare/server-v0.4.0...HEAD
+[server-unreleased]: https://github.com/somus/keyseal/compare/server-v0.5.0...HEAD
+[server-0.5.0]: https://github.com/somus/keyseal/compare/server-v0.4.0...server-v0.5.0
 [server-0.4.0]: https://github.com/somus/keyseal/compare/server-v0.3.0...server-v0.4.0
 [server-0.3.0]: https://github.com/somus/keyseal/compare/server-v0.2.0...server-v0.3.0
 [server-0.2.0]: https://github.com/somus/keyseal/compare/server-v0.1.1...server-v0.2.0
 [server-0.1.1]: https://github.com/somus/keyseal/tree/server-v0.1.1
-[browser-unreleased]: https://github.com/somus/keyseal/compare/browser-v0.2.0...HEAD
+[browser-unreleased]: https://github.com/somus/keyseal/compare/browser-v0.2.1...HEAD
+[browser-0.2.1]: https://github.com/somus/keyseal/compare/browser-v0.2.0...browser-v0.2.1
 [browser-0.2.0]: https://github.com/somus/keyseal/compare/browser-v0.1.3...browser-v0.2.0
 [browser-0.1.3]: https://github.com/somus/keyseal/compare/browser-v0.1.2...browser-v0.1.3
 [browser-0.1.2]: https://github.com/somus/keyseal/compare/browser-v0.1.1...browser-v0.1.2

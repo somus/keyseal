@@ -8,7 +8,7 @@
 | `packages/server/` | `@keyseal/server` | Bun, TypeScript |
 | `packages/browser/` | `@keyseal/browser` | Bun, TypeScript |
 | `service/` | Signing service | Python 3.12+, uv |
-| `catalogue/` | Driver catalogue and its build and signing tools | Bun, TypeScript (standalone package) |
+| `catalogue/` | Driver catalogue and its build and signing tools | Bun, TypeScript |
 | `examples/reference-server/` | Reference integrator backend | Bun |
 | `spec/` | Protocol specification and OpenAPI | |
 | `scripts/` | Test certificates and the CI scripts | bash |
@@ -30,8 +30,7 @@ TypeScript, from the repository root:
 
 ```sh
 bun install --frozen-lockfile
-(cd catalogue && bun install --frozen-lockfile)
-bun run check:types && (cd catalogue && bun run check:types)
+bun run check:types
 bun run lint
 bun run format:check
 bun run test

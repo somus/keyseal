@@ -100,4 +100,4 @@ bun tools/verify.ts /tmp/keyseal-catalogue-dev.pub.pem
 
 ## Package
 
-`@keyseal/catalogue-tools` is a standalone private package with its own `package.json` and lockfile. The root workspaces glob covers `packages/*` and `examples/*` only, so it does not include `catalogue/`. Run `bun install` in this directory before `bun test` here or from the repository root.
+`@keyseal/catalogue-tools` is a private package in the root Bun workspace, locked in the root `bun.lock`. `bun install` anywhere in the repository installs its dependencies, and the root `bun run check:types` and `bun run test` include it.

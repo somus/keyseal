@@ -26,16 +26,10 @@ jobs:
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.bun/install/cache
-          key: bun-${{ runner.os }}-${{ hashFiles('bun.lock', 'catalogue/bun.lock') }}
+          key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
           restore-keys: bun-${{ runner.os }}-
       - run: bun install --frozen-lockfile
-      # The catalogue tools are a standalone package outside the root
-      # workspaces, and the root test run includes their tests.
-      - run: bun install --frozen-lockfile
-        working-directory: catalogue
       - run: bun run check:types
-      - run: bun run check:types
-        working-directory: catalogue
       - run: bun run lint
       - run: bun run format:check
       - run: bun run test

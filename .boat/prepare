@@ -2,8 +2,5 @@
 # After a checkout: dependencies, and the gallery that capture opens.
 set -euo pipefail
 bun install --frozen-lockfile
-# The catalogue tools are outside the root workspaces, and the root test run
-# includes their tests.
-(cd catalogue && bun install --frozen-lockfile)
 cd helper
 cargo build -q -p keyseal-ui --example gallery --features gallery

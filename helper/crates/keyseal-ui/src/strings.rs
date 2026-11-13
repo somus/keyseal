@@ -38,6 +38,9 @@ strings! {
     PIN_PLACEHOLDER = "Enter your token's PIN";
     PIN_PAD = "Enter your PIN on the token's keypad when it asks.";
     PIN_PAD_BATCH = "Enter your PIN on the token's keypad when it asks. Some tokens ask once for each document.";
+    PIN_WRONG = "That PIN isn't right. Check it and try again.";
+    PIN_COUNT_LOW = "A wrong PIN was entered before, so only a few tries are left before your token locks.";
+    PIN_FINAL_TRY = "One more wrong PIN will lock your token. If you aren't sure of it, cancel and check it first.";
     DIGEST_NEXT = "You'll check the document once more before it's signed.";
     DIGESTS_NEXT = "You'll check the documents once more before they're signed.";
     ENROL_NOTE = "Your PIN unlocks your token so KeySeal can find your certificate.";

@@ -32,7 +32,16 @@ from keyseal_service.appearance import SignedByStamp, SignedByStampStyle, reason
 from keyseal_service.settings import Settings
 from keyseal_service.validate import ValidationSettings, validate_pdf
 
-from .conftest import AUTH, Pki, blank_pdf, client_for, misstamping
+from .conftest import (
+    AUTH,
+    TOKEN,
+    Pki,
+    blank_pdf,
+    certified_no_changes,
+    client_for,
+    encrypted_pdf,
+    misstamping,
+)
 
 
 def b64(data: bytes) -> str:
@@ -505,3 +514,65 @@ def test_a_long_reason_wraps_to_two_lines() -> None:
     assert len(lines) == 2
     assert lines[1].endswith(" ...")
     assert all(len(line) <= 33 for line in lines)
+
+
+UNSIGNABLE = {
+    "certified": (
+        lambda pki: certified_no_changes(prepared(), pki),
+        "The PDF is certified with no changes allowed, so no signature can be added",
+        ["/prepare", "/sign/start"],
+    ),
+    "encrypted": (
+        lambda pki: encrypted_pdf(),
+        "The PDF is encrypted; send a copy without a password or other protection",
+        ["/prepare", "/sign/start", "/finalize", "/retimestamp"],
+    ),
+}
+
+
+@pytest.mark.parametrize(
+    ("kind", "path"), [(kind, path) for kind, (_, _, paths) in UNSIGNABLE.items() for path in paths]
+)
+def test_a_pdf_that_cannot_be_signed_is_refused_with_the_reason(
+    pki: Pki, monkeypatch: pytest.MonkeyPatch, kind: str, path: str
+) -> None:
+    build, message, _ = UNSIGNABLE[kind]
+    pdf = build(pki)
+    monkeypatch.setattr(
+        app_module.timestamps, "HTTPTimeStamper", lambda _url: pki.timestamper(datetime.now(UTC))
+    )
+    client = TestClient(
+        create_app(
+            Settings(
+                token=TOKEN,
+                tsa_url="https://tsa.invalid",
+                validation=ValidationSettings(trust_roots=[pki.ca_asn1]),
+            )
+        ),
+        raise_server_exceptions=False,
+    )
+    if path == "/prepare":
+        response = client.post(
+            path,
+            headers=AUTH,
+            json={"pdf": b64(pdf), "fields": [{"name": "Extra", "page": 0, "box": [0, 0, 9, 9]}]},
+        )
+    elif path == "/sign/start":
+        response = client.post(
+            path,
+            headers=AUTH,
+            json={"pdf": b64(pdf), "fieldName": "Signer_a", "certificate": cert_b64(pki)},
+        )
+    else:
+        response = client.post(path, headers=AUTH, content=pdf)
+    assert response.status_code == 422
+    assert response.json() == {"detail": message}
+
+
+def test_a_certified_pdf_still_takes_revocation_data_and_document_timestamps(pki: Pki) -> None:
+    # PAdES lets a document certified with no changes allowed take a DSS and
+    # document timestamps, so /finalize and /retimestamp don't refuse it.
+    tsa = pki.timestamper(datetime.now(UTC))
+    settings = ValidationSettings(trust_roots=[pki.ca_asn1])
+    final = asyncio.run(finalize(certified_no_changes(prepared(), pki), tsa, settings.context()))
+    assert validate_pdf(final, settings)["status"] == "valid"

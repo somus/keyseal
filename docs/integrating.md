@@ -19,7 +19,7 @@ Run the service image where only your backend can reach it, with a strong bearer
 ```sh
 docker run -p 127.0.0.1:8090:8080 \
   -e SIGNING_SERVICE_TOKEN="$(openssl rand -base64 32)" \
-  ghcr.io/somus/keyseal-service:0.2
+  ghcr.io/somus/keyseal-service:0.3
 ```
 
 It trusts the CCA India roots by default; for another PKI, set `SIGNING_TRUST_ROOTS_DIR` to a directory of its roots and intermediates, or `SIGNING_EXTRA_TRUST_ROOTS_DIR` to trust it alongside them. [service/README.md](../service/README.md) covers its routes, environment, timestamp authority and plugins (extra stamp styles and routes in a derived image).
@@ -41,13 +41,17 @@ export const keyseal = createKeySeal({
     icon: "https://app.example.org/keyseal-logo.png",
     accentColor: "#1f6feb",
   },
-  minHelperVersion: "1.0.0",
+  minHelperVersion: "0.3.0",
 });
 ```
 
 Route requests to `keyseal.handle(request)`; it answers the manifest at `/.well-known/keyseal.json` and the job endpoint under `basePath`, and returns 404 for anything else. The helper calls these routes directly, without your session, so they authenticate by the job token alone.
 
 The adapter stores jobs and blobs (Postgres and S3, for example) and receives the result in `onCompleted`. Its contract, including the atomic `transition` the settle lease relies on, is in [packages/server/README.md](../packages/server/README.md). `createMemoryAdapter` is enough for tests.
+
+Creating a job expires old jobs and deletes their PDFs and signing states. Run `await keyseal.sweep()` from a scheduler, such as a cron job every five minutes, so that also happens when no one is creating jobs, and to clear blobs a failed deletion left behind.
+
+`service` can be any object with `ServiceClient`'s `certificate`, `signStart` and `signFinish` methods, for a proxy, retries or tests; see the server README for the errors it throws.
 
 ### Branding
 
@@ -84,6 +88,8 @@ const { id, link } = await keyseal.createSignJob({
 ```
 
 Return `link` to the page and keep `id` for status checks with `keyseal.status(id)`. The job token in `link` is the helper's credential for the job endpoint; your server never needs it again, so don't store or log it. `expectedCertificateSha256` is strongly recommended: without it, any valid certificate on any token can sign. Each document's `signatureDetails` is optional: its `reason`, `location` and `contactInfo` (up to 200 characters each) appear in the signature panel of PDF viewers, and the built-in stamp shows the reason. An enrol job (`createEnrolJob`) captures the signer's certificate first, so you can pin it on later sign jobs.
+
+`service.prepare` throws a `ServiceError` with status 422 for a PDF no signature can be added to: an encrypted one, even when it opens without a password, or one already certified with no changes allowed. Its message says which, so you can ask for an unprotected copy before creating the job.
 
 ### Several documents at once
 

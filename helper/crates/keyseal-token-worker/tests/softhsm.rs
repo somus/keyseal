@@ -16,7 +16,7 @@ use std::process::{Command, Output, Stdio};
 use std::time::Duration;
 
 use keyseal_core::cms::{DigestAlgorithm, SignatureAlgorithm};
-use keyseal_core::token::TokenBackend;
+use keyseal_core::token::{LoginError, TokenBackend};
 use keyseal_core::worker::{self, Backend, WorkerToken};
 use serde_json::{Value, json};
 use zeroize::Zeroizing;
@@ -142,8 +142,9 @@ fn round_trip(dir: &Path, worker: &Path, module: &Path) {
     assert!(public.contains(&rsa) && public.contains(&p256));
     // The keys are private objects, invisible before login.
     assert!(token.certificates(true).unwrap().is_empty());
+    // A wrong PIN, then the right one in the same session.
     let refused = token.login(Zeroizing::new("0000".into())).unwrap_err();
-    assert!(refused.0.contains("refused the PIN"), "{refused}");
+    assert!(matches!(refused, LoginError::WrongPin), "{refused}");
     token.login(Zeroizing::new(PIN.into())).unwrap();
     assert_eq!(token.certificates(true).unwrap().len(), 3);
     // A job's documents are signed in one request, in the one session; the

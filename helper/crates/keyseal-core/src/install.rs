@@ -8,6 +8,7 @@
 //! - Windows: a copy in `%LOCALAPPDATA%\keyseal`, the scheme under
 //!   `HKCU\Software\Classes\keyseal`, a Start menu shortcut to the
 //!   settings and an entry under Apps that uninstalls.
+//!   The first start after an update registers the copy again.
 //! - Linux: a copy in `~/.local/bin`, its icon and a desktop entry for
 //!   `x-scheme-handler/keyseal`, made the default with `xdg-mime`, that the
 //!   app menu shows too.
@@ -102,6 +103,13 @@ pub fn install() -> Result<(), String> {
 pub fn uninstall() -> Result<(), String> {
     let (local_app_data, programs) = windows_dirs()?;
     uninstall_windows(&local_app_data, &programs, &mut System)
+}
+
+/// On the first start after an update put this helper at `exe`.
+#[cfg(windows)]
+pub(crate) fn updated(exe: &Path) -> Result<(), String> {
+    let (local_app_data, programs) = windows_dirs()?;
+    updated_windows(exe, &local_app_data, &programs, &mut System)
 }
 
 /// `%LOCALAPPDATA%` and the Start menu's Programs folder in `%APPDATA%`.
@@ -228,9 +236,33 @@ const NAME_CACHE: &str =
 /// "keyseal" there. Not waited for: the name is cosmetic, and `reg.exe`
 /// complains when nothing is cached.
 #[cfg(any(windows, test))]
-pub(crate) fn forget_cached_name(exe: &Path, host: &mut dyn Host) {
+fn forget_cached_name(exe: &Path, host: &mut dyn Host) {
     let name = format!("{}.FriendlyAppName", exe.display());
     let _ = host.spawn(&reg(), &["delete", NAME_CACHE, "/v", &name, "/f"]);
+}
+
+/// Where [`install_windows`] puts the helper.
+#[cfg(any(windows, test))]
+fn windows_target(local_app_data: &Path) -> PathBuf {
+    local_app_data.join("keyseal").join("keyseal.exe")
+}
+
+/// Registers the installed copy again after an update replaced it, since
+/// the update only swaps the exe: Apps shows the new version, and a helper
+/// that an earlier version installed gets what this one's install adds. A
+/// copy run from elsewhere isn't installed; Windows only forgets its name.
+#[cfg(any(windows, test))]
+fn updated_windows(
+    exe: &Path,
+    local_app_data: &Path,
+    programs: &Path,
+    host: &mut dyn Host,
+) -> Result<(), String> {
+    if exe != windows_target(local_app_data) {
+        forget_cached_name(exe, host);
+        return Ok(());
+    }
+    install_windows(exe, local_app_data, programs, host).map(drop)
 }
 
 /// Installs to `local_app_data\keyseal\keyseal.exe`, registers it, puts a
@@ -243,7 +275,7 @@ fn install_windows(
     programs: &Path,
     host: &mut dyn Host,
 ) -> Result<PathBuf, String> {
-    let target = local_app_data.join("keyseal").join("keyseal.exe");
+    let target = windows_target(local_app_data);
     copy_binary(source, &target)?;
     // The copy keeps the browser's download mark, which would bring
     // SmartScreen back each time a link opens the helper.
@@ -604,6 +636,41 @@ mod tests {
         );
         assert!(!local.join("keyseal").exists());
         assert!(!programs.join("KeySeal.lnk").exists());
+        let _ = std::fs::remove_dir_all(&local);
+    }
+
+    /// The first start after an update registers the installed copy as an
+    /// install does, and never installs a copy run from elsewhere.
+    #[test]
+    fn registers_the_installed_copy_again_after_an_update() {
+        let local = temp_dir("windows-updated");
+        let programs = local.join("Programs");
+        let installed = windows_target(&local);
+        std::fs::create_dir_all(installed.parent().unwrap()).unwrap();
+        std::fs::write(&installed, b"updated").unwrap();
+
+        let mut host = Recorder::default();
+        updated_windows(&installed, &local, &programs, &mut host).unwrap();
+        let mut install = Recorder::default();
+        install_windows(&installed, &local, &programs, &mut install).unwrap();
+        assert_eq!(host.0, install.0);
+        let version = format!("|DisplayVersion|/t|REG_SZ|/d|{}|/f", crate::VERSION);
+        assert!(host.0.iter().any(|call| call.ends_with(&version)));
+
+        let elsewhere = local.join("Downloads").join("keyseal.exe");
+        std::fs::create_dir_all(elsewhere.parent().unwrap()).unwrap();
+        std::fs::write(&elsewhere, b"portable").unwrap();
+        let mut host = Recorder::default();
+        updated_windows(&elsewhere, &local, &programs, &mut host).unwrap();
+        assert_eq!(
+            host.0,
+            [format!(
+                r"spawn {} delete|{NAME_CACHE}|/v|{}.FriendlyAppName|/f",
+                reg(),
+                elsewhere.display()
+            )]
+        );
+        assert_eq!(std::fs::read(&installed).unwrap(), b"updated");
         let _ = std::fs::remove_dir_all(&local);
     }
 

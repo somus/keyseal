@@ -1,0 +1,27 @@
+#!/bin/bash
+# Builds the keyseal snapshot: GPUI's Linux packages, SoftHSM and OpenSC as in
+# CI, xwd for window shots, the pinned Bun and Rust with warm build caches,
+# and cargo-nextest for per-test results. The helper's windows render on the
+# sandbox's X display through Mesa's software Vulkan.
+set -euo pipefail
+
+sudo apt-get update -q >/dev/null
+sudo DEBIAN_FRONTEND=noninteractive apt-get install -yq \
+  libasound2-dev libfontconfig-dev libvulkan1 libwayland-dev libx11-xcb-dev libxkbcommon-x11-dev \
+  softhsm2 opensc jq x11-apps >/dev/null
+
+bun_version=$(grep -oE '"packageManager": *"bun@[^"]+"' package.json | grep -oE '[0-9.]+')
+curl -fsSL https://bun.sh/install | bash -s "bun-v$bun_version" >/dev/null
+sudo ln -sf "$HOME/.bun/bin/bun" /usr/local/bin/bun
+sudo ln -sf "$HOME/.bun/bin/bun" /usr/local/bin/bunx
+printf 'node_modules/\n' >.boatignore
+echo .boatignore >>.git/info/exclude
+bun install --frozen-lockfile
+
+mkdir -p "$HOME/.local/bin"
+curl -fsSL https://get.nexte.st/latest/linux | tar -xzf - -C "$HOME/.local/bin"
+
+# rust-toolchain.toml installs the pinned toolchain on first use.
+cd helper
+cargo build -q -p keyseal-ui --example gallery --features gallery
+cargo test -q --no-run

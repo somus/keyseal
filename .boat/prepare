@@ -1,0 +1,6 @@
+#!/bin/bash
+# After a checkout: dependencies, and the gallery that capture opens.
+set -euo pipefail
+bun install --frozen-lockfile
+cd helper
+cargo build -q -p keyseal-ui --example gallery --features gallery

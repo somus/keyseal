@@ -1,0 +1,13 @@
+#!/bin/bash
+# Screenshots the helper windows $SCENARIO lists, from the gallery's sample
+# data (README.md).
+set -euo pipefail
+
+shots=$(mktemp)
+while read -r view look appearance; do
+  [[ -z $view || $view == \#* ]] && continue
+  look=${look:-gnome}
+  appearance=${appearance:-light}
+  echo "$view, $look, $appearance: KEYSEAL_GALLERY_LOOK=$look KEYSEAL_GALLERY_APPEARANCE=$appearance exec helper/target/debug/examples/gallery $view" >>"$shots"
+done <"$SCENARIO"
+"$BOAT_KIT/desktop-shots.sh" "$shots"

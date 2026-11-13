@@ -54,6 +54,18 @@ export class JobRefused extends Error {
   }
 }
 
+/**
+ * Thrown by `createSignJob` and `createEnrolJob` for input that breaks one
+ * of their limits; `message` says which. It is still a `TypeError`, and its
+ * class tells it apart from one an adapter throws, such as a failed `fetch`.
+ */
+export class InvalidJobInput extends TypeError {
+  constructor(message: string) {
+    super(message);
+    this.name = "InvalidJobInput";
+  }
+}
+
 export interface KeySealOptions {
   adapter: Adapter;
   service: SigningService;
@@ -235,7 +247,7 @@ export function createKeySeal(options: KeySealOptions): KeySeal {
       expectedCertificateSha256 !== undefined &&
       !SHA256_HEX.test(expectedCertificateSha256)
     ) {
-      throw new TypeError(
+      throw new InvalidJobInput(
         "expectedCertificateSha256 must be 64 hex characters"
       );
     }
@@ -250,14 +262,14 @@ export function createKeySeal(options: KeySealOptions): KeySeal {
         sign.digestAlgorithm !== "sha256" &&
         sign.digestAlgorithm !== "sha384"
       ) {
-        throw new TypeError("digestAlgorithm must be sha256 or sha384");
+        throw new InvalidJobInput("digestAlgorithm must be sha256 or sha384");
       }
       if (
         sign.rsaPadding !== undefined &&
         sign.rsaPadding !== "pkcs1" &&
         sign.rsaPadding !== "pss"
       ) {
-        throw new TypeError("rsaPadding must be pkcs1 or pss");
+        throw new InvalidJobInput("rsaPadding must be pkcs1 or pss");
       }
     }
     await expire();

@@ -18,6 +18,7 @@ export {
 } from "./service.js";
 export {
   createKeySeal,
+  InvalidJobInput,
   JOB_TTL_MS,
   JobRefused,
   MAX_BODY_BYTES,

@@ -1,4 +1,4 @@
-import { checkText } from "./job-input.js";
+import { characters } from "./job-input.js";
 import type { KeySealOptions } from "./keyseal.js";
 import { parseSemver } from "./semver.js";
 
@@ -56,7 +56,11 @@ export function checkOptions(
   }
   const { branding } = options;
   if (branding) {
-    checkText("branding.name", branding.name, 64);
+    const length =
+      typeof branding.name === "string" ? characters(branding.name) : 0;
+    if (length < 1 || length > 64) {
+      throw new TypeError("branding.name must be 1 to 64 characters");
+    }
     if (
       branding.icon !== undefined &&
       new URL(branding.icon).origin !== options.origin

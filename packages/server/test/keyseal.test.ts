@@ -4,6 +4,7 @@ import { constants, createHash, createPrivateKey, sign } from "node:crypto";
 import {
   createMemoryAdapter,
   createKeySeal,
+  InvalidJobInput,
   JOB_TTL_MS,
   JobRefused,
   nodeCertificateInspector,
@@ -2309,6 +2310,27 @@ describe("routing and manifest", () => {
     expect(
       t.signJob({ pdf: new Uint8Array(25 * 1024 * 1024 + 1) })
     ).rejects.toThrow(TypeError);
+  });
+
+  test("invalid job input has its own error, unlike options or an adapter's TypeError", async () => {
+    const t = setup();
+    await expect(t.signJob({ title: "" })).rejects.toThrow(InvalidJobInput);
+    await expect(
+      t.keyseal.createEnrolJob({ reference: "r", signer: "", title: "T" })
+    ).rejects.toThrow(InvalidJobInput);
+    try {
+      setup({ branding: { name: "" } });
+      throw new Error("an empty branding name was accepted");
+    } catch (error) {
+      expect(error).toBeInstanceOf(TypeError);
+      expect(error).not.toBeInstanceOf(InvalidJobInput);
+    }
+    t.adapter.create = async () => {
+      throw new TypeError("fetch failed");
+    };
+    const outage = await t.signJob().catch((error: unknown) => error);
+    expect(outage).toBeInstanceOf(TypeError);
+    expect(outage).not.toBeInstanceOf(InvalidJobInput);
   });
 
   test("validates sign job input at runtime", async () => {

@@ -332,6 +332,10 @@ lines under the new version with the release date.
 - The `service` option takes any object with `ServiceClient`'s
   `certificate`, `signStart` and `signFinish` methods, typed as the new
   `SigningService`.
+- `createSignJob` and `createEnrolJob` throw the new `InvalidJobInput` for
+  input they refuse. It extends `TypeError`, so existing checks still
+  match, and it tells a caller's mistake apart from an adapter's
+  `TypeError`, such as a failed `fetch`.
 
 #### Changed
 

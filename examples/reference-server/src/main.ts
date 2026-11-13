@@ -1,6 +1,7 @@
 import {
   createMemoryAdapter,
   createKeySeal,
+  InvalidJobInput,
   ServiceClient,
   ServiceError,
   type CertificatePolicy,
@@ -156,7 +157,14 @@ async function createJob(request: Request): Promise<Response> {
       reference,
     });
   } catch (error) {
-    if (error instanceof TypeError || error instanceof ServiceError) {
+    // The request's mistakes: input a job can't take, and a PDF the signing
+    // service refused. Anything else, such as storage or the service being
+    // down, is this server's failure and stays a 500.
+    if (
+      error instanceof InvalidJobInput ||
+      (error instanceof ServiceError &&
+        (error.status === 400 || error.status === 422))
+    ) {
       return Response.json({ message: error.message }, { status: 400 });
     }
     throw error;
@@ -189,7 +197,7 @@ async function createEnrolJob(request: Request): Promise<Response> {
       reference,
     });
   } catch (error) {
-    if (error instanceof TypeError) {
+    if (error instanceof InvalidJobInput) {
       return Response.json({ message: error.message }, { status: 400 });
     }
     throw error;

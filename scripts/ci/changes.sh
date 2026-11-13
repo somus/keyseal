@@ -35,6 +35,7 @@ else
       # The helper embeds catalogue.json; the catalogue's tools test it too.
       catalogue/catalogue.json) need[helper]=true need[typescript]=true need[e2e]=true ;;
       helper/*) need[helper]=true need[e2e]=true ;;
+      scripts/ci/windows-install-smoke.ps1) need[helper]=true ;;
       service/*) need[service]=true need[e2e]=true ;;
       # The reference server in e2e runs on @keyseal/server.
       packages/* | examples/* | package.json | bun.lock | tsconfig.base.json)

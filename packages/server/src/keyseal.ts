@@ -17,7 +17,7 @@ import {
   MAX_PDF_BYTES,
   preparedDocument,
   ServiceError,
-  type ServiceClient,
+  type SigningService,
 } from "./service.js";
 import type {
   Adapter,
@@ -53,8 +53,9 @@ const SHA256_HEX = /^[0-9a-f]{64}$/;
 const FIELD_NAME = /^[A-Za-z0-9_]{1,64}$/;
 const ACCENT_COLOR = /^#[0-9A-Fa-f]{6}$/;
 // Unreserved characters only: the helper compares the document URL with
-// the job URL it parsed, which re-encodes anything else.
-const BASE_PATH = /^(?:\/[A-Za-z0-9._~-]+)*$/;
+// the job URL it parsed, which re-encodes anything else and resolves . and
+// .. segments.
+const BASE_PATH = /^(?:\/(?!\.\.?(?:\/|$))[A-Za-z0-9._~-]+)*$/;
 const MAX_CERTIFICATE_LENGTH = 16_384;
 const MAX_CHAIN = 8;
 const MAX_SIGNATURE_LENGTH = 4096;
@@ -82,7 +83,7 @@ export class JobRefused extends Error {
 
 export interface KeySealOptions {
   adapter: Adapter;
-  service: ServiceClient;
+  service: SigningService;
   /** Scheme, host and port of the job URLs, such as `https://dash.example.org`. */
   origin: string;
   /** Path the job endpoint is mounted under, such as `/api/keyseal`; empty by default. */
@@ -172,6 +173,12 @@ export interface KeySeal {
   /** Null for a malformed or unknown id. */
   status(id: string): Promise<JobStatus | null>;
   manifest(): Response;
+  /**
+   * Expires jobs past their TTL and deletes their blobs, and the blobs of
+   * jobs that ended or are gone. Creating a job expires old ones too; call
+   * this from a scheduler so a quiet deployment still cleans up.
+   */
+  sweep(): Promise<void>;
 }
 
 type Action = "claim" | "certificate" | "signature" | "failure" | "document";
@@ -571,7 +578,7 @@ export function createKeySeal(options: KeySealOptions): KeySeal {
   }
   if (!BASE_PATH.test(basePath)) {
     throw new TypeError(
-      "basePath must be empty or /-separated segments of letters, digits, . _ ~ and -"
+      "basePath must be empty or /-separated segments of letters, digits, . _ ~ and -, other than . and .."
     );
   }
   const minVersion =
@@ -1208,6 +1215,16 @@ export function createKeySeal(options: KeySealOptions): KeySeal {
       : error(404, "This origin has no manifest.");
   }
 
+  async function expire(): Promise<void> {
+    const now = clock();
+    for (const expired of await adapter.expireOlderThan(
+      new Date(now.getTime() - JOB_TTL_MS),
+      new Date(now.getTime() - SETTLE_LEASE_MS)
+    )) {
+      await deleteBlobs(expired);
+    }
+  }
+
   async function createJob(
     input: JobInput,
     sign: Omit<SignJobInput, keyof JobInput> | null
@@ -1247,13 +1264,8 @@ export function createKeySeal(options: KeySealOptions): KeySeal {
         throw new TypeError("rsaPadding must be pkcs1 or pss");
       }
     }
+    await expire();
     const now = clock();
-    for (const expired of await adapter.expireOlderThan(
-      new Date(now.getTime() - JOB_TTL_MS),
-      new Date(now.getTime() - SETTLE_LEASE_MS)
-    )) {
-      await deleteBlobs(expired);
-    }
     const token = randomToken();
     const id = await sha256Hex(token);
     const job: Job = {
@@ -1276,17 +1288,11 @@ export function createKeySeal(options: KeySealOptions): KeySeal {
       stateKey: null,
       title: input.title,
     };
-    try {
-      for (const [index, entry] of (sign?.documents ?? []).entries()) {
-        await adapter.putBlob(pdfKey(id, index), entry.pdf);
-      }
-      await adapter.create(job);
-    } catch (cause) {
-      // The sweep only sees jobs that exist, so the blobs go now.
-      for (let index = 0; index < documents.length; index += 1) {
-        await adapter.deleteBlob(pdfKey(id, index)).catch(() => {});
-      }
-      throw cause;
+    // The job first: a sweep deletes the blobs of a job it can't find, and
+    // nobody has the token yet to use the job before its PDFs are stored.
+    await adapter.create(job);
+    for (const [index, entry] of (sign?.documents ?? []).entries()) {
+      await adapter.putBlob(pdfKey(id, index), entry.pdf);
     }
     const url = jobUrl(token);
     return {
@@ -1368,6 +1374,27 @@ export function createKeySeal(options: KeySealOptions): KeySeal {
         state: expired ? "expired" : job.state,
         ...(message === null ? {} : { message }),
       };
+    },
+
+    async sweep() {
+      await expire();
+      // A deletion that failed, or a request that stopped, after its job
+      // ended leaves blobs that nothing else deletes. Open jobs keep theirs.
+      const ended = new Map<string, boolean>();
+      for (const key of await adapter.listBlobs()) {
+        // Only keys this package stored: anything else in the store stays.
+        const id = key.slice(0, 64);
+        if (!SHA256_HEX.test(id) || key[64] !== "/") {
+          continue;
+        }
+        if (!ended.has(id)) {
+          const job = await adapter.get(id);
+          ended.set(id, !job || isTerminal(job) || job.state === "expired");
+        }
+        if (ended.get(id)) {
+          await adapter.deleteBlob(key);
+        }
+      }
     },
   };
 }

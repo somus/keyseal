@@ -49,6 +49,10 @@ Route requests to `keyseal.handle(request)`; it answers the manifest at `/.well-
 
 The adapter stores jobs and blobs (Postgres and S3, for example) and receives the result in `onCompleted`. Its contract, including the atomic `transition` the settle lease relies on, is in [packages/server/README.md](../packages/server/README.md). `createMemoryAdapter` is enough for tests.
 
+Creating a job expires old jobs and deletes their PDFs and signing states. Run `await keyseal.sweep()` from a scheduler, such as a cron job every five minutes, so that also happens when no one is creating jobs, and to clear blobs a failed deletion left behind.
+
+`service` can be any object with `ServiceClient`'s `certificate`, `signStart` and `signFinish` methods, for a proxy, retries or tests; see the server README for the errors it throws.
+
 ### Branding
 
 `branding` is served as the manifest the helper reads for each job. In the job window:

@@ -48,6 +48,16 @@ fn reply(status: u16, body: impl Into<Vec<u8>>) -> Reply {
     }
 }
 
+/// `reply` with its body gzipped, as a server that compresses its answers
+/// sends it.
+fn gzipped(mut reply: Reply) -> Reply {
+    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::best());
+    encoder.write_all(&reply.body).unwrap();
+    reply.body = encoder.finish().unwrap();
+    reply.headers.push(("Content-Encoding", "gzip".into()));
+    reply
+}
+
 type Handler = dyn Fn(&Request) -> Reply + Send + Sync;
 
 /// Serves `handler` on 127.0.0.1 for the rest of the test process; returns
@@ -409,6 +419,14 @@ fn refuses_invalid_answers() {
     let error = client(&origin).claim().unwrap_err();
     assert_eq!(error.status, None);
 
+    // The limit counts the answer after decompression: these 300 000 bytes
+    // travel as a few hundred.
+    let (origin, _) = serve(Box::new(|_| {
+        gzipped(reply(200, format!("{{\"x\":\"{}\"}}", "a".repeat(300_000))))
+    }));
+    let error = client(&origin).claim().unwrap_err();
+    assert_eq!(error.status, None);
+
     let (origin, _) = serve(Box::new(|_| reply(404, "not json")));
     let error = client(&origin).claim().unwrap_err();
     assert_eq!(error.status, Some(404));
@@ -715,6 +733,22 @@ mod manifest {
             )
         }));
         assert!(branding(&origin(&base), &cache_dir("large")).is_none());
+
+        // A manifest of exactly the limit is read; one byte more isn't, and
+        // gzip doesn't hide it, since the limit counts the decoded bytes.
+        fn padded(length: usize) -> String {
+            let (open, close) = (r#"{"protocol":1,"name":"x","pad":""#, r#""}"#);
+            format!(
+                "{open}{}{close}",
+                "a".repeat(length - open.len() - close.len())
+            )
+        }
+        let (base, _) = serve(Box::new(|_| reply(200, padded(16_384))));
+        assert!(branding(&origin(&base), &cache_dir("at-limit")).is_some());
+        let (base, _) = serve(Box::new(|_| gzipped(reply(200, padded(16_384)))));
+        assert!(branding(&origin(&base), &cache_dir("gzip-at-limit")).is_some());
+        let (base, _) = serve(Box::new(|_| gzipped(reply(200, padded(16_385)))));
+        assert!(branding(&origin(&base), &cache_dir("gzip-over-limit")).is_none());
 
         let (base, _) = serve(Box::new(|_| {
             std::thread::sleep(Duration::from_secs(4));

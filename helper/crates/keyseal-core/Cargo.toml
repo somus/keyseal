@@ -21,6 +21,9 @@ url.workspace = true
 x509-parser.workspace = true
 zeroize.workspace = true
 
+[dev-dependencies]
+flate2.workspace = true
+
 [target.'cfg(windows)'.dependencies]
 windows.workspace = true
 

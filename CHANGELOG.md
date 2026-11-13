@@ -82,6 +82,9 @@ lines under the new version with the release date.
   that a release is out, to install the way it was installed.
 - A failed daily update check runs again after the next job instead of a
   day later.
+- Size limits on downloads, such as 64 MiB for a document, count the bytes
+  after a compressed response is decompressed, and a download exactly at
+  the limit is accepted, as the protocol says.
 
 ### [0.3.0][helper-0.3.0] - 2026-11-05
 

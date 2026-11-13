@@ -217,6 +217,22 @@ fn quoted(path: &Path) -> String {
     format!("'{}'", path.display().to_string().replace('\'', "''"))
 }
 
+/// Where Windows caches, by path, the name it shows for an exe.
+#[cfg(any(windows, test))]
+const NAME_CACHE: &str =
+    r"HKCU\Software\Classes\Local Settings\Software\Microsoft\Windows\Shell\MuiCache";
+
+/// Makes Windows read the name of `exe` again for the browsers' "open
+/// KeySeal?" prompt. It keeps the cached name when the exe at a path
+/// changes, and a helper before 0.4.0, without version information, left
+/// "keyseal" there. Not waited for: the name is cosmetic, and `reg.exe`
+/// complains when nothing is cached.
+#[cfg(any(windows, test))]
+pub(crate) fn forget_cached_name(exe: &Path, host: &mut dyn Host) {
+    let name = format!("{}.FriendlyAppName", exe.display());
+    let _ = host.spawn(&reg(), &["delete", NAME_CACHE, "/v", &name, "/f"]);
+}
+
 /// Installs to `local_app_data\keyseal\keyseal.exe`, registers it, puts a
 /// shortcut to its settings in `programs` (the Start menu) and adds it to
 /// Apps. The installed path.
@@ -244,6 +260,7 @@ fn install_windows(
         &["add", WINDOWS_KEY, "/v", "URL Protocol", "/d", "", "/f"],
     )?;
     host.run(&reg, &["add", &open, "/ve", "/d", &command, "/f"])?;
+    forget_cached_name(&target, host);
     let shortcut = format!(
         "$s = (New-Object -ComObject WScript.Shell).CreateShortcut({}); $s.TargetPath = {}; $s.Arguments = 'settings'; $s.Save()",
         quoted(&programs.join("KeySeal.lnk")),
@@ -555,6 +572,7 @@ mod tests {
                 format!(
                     r#"{reg} add|HKCU\Software\Classes\keyseal\shell\open\command|/ve|/d|"{exe}" "%1"|/f"#
                 ),
+                format!(r"spawn {reg} delete|{NAME_CACHE}|/v|{exe}.FriendlyAppName|/f"),
                 format!(
                     "{powershell} -NoProfile|-NonInteractive|-Command|$s = (New-Object -ComObject WScript.Shell).CreateShortcut('{}'); $s.TargetPath = '{exe}'; $s.Arguments = 'settings'; $s.Save()",
                     programs.join("KeySeal.lnk").display()

@@ -36,7 +36,23 @@ $apps = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\KeySeal'
 $shortcut = Join-Path ([Environment]::GetFolderPath('Programs')) 'KeySeal.lnk'
 Check (-not (Test-Path $dir)) "$dir exists before the install."
 
+# Windows caches the name browsers show for an exe under its path, and a
+# helper from before 0.4.0 left "keyseal" there. An install drops it, and
+# so does the first start after an update, neither waiting for reg.exe.
+$names = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey(
+  'Software\Classes\Local Settings\Software\Microsoft\Windows\Shell\MuiCache')
+$name = "$exe.FriendlyAppName"
+function CheckNameForgotten($after) {
+  foreach ($try in 1..50) {
+    if ($null -eq $names.GetValue($name)) { return }
+    Start-Sleep -Milliseconds 100
+  }
+  throw "The cached name is still there after $after."
+}
+
+$names.SetValue($name, 'keyseal')
 Keyseal $built 'install' | Out-Null
+CheckNameForgotten 'the install'
 Check (Test-Path $exe) "$exe wasn't installed."
 Check ((Get-ItemProperty $protocol).'URL Protocol' -eq '') 'keyseal:// is not a URL protocol.'
 $open = (Get-ItemProperty "$protocol\shell\open\command").'(default)'
@@ -60,6 +76,17 @@ Check ($entry.NoModify -eq 1 -and $entry.NoRepair -eq 1) 'The Apps entry offers 
 $info = (Get-Item $exe).VersionInfo
 Check ($info.FileDescription -eq 'KeySeal') "FileDescription is $($info.FileDescription)."
 Check ($info.ProductVersion -eq $version) "ProductVersion is $($info.ProductVersion)."
+
+# Started as an update starts the helper it has just installed: with a link
+# and KEYSEAL_UPDATED. Headless, so the link, which names no job, fails
+# without a window.
+$names.SetValue($name, 'keyseal')
+$env:KEYSEAL_UPDATED = '1'
+$env:KEYSEAL_HEADLESS = '1'
+& $exe 'keyseal://updated' | Out-Null
+Check ($LASTEXITCODE -ne 0) 'A link that names no job was run.'
+Remove-Item Env:KEYSEAL_UPDATED, Env:KEYSEAL_HEADLESS
+CheckNameForgotten 'an update'
 
 Keyseal $exe 'uninstall' | Out-Null
 Check (-not (Test-Path $protocol)) "$protocol is still there."

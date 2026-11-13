@@ -577,6 +577,9 @@ pub fn relaunch_if_staged(args: &[&str], log: fn(&str)) -> Option<ExitCode> {
         let _ = std::fs::remove_file(exe.with_extension("old.exe"));
     }
     if std::env::var_os(RELAUNCHED).is_some() {
+        // This helper has just replaced the one that started it.
+        #[cfg(windows)]
+        crate::install::forget_cached_name(&exe, &mut crate::install::System);
         return None;
     }
     let dir = crate::config_dir().ok()?.join(STAGED);

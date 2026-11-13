@@ -4,7 +4,7 @@ A minimal integrator backend: `@keyseal/server` with the in-memory adapter, wire
 
 ## Run
 
-Start the signing service (see [service/README.md](../../service/README.md)), then:
+[docs/quickstart.md](../../docs/quickstart.md) runs the server and the signing service together with `docker compose up` ([compose.yaml](compose.yaml), and the server's [Dockerfile](Dockerfile), built from the repository root), and signs with a SoftHSM test token. To run the server on its own with Bun, start the signing service (see [service/README.md](../../service/README.md)), then:
 
 ```sh
 bun install

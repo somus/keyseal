@@ -33,8 +33,9 @@ build/
 .env.*
 !.env.example
 
-# Reference server output
+# Reference server output, and the quickstart's token and helper config
 examples/reference-server/out/
+examples/reference-server/quickstart/
 
 # Copied from the repository root by the packages' prepack
 packages/*/LICENSE

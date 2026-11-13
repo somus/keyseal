@@ -1,6 +1,6 @@
 # Integrating KeySeal
 
-This guide adds token signing to a web application. The pieces are the signing service on your private network, `@keyseal/server` in your backend, `@keyseal/browser` in your page, and the KeySeal helper on each signer's computer. [examples/reference-server](../examples/reference-server/) wires all of them together and is the quickest way to see a job end to end.
+This guide adds token signing to a web application. The pieces are the signing service on your private network, `@keyseal/server` in your backend, `@keyseal/browser` in your page, and the KeySeal helper on each signer's computer. [examples/reference-server](../examples/reference-server/) wires all of them together, and [quickstart.md](quickstart.md) runs it with Docker Compose and a SoftHSM test token, the quickest way to see a job end to end without a USB token.
 
 ```
  browser page ──(your API)──> your backend ──> signing service

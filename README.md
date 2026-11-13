@@ -40,6 +40,7 @@ The helper never talks to the signing service, and the PIN never leaves the sign
 
 ## Get started
 
+- **Trying it out:** [docs/quickstart.md](docs/quickstart.md) signs a PDF without a USB token: Docker Compose runs the signing service and the reference server, and a SoftHSM software token stands in for the token.
 - **Integrating:** [docs/integrating.md](docs/integrating.md) walks through running the service, serving the job endpoint, creating jobs and starting the helper from your page.
 - **How it's built:** [docs/design.md](docs/design.md) covers the protocol flow, the trust model and the token access rules; [spec/protocol-v1.md](spec/protocol-v1.md) is the normative protocol.
 - **Working on keyseal:** [docs/development.md](docs/development.md) has the layout, prerequisites, checks and the end-to-end test.

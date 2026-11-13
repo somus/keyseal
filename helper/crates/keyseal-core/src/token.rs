@@ -14,6 +14,7 @@ use cryptoki::mechanism::rsa::{PkcsMgfType, PkcsPssParams};
 use cryptoki::mechanism::{Mechanism, MechanismType};
 use cryptoki::object::{Attribute, AttributeType, KeyType, ObjectClass, ObjectHandle};
 use cryptoki::session::{Session, UserType};
+use cryptoki::slot::Slot;
 use cryptoki::types::AuthPin;
 use cryptoki_sys::{CK_C_Sign, CK_ULONG, CKR_OK};
 use serde::{Deserialize, Serialize};
@@ -30,6 +31,12 @@ pub struct TokenError(pub String);
 /// The error when no token is plugged in, also as relayed by the worker.
 pub const NO_TOKEN: &str = "No token or smart card is plugged in.";
 
+/// The error when the token's PIN is locked.
+pub const PIN_LOCKED: &str = "Your token's PIN is locked after too many wrong tries, so KeySeal can't use it. To unlock it, use the software that came with your token, or ask whoever issued the token.";
+
+/// The error when the token refused the PIN and it isn't asked again.
+pub const WRONG_PIN: &str = "The PIN is wrong, so the token refused it.";
+
 impl std::fmt::Display for TokenError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.0)
@@ -41,6 +48,33 @@ impl std::error::Error for TokenError {}
 impl From<String> for TokenError {
     fn from(message: String) -> Self {
         Self(message)
+    }
+}
+
+/// Why a login failed.
+#[derive(Debug)]
+pub enum LoginError {
+    /// CKR_PIN_INCORRECT, or CKR_PIN_INVALID or CKR_PIN_LEN_RANGE, a PIN the
+    /// token can't take: the signer may try again.
+    WrongPin,
+    /// CKR_PIN_LOCKED: the token takes no PIN until it is unlocked.
+    Locked,
+    Other(TokenError),
+}
+
+impl std::fmt::Display for LoginError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::WrongPin => f.write_str(WRONG_PIN),
+            Self::Locked => f.write_str(PIN_LOCKED),
+            Self::Other(error) => error.fmt(f),
+        }
+    }
+}
+
+impl From<TokenError> for LoginError {
+    fn from(error: TokenError) -> Self {
+        Self::Other(error)
     }
 }
 
@@ -140,8 +174,8 @@ pub fn subject(der: &[u8]) -> String {
 pub trait TokenBackend {
     /// The token has a PIN pad (protected authentication path).
     fn pin_pad(&self) -> bool;
-    /// What the driver says about remaining PIN attempts.
-    fn pin_warning(&self) -> Option<&'static str>;
+    /// What the driver says about remaining PIN attempts, read when asked.
+    fn pin_warning(&self) -> Option<PinWarning>;
     /// Every certificate the session can see: before login only public
     /// objects, after login private ones too. With `with_private_key`, only
     /// those with a private key beside them, which login makes visible.
@@ -150,7 +184,7 @@ pub trait TokenBackend {
     /// A PKCS#11 token keeps the PIN, zeroised when dropped, until
     /// [`sign`](Self::sign) or [`close`](Self::close), for a key that needs
     /// it again for each signature (CKA_ALWAYS_AUTHENTICATE).
-    fn login(&self, pin: Zeroizing<String>) -> Result<(), TokenError>;
+    fn login(&self, pin: Zeroizing<String>) -> Result<(), LoginError>;
     /// The signature value over each item of `data`, in order, with the
     /// private key of `certificate` (DER), encoded as section 11.1 says. The
     /// key is found once and every item is signed in the same session (in
@@ -246,19 +280,11 @@ impl Module {
         // Read once per session; a driver that can't list them is taken to
         // have every mechanism.
         let mechanisms = self.pkcs11.get_mechanism_list(slot).unwrap_or_default();
-        let pin_warning = if info.user_pin_locked() {
-            Some(PinWarning::Locked)
-        } else if info.user_pin_final_try() {
-            Some(PinWarning::FinalTry)
-        } else if info.user_pin_count_low() {
-            Some(PinWarning::CountLow)
-        } else {
-            None
-        };
         Ok(Token {
             session,
+            pkcs11: self.pkcs11.clone(),
+            slot,
             pin_pad: info.protected_authentication_path(),
-            pin_warning,
             mechanisms,
             c_sign: self.c_sign,
             pin: RefCell::new(None),
@@ -342,10 +368,11 @@ pub struct TokenCertificate {
 
 pub struct Token {
     session: Session,
+    /// For the token's flags, which change with each login.
+    pkcs11: Pkcs11,
+    slot: Slot,
     /// The token has a PIN pad (protected authentication path).
     pub pin_pad: bool,
-    /// What the driver says about remaining PIN attempts.
-    pub pin_warning: Option<PinWarning>,
     /// The slot's mechanisms, read when the session opened.
     mechanisms: Vec<MechanismType>,
     c_sign: CK_C_Sign,
@@ -379,8 +406,17 @@ impl TokenBackend for Token {
         self.pin_pad
     }
 
-    fn pin_warning(&self) -> Option<&'static str> {
-        self.pin_warning.map(PinWarning::message)
+    fn pin_warning(&self) -> Option<PinWarning> {
+        let info = self.pkcs11.get_token_info(self.slot).ok()?;
+        if info.user_pin_locked() {
+            Some(PinWarning::Locked)
+        } else if info.user_pin_final_try() {
+            Some(PinWarning::FinalTry)
+        } else if info.user_pin_count_low() {
+            Some(PinWarning::CountLow)
+        } else {
+            None
+        }
     }
 
     fn certificates(&self, with_private_key: bool) -> Result<Vec<TokenCertificate>, TokenError> {
@@ -419,14 +455,21 @@ impl TokenBackend for Token {
         Ok(found)
     }
 
-    fn login(&self, pin: Zeroizing<String>) -> Result<(), TokenError> {
+    fn login(&self, pin: Zeroizing<String>) -> Result<(), LoginError> {
+        use cryptoki::error::Error::Pkcs11;
         // Copied once into a buffer of exactly its length, which `AuthPin`
         // zeroises; `AuthPin::from(String)` would shrink the String and free
         // its old buffer without zeroising it.
         let pin = AuthPin::from(Box::<str>::from(pin.as_str()));
         self.session
             .login(UserType::User, (!self.pin_pad).then_some(&pin))
-            .map_err(|e| err("The token refused the PIN", e))?;
+            .map_err(|e| match e {
+                Pkcs11(RvError::PinIncorrect | RvError::PinInvalid | RvError::PinLenRange, _) => {
+                    LoginError::WrongPin
+                }
+                Pkcs11(RvError::PinLocked, _) => LoginError::Locked,
+                e => LoginError::Other(err("Couldn't log in to the token", e)),
+            })?;
         if !self.pin_pad {
             *self.pin.borrow_mut() = Some(pin);
         }

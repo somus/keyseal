@@ -8,7 +8,8 @@
 # the binary's (the release workflow
 # downloads both, pinned by hash). appimagetool reads the runtime only from
 # --runtime-file; without it, it downloads the newest. It runs extracted, so
-# the build host needs no FUSE.
+# the build host needs no FUSE. KEYSEAL_NOTICES names the third-party
+# notices to put in the AppDir (../third-party-notices.sh makes them).
 set -euo pipefail
 
 binary="$1"
@@ -31,6 +32,7 @@ trap 'rm -rf "$(dirname "$appdir")"' EXIT
 install -Dm 0755 "$binary" "$appdir/usr/bin/keyseal"
 install -Dm 0644 "$here/keyseal.desktop" "$appdir/keyseal.desktop"
 install -Dm 0644 "$here/keyseal.svg" "$appdir/keyseal.svg"
+install -Dm 0644 "${KEYSEAL_NOTICES:?}" "$appdir/usr/share/doc/keyseal/THIRD-PARTY-NOTICES.txt"
 ln -s usr/bin/keyseal "$appdir/AppRun"
 mkdir -p "$out"
 appimage="$out/keyseal-helper-$version-$platform.AppImage"

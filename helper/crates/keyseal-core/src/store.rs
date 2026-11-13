@@ -66,7 +66,7 @@ impl<S: KeyStore> TokenBackend for Store<S> {
         false
     }
 
-    fn pin_warning(&self) -> Option<&'static str> {
+    fn pin_warning(&self) -> Option<token::PinWarning> {
         None
     }
 
@@ -88,7 +88,7 @@ impl<S: KeyStore> TokenBackend for Store<S> {
     }
 
     /// The vendor's dialog asks for the PIN during signing instead.
-    fn login(&self, _pin: zeroize::Zeroizing<String>) -> Result<(), TokenError> {
+    fn login(&self, _pin: zeroize::Zeroizing<String>) -> Result<(), token::LoginError> {
         Ok(())
     }
 

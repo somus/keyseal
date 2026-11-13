@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import io
+import os
+import subprocess
+import sys
 import threading
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -9,11 +13,15 @@ from typing import Any
 
 import pytest
 from cryptography.hazmat.primitives import serialization
+from pyhanko.pdf_utils.reader import PdfFileReader
+from pyhanko.sign.validation.dss import DocumentSecurityStore
 from pyhanko_certvalidator import ValidationContext
 from pyhanko_certvalidator.fetchers.aiohttp_fetchers import AIOHttpFetcherBackend
 
 from keyseal_service import app as app_module
-from keyseal_service import validate
+from fastapi.testclient import TestClient
+
+from keyseal_service import remote_sign, validate
 from keyseal_service.app import MAX_BODY_BYTES
 from keyseal_service.fetching import public_fetch_session
 from keyseal_service.validate import ValidationSettings, load_trust_roots, validate_pdf
@@ -727,3 +735,133 @@ def test_a_validation_past_its_budget_is_refused_and_stops(
     assert response.json() == {"detail": "Validation took longer than 0.1 seconds"}
     # The worker thread's loop cancelled the work rather than leaving it running.
     assert stopped.is_set()
+
+
+def _unanswered(stopped: threading.Event) -> Any:
+    async def unanswered(*_: Any, **__: Any) -> Any:
+        try:
+            await asyncio.sleep(60)
+        finally:
+            stopped.set()
+
+    return unanswered
+
+
+def _with_local_tsa(pki: Pki, monkeypatch: pytest.MonkeyPatch) -> TestClient:
+    monkeypatch.setattr(
+        app_module.timestamps, "HTTPTimeStamper", lambda _url: pki.timestamper(datetime.now(UTC))
+    )
+    return client_for(settings_with(pki), "https://tsa.invalid")
+
+
+def test_a_certificate_check_past_its_budget_stops_and_may_be_retried(
+    pki: Pki, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stopped = threading.Event()
+
+    class UnansweredValidator:
+        def __init__(self, *_: Any, **__: Any) -> None:
+            pass
+
+        async_validate_path = _unanswered(stopped)
+
+    monkeypatch.setattr(validate, "CertificateValidator", UnansweredValidator)
+    monkeypatch.setattr(validate, "VALIDATION_BUDGET_SECONDS", 0.1)
+    with client_for(settings_with(pki)) as client:
+        response = client.post(
+            "/certificate",
+            headers=AUTH,
+            json={"certificate": b64(pki.signer_cert.public_bytes(serialization.Encoding.DER))},
+        )
+    assert response.status_code == 504
+    assert response.json() == {"detail": "The certificate check took longer than 0.1 seconds"}
+    assert stopped.is_set()
+
+
+@pytest.mark.parametrize(
+    ("path", "slow", "message"),
+    [
+        (
+            "/finalize",
+            (remote_sign, "async_add_validation_info"),
+            "Finalising took longer than 0.1 seconds",
+        ),
+        (
+            "/retimestamp",
+            (remote_sign.signers.PdfTimeStamper, "async_update_archival_timestamp_chain"),
+            "Timestamping took longer than 0.1 seconds",
+        ),
+    ],
+)
+def test_long_term_validation_past_its_budget_is_refused_and_stops(
+    pki: Pki, monkeypatch: pytest.MonkeyPatch, path: str, slow: tuple[Any, str], message: str
+) -> None:
+    stopped = threading.Event()
+    monkeypatch.setattr(*slow, _unanswered(stopped))
+    monkeypatch.setattr(validate, "VALIDATION_BUDGET_SECONDS", 0.1)
+    with _with_local_tsa(pki, monkeypatch) as client:
+        response = client.post(path, content=sign(blank_pdf(), pki), headers=AUTH)
+    assert response.status_code == 422
+    assert response.json() == {"detail": message}
+    assert stopped.is_set()
+
+
+def test_finalising_a_pdf_with_too_many_signatures_is_refused(
+    pki: Pki, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    twice = sign(sign(blank_pdf(), pki, "Signer1"), pki, "Signer2")
+    monkeypatch.setattr(validate, "MAX_SIGNATURES", 1)
+    with _with_local_tsa(pki, monkeypatch) as client:
+        response = client.post("/finalize", content=twice, headers=AUTH)
+    assert response.status_code == 422
+    assert response.json() == {"detail": "More than 1 signatures"}
+
+
+def test_long_term_archive_finalises_and_retimestamps_offline(
+    pki: Pki, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The test root's CRL stands in for a fetch; the TSA is a local one under the same root.
+    with_crl(monkeypatch, pki.crl())
+    signed = sign(blank_pdf(), pki, timestamper=pki.timestamper(datetime.now(UTC)))
+    with _with_local_tsa(pki, monkeypatch) as client:
+        finalised = client.post("/finalize", content=signed, headers=AUTH)
+        assert finalised.status_code == 200
+        archived = client.post("/retimestamp", content=finalised.content, headers=AUTH)
+        assert archived.status_code == 200
+    assert finalised.content.startswith(signed)
+    assert archived.content.startswith(finalised.content)
+
+    reader = PdfFileReader(io.BytesIO(archived.content))
+    dss = DocumentSecurityStore.read_dss(reader)
+    assert len(dss.crls) >= 1
+    assert len(dss.certs) >= 2  # the signer's root and the TSA's certificate
+
+    report = validate_pdf(archived.content, settings_with(pki))
+    assert report["status"] == "valid"
+    [signature] = report["signatures"]
+    assert signature["trusted"] is True
+    assert signature["timestampValid"] is True
+    assert signature["revocationChecked"] is True
+    assert [(t["intact"], t["trusted"]) for t in report["documentTimestamps"]] == [
+        (True, True),
+        (True, True),
+    ]
+
+
+def test_system_roots_come_from_openssl_without_oscrypto(pki: Pki, tmp_path: Path) -> None:
+    bundle = pki.write_ca(tmp_path)
+    script = (
+        "import sys\n"
+        "from keyseal_service.validate import ValidationSettings, system_trust_roots\n"
+        "ValidationSettings(trust_roots=[]).context()\n"
+        "print([root.sha256.hex() for root in system_trust_roots()])\n"
+        "print('oscrypto' in sys.modules)\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        env={**os.environ, "SSL_CERT_FILE": str(bundle), "SSL_CERT_DIR": str(tmp_path / "none")},
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert result.stdout.splitlines() == [str([pki.ca_asn1.sha256.hex()]), "False"]

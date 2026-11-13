@@ -14,7 +14,6 @@ embed-resource.workspace = true
 [dependencies]
 keyseal-core = { path = "../keyseal-core" }
 keyseal-ui = { path = "../keyseal-ui" }
-x509-parser.workspace = true
 zeroize.workspace = true
 
 [target.'cfg(windows)'.dependencies]

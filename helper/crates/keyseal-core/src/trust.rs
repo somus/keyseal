@@ -101,9 +101,7 @@ impl TrustStore {
             crate::create_private_dir(dir).map_err(error)?;
         }
         let bytes = serde_json::to_vec_pretty(file).map_err(|e| e.to_string())?;
-        let temporary = self.path.with_extension("json.tmp");
-        crate::write_private(&temporary, &bytes).map_err(error)?;
-        std::fs::rename(&temporary, &self.path).map_err(error)
+        crate::replace_private(&self.path, &bytes).map_err(error)
     }
 }
 

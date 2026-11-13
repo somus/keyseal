@@ -41,9 +41,7 @@ impl Preferences {
         let error = |e: std::io::Error| format!("Couldn't write {}: {e}", path.display());
         crate::create_private_dir(config_dir).map_err(error)?;
         let bytes = serde_json::to_vec_pretty(self).map_err(|e| e.to_string())?;
-        let temporary = path.with_extension("json.tmp");
-        crate::write_private(&temporary, &bytes).map_err(error)?;
-        std::fs::rename(&temporary, &path).map_err(error)
+        crate::replace_private(&path, &bytes).map_err(error)
     }
 }
 

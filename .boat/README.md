@@ -16,6 +16,6 @@ trust windows
 settings-driver-failed
 ```
 
-- The views are `GALLERY_VIEWS` in `helper/crates/keyseal-ui/src/views.rs`. A view the branch adds fails on the merge base, which marks it as new.
+- The views are `GALLERY_VIEWS` in `helper/crates/keyseal-ui/src/views/gallery.rs`. A view the branch adds fails on the merge base, which marks it as new.
 - Pick every look the change affects: the mac and windows looks are drawn by the same code, so they show in Linux sandboxes too.
-- The shots show the gallery's sample data, not a live job. A change to what a real job puts in a window needs the sample data in `views.rs` to cover it.
+- The shots show the gallery's sample data, not a live job. A change to what a real job puts in a window needs the sample data in `views/gallery.rs` to cover it.

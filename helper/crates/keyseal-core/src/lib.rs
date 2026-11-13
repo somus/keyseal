@@ -7,6 +7,10 @@
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+use ureq::Agent;
+use ureq::tls::{RootCerts, TlsConfig};
 
 pub mod catalogue;
 pub mod cms;
@@ -78,6 +82,47 @@ pub fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
         file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
     }
     file.write_all(bytes)
+}
+
+/// Writes a file as [`write_private`] does, beside it first and renamed
+/// into place, so a crash never leaves half a file.
+pub(crate) fn replace_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let mut temporary = path.as_os_str().to_owned();
+    temporary.push(".tmp");
+    write_private(Path::new(&temporary), bytes)?;
+    std::fs::rename(&temporary, path)
+}
+
+/// An agent for the helper's own downloads, the driver catalogue and
+/// updates. TLS uses the system trust store, as every other fetch the helper
+/// makes; with `https_only`, a plain-http URL or redirect is refused.
+pub(crate) fn download_agent(https_only: bool) -> Agent {
+    Agent::config_builder()
+        .tls_config(
+            TlsConfig::builder()
+                .root_certs(RootCerts::PlatformVerifier)
+                .build(),
+        )
+        .https_only(https_only)
+        .user_agent(format!("keyseal/{VERSION}"))
+        .build()
+        .into()
+}
+
+/// A `200` body of at most `limit` bytes, within `timeout`.
+pub(crate) fn download(
+    agent: &Agent,
+    url: &str,
+    limit: u64,
+    timeout: Duration,
+) -> Result<Vec<u8>, ureq::Error> {
+    agent
+        .get(url)
+        .config()
+        .timeout_global(Some(timeout))
+        .build()
+        .call()
+        .and_then(|mut response| response.body_mut().with_config().limit(limit).read_to_vec())
 }
 
 #[cfg(all(test, unix))]

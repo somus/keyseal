@@ -258,8 +258,11 @@ fn fetch(agent: &Agent, url: &str, limit: u64, deadline: Instant) -> Result<Vec<
 }
 
 /// Reads the manifest at `base`, and if it offers a newer build for
-/// `platform`, downloads it, checks it and stages it in `dir`. The version
-/// staged, if any.
+/// `platform`, downloads it, checks it and stages it in `dir`; with
+/// `download` false it stages only the manifest, for the next launch to
+/// say there is an update. The version staged, if any. The check is
+/// recorded once the manifest verifies, so one that fails runs again
+/// after the next job.
 fn check_and_stage(
     base: &str,
     dir: &Path,
@@ -267,6 +270,7 @@ fn check_and_stage(
     threshold: usize,
     platform: &str,
     current: &str,
+    download: bool,
 ) -> Result<Option<String>, String> {
     // Releases are served over https; a redirect to plain http is refused,
     // although the signed manifest and hashes would catch tampering anyway.
@@ -295,28 +299,32 @@ fn check_and_stage(
         MAX_MANIFEST,
         deadline,
     )?;
-    let Some((version, file)) = newer(&manifest, &signatures, keys, threshold, platform, current)?
-    else {
+    let offer = newer(&manifest, &signatures, keys, threshold, platform, current)?;
+    let config = dir.parent().ok_or("The update folder has no parent.")?;
+    record_check(&config.join(STAMP), SystemTime::now());
+    let Some((version, file)) = offer else {
         return Ok(None);
     };
     // A build left for the user to install isn't downloaded again.
-    if let Some(left) = dir
-        .parent()
-        .map(|config| kept(config, &version))
-        .filter(|left| left.exists())
-    {
+    let left = kept(config, &version);
+    if download && left.exists() {
         return Err(format!(
             "KeySeal {version} is already downloaded to {}.",
             left.display()
         ));
     }
-    let asset = fetch(
-        &agent,
-        &format!("{base}/{}", file.file),
-        MAX_ASSET,
-        Instant::now() + DOWNLOAD_BUDGET,
-    )?;
-    check_hash(&asset, &file)?;
+    let asset = if download {
+        let asset = fetch(
+            &agent,
+            &format!("{base}/{}", file.file),
+            MAX_ASSET,
+            Instant::now() + DOWNLOAD_BUDGET,
+        )?;
+        check_hash(&asset, &file)?;
+        Some(asset)
+    } else {
+        None
+    };
     // Written beside `dir` and renamed into place, so a launch never sees
     // half a release.
     let temp = dir.with_extension(format!("tmp-{}", std::process::id()));
@@ -325,7 +333,9 @@ fn check_and_stage(
         crate::create_private_dir(&temp)?;
         crate::write_private(&temp.join(MANIFEST), &manifest)?;
         crate::write_private(&temp.join(SIGNATURES), &signatures)?;
-        crate::write_private(&temp.join(&file.file), &asset)?;
+        if let Some(asset) = &asset {
+            crate::write_private(&temp.join(&file.file), asset)?;
+        }
         let _ = std::fs::remove_dir_all(dir);
         std::fs::rename(&temp, dir)
     })();
@@ -338,7 +348,7 @@ fn check_and_stage(
 
 /// Takes the release staged in `dir`, verifies it again and installs the
 /// verified bytes over the helper at `exe`, or with `replace` false only
-/// [`keep`]s them. The version installed, or `None` when nothing is
+/// says where to get it. The version installed, or `None` when nothing is
 /// staged. The staged release is gone afterwards either way.
 fn apply_staged(
     dir: &Path,
@@ -365,12 +375,12 @@ fn apply_staged(
         else {
             return Ok(None);
         };
-        let asset = read(&file.file)?;
-        check_hash(&asset, &file)?;
         let config = dir.parent().ok_or("The staged update has no folder.")?;
         if !replace {
-            return Err(keep(&asset, exe, &version, config)?);
+            return Err(notice_once(config, &version, available(&version)));
         }
+        let asset = read(&file.file)?;
+        check_hash(&asset, &file)?;
         #[cfg(target_os = "macos")]
         install_bundle(&asset, exe, &version, config)?;
         #[cfg(not(target_os = "macos"))]
@@ -461,6 +471,7 @@ fn install_binary(asset: &[u8], exe: &Path, version: &str, config: &Path) -> Res
 /// Leaves the new build in `config` for the user to install over `exe`,
 /// with a [`take_notice`] saying so the first time for each version. The
 /// notice, for the log.
+#[cfg(any(not(target_os = "macos"), test))]
 fn keep(asset: &[u8], exe: &Path, version: &str, config: &Path) -> Result<String, String> {
     let keep = kept(config, version);
     crate::write_private(&keep, asset)
@@ -505,6 +516,14 @@ fn kept(config: &Path, version: &str) -> PathBuf {
     }
 }
 
+/// Where to get `version` for a helper that doesn't replace itself.
+fn available(version: &str) -> String {
+    format!(
+        "KeySeal {version} is available at {}. Install it the way you installed this one to update.",
+        RELEASES.trim_end_matches("/download")
+    )
+}
+
 /// Gives `notice` to [`take_notice`] the first time for `version`, and
 /// returns it.
 fn notice_once(config: &Path, version: &str, notice: String) -> String {
@@ -526,6 +545,7 @@ fn unwritable(error: &std::io::Error) -> bool {
     )
 }
 
+#[cfg(any(not(target_os = "macos"), test))]
 fn make_executable(path: &Path) -> std::io::Result<()> {
     #[cfg(unix)]
     {
@@ -550,12 +570,19 @@ pub fn take_notice() -> Option<String> {
 /// The file an update replaces, and whether it may. The Linux update is an
 /// AppImage, so it replaces the AppImage the helper runs from (its
 /// executable is inside the image's read-only mount) and never a deb or
-/// tarball install. Elsewhere it replaces the executable.
+/// tarball install, which is told where the new release is instead.
+/// Elsewhere it replaces the executable.
 fn install_target(appimage: Option<PathBuf>) -> Option<(PathBuf, bool)> {
     match appimage {
         Some(image) if cfg!(target_os = "linux") => Some((image, true)),
         _ => Some((std::env::current_exe().ok()?, !cfg!(target_os = "linux"))),
     }
+}
+
+/// Whether this helper is one an update replaces.
+fn replaces_itself() -> bool {
+    install_target(std::env::var_os("APPIMAGE").map(PathBuf::from))
+        .is_some_and(|(_, replace)| replace)
 }
 
 /// On launch: installs a staged release and runs it with `args`, returning
@@ -624,9 +651,10 @@ pub fn after_job() -> Result<(), String> {
 /// `keyseal update`: checks now.
 pub fn check_now() -> Result<(), String> {
     match check(true)? {
-        Some(version) => {
+        Some(version) if replaces_itself() => {
             println!("KeySeal {version} is downloaded and installs the next time KeySeal starts.")
         }
+        Some(version) => println!("{}", available(&version)),
         None => println!("KeySeal {} is up to date.", crate::VERSION),
     }
     Ok(())
@@ -641,7 +669,6 @@ fn check(forced: bool) -> Result<Option<String>, String> {
     if !forced && !check_due(&stamp, now) {
         return Ok(None);
     }
-    record_check(&stamp, now);
     check_and_stage(
         RELEASES,
         &config.join(STAGED),
@@ -649,6 +676,7 @@ fn check(forced: bool) -> Result<Option<String>, String> {
         THRESHOLD,
         platform,
         crate::VERSION,
+        replaces_itself(),
     )
 }
 
@@ -895,28 +923,43 @@ mod tests {
             ]))
         };
         let dir = temp_dir("stage").join(STAGED);
+        let stamp = dir.parent().unwrap().join(STAMP);
+
+        // A check that fails is tried again after the next job.
+        let offline = serve(HashMap::new());
+        assert!(check_and_stage(&offline, &dir, &keys, 1, "test-x64", "1.0.0", true).is_err());
+        assert!(!stamp.exists());
 
         let base = host("1.1.0", &build, &a);
-        let staged = check_and_stage(&base, &dir, &keys, 1, "test-x64", "1.0.0").unwrap();
+        let staged = check_and_stage(&base, &dir, &keys, 1, "test-x64", "1.0.0", true).unwrap();
         assert_eq!(staged.as_deref(), Some("1.1.0"));
         assert_eq!(std::fs::read(dir.join("keyseal-new")).unwrap(), build);
         assert!(dir.join(MANIFEST).is_file() && dir.join(SIGNATURES).is_file());
+        assert!(!check_due(&stamp, SystemTime::now()));
 
         assert!(
-            check_and_stage(&base, &dir, &keys, 1, "test-x64", "1.1.0")
+            check_and_stage(&base, &dir, &keys, 1, "test-x64", "1.1.0", true)
                 .unwrap()
                 .is_none()
         );
         let tampered = host("1.1.0", b"other build", &a);
-        let error = check_and_stage(&tampered, &dir, &keys, 1, "test-x64", "1.0.0").unwrap_err();
+        let error =
+            check_and_stage(&tampered, &dir, &keys, 1, "test-x64", "1.0.0", true).unwrap_err();
         assert!(error.contains("doesn't match"), "{error}");
         let forged = host("1.1.0", &build, &stranger);
-        assert!(check_and_stage(&forged, &dir, &keys, 1, "test-x64", "1.0.0").is_err());
+        assert!(check_and_stage(&forged, &dir, &keys, 1, "test-x64", "1.0.0", true).is_err());
+
+        // A helper that doesn't replace itself (a deb or tarball install)
+        // stages only the manifest.
+        std::fs::remove_dir_all(&dir).unwrap();
+        let staged = check_and_stage(&base, &dir, &keys, 1, "test-x64", "1.0.0", false).unwrap();
+        assert_eq!(staged.as_deref(), Some("1.1.0"));
+        assert!(dir.join(MANIFEST).is_file() && !dir.join("keyseal-new").exists());
 
         // A build left for the user to install isn't downloaded again.
         std::fs::remove_dir_all(&dir).unwrap();
         std::fs::write(kept(dir.parent().unwrap(), "1.1.0"), &build).unwrap();
-        let error = check_and_stage(&base, &dir, &keys, 1, "test-x64", "1.0.0").unwrap_err();
+        let error = check_and_stage(&base, &dir, &keys, 1, "test-x64", "1.0.0", true).unwrap_err();
         assert!(error.contains("already downloaded"), "{error}");
         assert!(!dir.exists());
         let _ = std::fs::remove_dir_all(dir.parent().unwrap());
@@ -1039,7 +1082,8 @@ mod tests {
     /// The helper's folder can't be written: the build is left in the
     /// config directory with a notice, for a permission error or a
     /// read-only file system (an AppImage mount) alike. A deb or tarball
-    /// install is never replaced. The notice comes once per version.
+    /// install is never replaced, and is told where the release is. The
+    /// notice comes once per version.
     #[cfg(unix)]
     #[test]
     fn keeps_the_build_when_the_folder_is_unwritable() {
@@ -1075,15 +1119,21 @@ mod tests {
             assert_eq!(take_notice(), None, "noticed once per version");
         }
 
-        // Not replaced even where it could be, and noticed for a new version.
+        // Not replaced even where it could be, nor given the AppImage, and
+        // noticed for a new version.
         let a = signing_key(1);
         let dir = config.join(STAGED);
+        let _ = std::fs::remove_file(kept(&config, "1.1.0"));
         stage(&dir, b"new image", &sha256_hex(b"new image"), &a);
+        std::fs::remove_file(dir.join("keyseal-new")).unwrap();
         let error =
             apply_staged(&dir, &exe, false, &[public(&a)], 1, "test-x64", "1.0.0").unwrap_err();
-        assert!(error.starts_with("KeySeal 1.1.0 is downloaded"), "{error}");
+        assert_eq!(
+            error,
+            "KeySeal 1.1.0 is available at https://github.com/somus/keyseal/releases/latest. Install it the way you installed this one to update."
+        );
         assert_eq!(std::fs::read(&exe).unwrap(), b"old build");
-        assert_eq!(std::fs::read(kept(&config, "1.1.0")).unwrap(), b"new image");
+        assert!(!kept(&config, "1.1.0").exists());
         assert!(!dir.exists());
         assert_eq!(take_notice().is_some(), root_user);
         keep(b"newer build", &exe, "1.2.0", &config).unwrap();

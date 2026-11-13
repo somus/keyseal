@@ -127,3 +127,7 @@ jobs:
       # The gallery example builds only with its feature.
       - run: cargo clippy -p keyseal-ui --all-targets --features gallery -- -D warnings
       - run: cargo test
+      - name: Install and uninstall (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ../scripts/ci/windows-install-smoke.ps1

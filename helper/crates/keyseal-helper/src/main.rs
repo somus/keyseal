@@ -5,7 +5,7 @@
 // A browser starting the helper on Windows opens no console window.
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
-use std::io::{IsTerminal, Write};
+use std::io::Write;
 use std::process::ExitCode;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -29,12 +29,15 @@ fn main() -> ExitCode {
     // `keyseal doctor` and the other commands print to that terminal's.
     #[cfg(windows)]
     // SAFETY: AttachConsole takes no pointers and only fails when there is
-    // no parent console, which is fine.
-    unsafe {
-        let _ = windows::Win32::System::Console::AttachConsole(
+    // no parent console: started from Explorer, the Start menu or a browser.
+    let terminal = unsafe {
+        windows::Win32::System::Console::AttachConsole(
             windows::Win32::System::Console::ATTACH_PARENT_PROCESS,
-        );
+        )
     }
+    .is_ok();
+    #[cfg(not(windows))]
+    let terminal = std::io::IsTerminal::is_terminal(&std::io::stdin());
     let args: Vec<String> = std::env::args().skip(1).collect();
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
     let result = match args.as_slice() {
@@ -42,11 +45,15 @@ fn main() -> ExitCode {
             println!("keyseal {}", keyseal_core::VERSION);
             Ok(())
         }
-        // Launched by the `keyseal://` handler on macOS: no terminal, and the
-        // link arrives as an open-URL event, which the windows receive.
-        [] if cfg!(target_os = "macos") && !headless() && !std::io::stdin().is_terminal() => {
-            launch(keyseal_ui::Start::UrlEvent)
-        }
+        // Opened without a terminal. On macOS that is the `keyseal://`
+        // handler, and the link arrives as an open-URL event, which the
+        // windows receive. On Windows and Linux it is the app itself, from
+        // the Start menu, the app menu or the file manager.
+        [] if !headless() && !terminal => launch(if cfg!(target_os = "macos") {
+            keyseal_ui::Start::UrlEvent
+        } else {
+            keyseal_ui::Start::Settings
+        }),
         ["run", link] => return run_updated(link),
         ["settings"] => launch(keyseal_ui::Start::Settings),
         ["list"] => list(),

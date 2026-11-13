@@ -93,8 +93,8 @@ revocation are described in `docs/code-signing-policy.md`.
      (downloads) and `keyseal-helper-<v>-linux-x64.AppImage` (download and
      update), and the same for arm64: `keyseal-helper-<v>-linux-arm64.tar.gz`,
      `keyseal_<v>_arm64.deb` and `keyseal-helper-<v>-linux-arm64.AppImage`. An AppImage replaces itself; a deb or tarball install keeps
-     its binary, and the helper leaves the AppImage in its config
-     directory with one notice per version.
+     its binary and downloads nothing, and the helper says once per
+     version that the release is out.
    - `keyseal-update.json`, `SHA256SUMS`, `SHA256SUMS-unsigned`, `BUILDINFO`
    - the downloads again without the version, for fixed links:
      `keyseal-macos-universal.dmg`, `keyseal-windows-x64.zip`,

@@ -4,6 +4,11 @@
 # handler cache, so no maintainer scripts are needed; it is recommended,
 # since a minimal system may not have it.
 #
+# Depends lists the binary's NEEDED libraries (readelf -d) and the ones
+# GPUI opens with dlopen to show a window: libvulkan.so.1 and, in a Wayland
+# session, libwayland-client.so.0. check-deb.sh checks both lists on a
+# clean system. A Vulkan driver is recommended, since a desktop has one.
+#
 #   helper/packaging/linux/build-deb.sh <linux binary> <out dir>
 #
 # KEYSEAL_NOTICES names the third-party notices to install under
@@ -37,8 +42,8 @@ Package: keyseal
 Version: $version
 Architecture: $deb_arch
 Maintainer: KeySeal maintainers
-Depends: libc6 (>= 2.35)
-Recommends: p11-kit, desktop-file-utils
+Depends: libc6 (>= 2.35), libgcc-s1, libxcb1, libxkbcommon0, libxkbcommon-x11-0, libvulkan1, libwayland-client0
+Recommends: p11-kit, desktop-file-utils, mesa-vulkan-drivers | vulkan-icd
 Section: utils
 Priority: optional
 Description: KeySeal helper

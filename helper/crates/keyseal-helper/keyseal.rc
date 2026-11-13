@@ -1,2 +1,29 @@
 // GPUI gives its windows icon resource 1.
 1 ICON "../../packaging/windows/keyseal.ico"
+
+// Browsers name the app in "This site is trying to open" from
+// FileDescription. build.rs defines the KEYSEAL_VERSION macros.
+1 VERSIONINFO
+FILEVERSION KEYSEAL_VERSION_MAJOR, KEYSEAL_VERSION_MINOR, KEYSEAL_VERSION_PATCH, 0
+PRODUCTVERSION KEYSEAL_VERSION_MAJOR, KEYSEAL_VERSION_MINOR, KEYSEAL_VERSION_PATCH, 0
+FILEOS 0x40004
+FILETYPE 0x1
+BEGIN
+  BLOCK "StringFileInfo"
+  BEGIN
+    BLOCK "040904B0"
+    BEGIN
+      VALUE "CompanyName", "KeySeal"
+      VALUE "FileDescription", "KeySeal"
+      VALUE "FileVersion", KEYSEAL_VERSION
+      VALUE "InternalName", "keyseal"
+      VALUE "OriginalFilename", "keyseal.exe"
+      VALUE "ProductName", "KeySeal"
+      VALUE "ProductVersion", KEYSEAL_VERSION
+    END
+  END
+  BLOCK "VarFileInfo"
+  BEGIN
+    VALUE "Translation", 0x409, 1200
+  END
+END

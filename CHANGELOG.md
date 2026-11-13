@@ -169,6 +169,13 @@ lines under the new version with the release date.
   certified PDF and `/prepare` for an encrypted one, so `@keyseal/server`
   now fails the job with that message instead of answering 502.
 
+- The system roots trusted beside the configured ones are read from
+  OpenSSL's default CA bundle, the image's ca-certificates (the same set as
+  before), so `SSL_CERT_FILE` and `SSL_CERT_DIR` now change them. oscrypto,
+  unmaintained since 2022 and unable to detect OpenSSL 3.0.10 and later, is
+  no longer a direct dependency; pyHanko still installs it but never imports
+  it here.
+
 #### Security
 
 - `/certificate`, `/finalize` and `/retimestamp` stop after 45 seconds,

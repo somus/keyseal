@@ -232,6 +232,9 @@ lines under the new version with the release date.
 
 #### Security
 
+- pyHanko 0.38.1, which no longer loops forever on a PDF with a crafted
+  cross-reference table and refuses one that lists an object twice in a
+  section, which had weakened the check for changes made after a signature.
 - `/certificate`, `/finalize` and `/retimestamp` stop after 45 seconds,
   fetches included, as `/validate` does, and `/finalize` refuses a PDF with
   more than 50 signatures. Each is a 422, except `/certificate`, which

@@ -16,7 +16,31 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Which jobs the pull request's files need (scripts/ci/changes.sh). On
+  # main every job runs. The checks job below is the one branch protection
+  # requires, so a job skipped here doesn't hold a pull request back.
+  changes:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      typescript: ${{ steps.changes.outputs.typescript }}
+      service: ${{ steps.changes.outputs.service }}
+      helper: ${{ steps.changes.outputs.helper }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: scripts/ci
+      - id: changes
+        run: scripts/ci/changes.sh >>"$GITHUB_OUTPUT"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+
   typescript:
+    needs: changes
+    if: needs.changes.outputs.typescript == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -37,6 +61,8 @@ jobs:
   # The packed @keyseal/server and @keyseal/browser, imported from dist under
   # the oldest Node the server supports.
   node:
+    needs: changes
+    if: needs.changes.outputs.typescript == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -50,6 +76,8 @@ jobs:
       - run: scripts/ci/node-smoke.sh
 
   service:
+    needs: changes
+    if: needs.changes.outputs.service == 'true'
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -64,6 +92,8 @@ jobs:
       - run: uv run pytest
 
   helper:
+    needs: changes
+    if: needs.changes.outputs.helper == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -131,3 +161,16 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: ../scripts/ci/windows-install-smoke.ps1
+
+  # The one check branch protection requires from this workflow: it fails if
+  # any job above failed or was cancelled, and passes when they passed or
+  # weren't needed.
+  checks:
+    needs: [changes, typescript, node, service, helper]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          FAILED: ${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}
+        run: |
+          [ "$FAILED" = false ] || { echo "A job failed or was cancelled." >&2; exit 1; }

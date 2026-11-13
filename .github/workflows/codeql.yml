@@ -15,7 +15,42 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # The languages whose code the pull request changes (scripts/ci/changes.sh);
+  # on main and on the schedule, every language. Rust alone takes 8 to 10
+  # minutes, so a pull request that doesn't touch the helper skips it.
+  changes:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      languages: ${{ steps.languages.outputs.languages }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: scripts/ci
+      - id: changes
+        run: scripts/ci/changes.sh >>"$GITHUB_OUTPUT"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+      - id: languages
+        env:
+          ACTIONS: ${{ steps.changes.outputs.workflows }}
+          JAVASCRIPT: ${{ steps.changes.outputs.typescript }}
+          PYTHON: ${{ steps.changes.outputs.service }}
+          RUST: ${{ steps.changes.outputs.helper }}
+        run: |
+          languages=()
+          [ "$ACTIONS" = false ] || languages+=(actions)
+          [ "$JAVASCRIPT" = false ] || languages+=(javascript-typescript)
+          [ "$PYTHON" = false ] || languages+=(python)
+          [ "$RUST" = false ] || languages+=(rust)
+          echo "languages=$(jq -cn '$ARGS.positional' --args "${languages[@]}")" >>"$GITHUB_OUTPUT"
+
   analyze:
+    needs: changes
+    if: needs.changes.outputs.languages != '[]'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -23,7 +58,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        language: [actions, javascript-typescript, python, rust]
+        language: ${{ fromJSON(needs.changes.outputs.languages) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: github/codeql-action/init@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3

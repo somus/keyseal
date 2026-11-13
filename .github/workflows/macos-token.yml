@@ -5,15 +5,19 @@ name: macos-token
 # scripts/ci/virtual-piv.sh. Signing isn't covered, since it needs the
 # system's PIN dialog.
 
+# It runs only when the paths below change, on main too: macOS runners are the
+# scarcest, and a docs commit queued behind them once failed main when no
+# runner picked the job up in 15 minutes. No release waits on this workflow.
 on:
   push:
     branches: [main]
-  pull_request:
-    paths:
+    paths: &paths
       - helper/**
       - scripts/ci/virtual-piv.sh
       - scripts/ci/jcardsim-reinsert.py
       - .github/workflows/macos-token.yml
+  pull_request:
+    paths: *paths
   workflow_dispatch:
 
 permissions:

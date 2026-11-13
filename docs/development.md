@@ -24,7 +24,7 @@ Each component's README covers its internals: [helper](../helper/README.md), [se
 
 ## Checks
 
-These are the checks CI runs in `.github/workflows/checks.yml`.
+These are the checks CI runs in `.github/workflows/checks.yml`. On a pull request, `scripts/ci/changes.sh` picks the jobs its files need (a docs-only change runs none), and the `checks` job, which branch protection requires, passes when every job that ran passed. The `e2e` and `codeql` workflows pick their jobs the same way. On `main` everything runs.
 
 TypeScript, from the repository root:
 

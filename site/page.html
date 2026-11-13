@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <meta
+      name="description"
+      content="Install KeySeal and sign documents on websites with your USB token or smart card."
+    />
+    <title>KeySeal: sign with your USB token</title>
+    <link rel="icon" href="icon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <a class="skip" href="#main">Skip to the guide</a>
+    <header class="bar">
+      <a class="brand" href="./" aria-label="KeySeal home">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path
+            fill="currentColor"
+            fill-rule="evenodd"
+            d="M6 5H13A4 4 0 0 1 17 9H22V15H17A4 4 0 0 1 13 19H6A4 4 0 0 1 2 15V9A4 4 0 0 1 6 5ZM12 12A3 3 0 1 0 6 12A3 3 0 1 0 12 12Z"
+          />
+        </svg>
+        KeySeal
+      </a>
+      <a class="source" href="https://github.com/somus/keyseal"
+        >Source on GitHub</a
+      >
+    </header>
+
+    <main id="main">
+      <section class="hero" aria-labelledby="title">
+        <img class="app-icon" src="icon.svg" width="88" height="88" alt="" />
+        <h1 id="title">Sign documents with your USB token</h1>
+        <p class="lede">
+          KeySeal is a small, free app that lets a website use the signing
+          certificate on your token or smart card. Your PIN and your key stay
+          with you.
+        </p>
+
+        <div class="get">
+          <a class="button" id="download" href="#downloads">Download KeySeal</a>
+          <p class="hint" id="download-hint">
+            For Mac, Windows and Linux. Your computer will warn you the first
+            time you open it; <a href="#install-keyseal">the guide below</a>
+            shows what to do.
+          </p>
+        </div>
+
+        <div class="platforms" id="downloads">
+          <h2 class="platforms-title">All downloads</h2>
+          <ul>
+            <li data-platform="macos">
+              <span class="name">Mac</span>
+              <span class="detail">Apple silicon and Intel, disk image</span>
+              <a
+                href="https://github.com/somus/keyseal/releases/latest/download/keyseal-macos-universal.dmg"
+                >Download</a
+              >
+            </li>
+            <li data-platform="windows">
+              <span class="name">Windows 10 or 11</span>
+              <span class="detail">x64, zip with install.cmd</span>
+              <a
+                href="https://github.com/somus/keyseal/releases/latest/download/keyseal-windows-x64.zip"
+                >Download</a
+              >
+            </li>
+            <li data-platform="linux-x64">
+              <span class="name">Linux, x64</span>
+              <span class="detail"
+                >AppImage, or the Debian and Ubuntu package</span
+              >
+              <span class="links">
+                <a
+                  href="https://github.com/somus/keyseal/releases/latest/download/keyseal-linux-x64.AppImage"
+                  >AppImage</a
+                >
+                <a
+                  href="https://github.com/somus/keyseal/releases/latest/download/keyseal_amd64.deb"
+                  >.deb</a
+                >
+              </span>
+            </li>
+            <li data-platform="linux-arm64">
+              <span class="name">Linux, arm64</span>
+              <span class="detail"
+                >AppImage, or the Debian and Ubuntu package</span
+              >
+              <span class="links">
+                <a
+                  href="https://github.com/somus/keyseal/releases/latest/download/keyseal-linux-arm64.AppImage"
+                  >AppImage</a
+                >
+                <a
+                  href="https://github.com/somus/keyseal/releases/latest/download/keyseal_arm64.deb"
+                  >.deb</a
+                >
+              </span>
+            </li>
+          </ul>
+          <p class="more">
+            Tarballs, checksums and release notes are on the
+            <a href="https://github.com/somus/keyseal/releases/latest"
+              >latest release</a
+            >.
+          </p>
+        </div>
+      </section>
+
+      <div class="layout">
+        <nav class="contents" aria-labelledby="contents-title">
+          <h2 id="contents-title">On this page</h2>
+          <ol>
+            <!-- contents -->
+          </ol>
+        </nav>
+        <article class="guide">
+          <!-- guide -->
+        </article>
+      </div>
+    </main>
+
+    <footer class="foot">
+      <p>
+        KeySeal is open source under the Apache 2.0 licence.
+        <a href="https://github.com/somus/keyseal/blob/main/docs/signers.md"
+          >Edit this guide on GitHub</a
+        >. This page loads nothing from other sites.
+      </p>
+    </footer>
+
+    <script>
+      // Points the button at this computer's download. Without this script
+      // it goes to the list above, which works the same.
+      (async () => {
+        const ua = navigator.userAgent;
+        const labels = {
+          macos: ["Download for Mac", "mac"],
+          windows: ["Download for Windows", "windows"],
+          "linux-x64": ["Download for Linux (x64)", "linux"],
+          "linux-arm64": ["Download for Linux (arm64)", "linux"],
+        };
+        let platform;
+        if (/Android|iPhone|iPad|iPod|CrOS/.test(ua)) {
+          platform = "phone";
+        } else if (/Windows NT/.test(ua)) {
+          platform = "windows";
+        } else if (/Macintosh|Mac OS X/.test(ua)) {
+          platform = "macos";
+        } else if (/Linux|X11/.test(ua)) {
+          // Chromium says x86_64 in its user agent on every Linux machine;
+          // only its client hints give the architecture.
+          const hints = await navigator.userAgentData
+            ?.getHighEntropyValues(["architecture"])
+            .catch(() => undefined);
+          const arm = hints?.architecture
+            ? hints.architecture === "arm"
+            : /aarch64|arm64/.test(ua);
+          platform = arm ? "linux-arm64" : "linux-x64";
+        }
+        const button = document.getElementById("download");
+        const hint = document.getElementById("download-hint");
+        if (platform === "phone") {
+          hint.textContent =
+            "KeySeal runs on a computer. Open this page on the Mac, Windows or Linux computer your token plugs into.";
+          return;
+        }
+        const row = document.querySelector(`[data-platform="${platform}"]`);
+        if (!row) return;
+        const [label, section] = labels[platform];
+        button.href = row.querySelector("a").href;
+        button.textContent = label;
+        row.classList.add("current");
+        hint.querySelector("a").href = `#${section}`;
+      })();
+    </script>
+  </body>
+</html>

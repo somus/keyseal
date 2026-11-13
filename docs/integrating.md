@@ -162,7 +162,7 @@ Call it straight from the click handler, since browsers want a recent user gestu
 
 ## 5. Install the helper
 
-Signers install the helper once. Each release carries its downloads under fixed names too, so link to the latest release's and never update the links:
+Signers install the helper once. [signers.md](signers.md) is a guide written for them, covering the install, the warnings macOS and Windows show for the helper, the token's driver and their first signature; link to it beside your download link. Each release carries its downloads under fixed names too, so link to the latest release's and never update the links:
 
 | Platform | Download link | Registers `keyseal://` |
 | --- | --- | --- |

@@ -65,7 +65,7 @@ On Debian and Ubuntu the SoftHSM module is `/usr/lib/softhsm/libsofthsm2.so`. Wi
 The CNG and keychain paths can't use SoftHSM, so their coverage is narrower:
 
 - CNG signing has been checked on Windows 11 with a TPM virtual smart card through Edge, Chrome and Firefox, not yet with a vendor DSC token. The batch path has been type-checked for Windows, not yet run on a Windows token. The unit tests cover the filtering and the signature encoding against a fake store.
-- The keychain unit tests import RSA and P-256 identities into a throwaway keychain, treat their software keys as on a token, and check that PKCS#1 v1.5, PSS and ECDSA signatures made through the store verify. The `macos-token` workflow puts a virtual PIV card in the runner (`scripts/ci/virtual-piv.sh`: PivApplet in jCardSim behind vsmartcard's vpcd reader), which macOS's own PIV driver exposes, and checks that the keychain search finds its certificate and counts its key as on a token. Signing with a real token, and the system's PIN dialog, have not been checked yet.
+- The keychain unit tests import RSA and P-256 identities into a throwaway keychain, treat their software keys as on a token, and check that PKCS#1 v1.5, PSS and ECDSA signatures made through the store verify. The macOS `helper` job in `checks.yml` puts a virtual PIV card in the runner (`scripts/ci/virtual-piv.sh`: PivApplet in jCardSim behind vsmartcard's vpcd reader), which macOS's own PIV driver exposes, and checks that the keychain search finds its certificate and counts its key as on a token. Signing with a real token, and the system's PIN dialog, have not been checked yet.
 
 ## End-to-end test
 

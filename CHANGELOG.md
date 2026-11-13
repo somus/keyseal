@@ -31,6 +31,28 @@ lines under the new version with the release date.
 - A token whose PIN is locked no longer shows the PIN field: the helper
   shows an error saying the token's own software or its issuer unlocks it,
   and reports the failure to the server.
+- Certificates that have expired or aren't valid yet are no longer offered.
+  When the token holds no other, the error says when its certificate
+  expired, or from when it is valid, instead of the server refusing it
+  after the PIN.
+- A malformed `keyseal://` link shows a plain message to start again from
+  the website instead of the URL parser's error.
+- An empty Windows certificate store or macOS keychain shows in Settings and
+  `keyseal doctor --json` as checked with nothing found, not as a driver
+  that didn't work.
+- A `KEYSEAL_PKCS11_MODULE` path with no file there is an error naming the
+  variable and the path, not "no driver found".
+
+#### Fixed
+
+- Enter no longer submits the PIN before the Sign button responds, so a
+  keystroke meant for another window can't confirm a signature.
+- Links that arrive during a job reuse one busy message instead of opening
+  a window each.
+- A panic in the job shows an error window, is written to `keyseal.log` with
+  where it happened, and is reported to the server once the job is claimed.
+- The error shows at once when a job fails; the failure report to the server
+  is sent alongside it, with its own 10 second limit, instead of first.
 
 ### [0.3.0][helper-0.3.0] - 2026-11-05
 

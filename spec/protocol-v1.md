@@ -316,7 +316,7 @@ Request, `FailureReport`:
 
 `message` is 1 to 500 characters after trimming whitespace, written for the user. The job MUST be `claimed` or `prepared`. The server moves the job to `failed`, keeps the message for the browser page, and returns `200` with `Empty`.
 
-After a successful claim, the helper MUST send a failure report whenever it stops the job without completing it: the user cancels, no usable certificate or token is found, a validation in sections 8.2 to 8.4 or 10 fails, a wrong PIN is not entered again (section 12.3), the token's PIN is locked, or signing fails. Sending is best effort; the helper shows the reason in its own window regardless. The message MUST NOT contain the PIN or any secret.
+After a successful claim, the helper MUST send a failure report whenever it stops the job without completing it: the user cancels, no usable certificate or token is found, a validation in sections 8.2 to 8.4 or 10 fails, a wrong PIN is not entered again (section 12.3), the token's PIN is locked, or signing fails. Sending is best effort; the helper shows the reason in its own window regardless, without waiting for the report. The message MUST NOT contain the PIN or any secret.
 
 ### 8.8 Status codes
 

@@ -131,12 +131,15 @@ pub fn launch(
         std::process::exit(1);
     }
     // GPUI panics when it can't set up the GPU, before any window opens;
-    // record that where a browser-started helper can be diagnosed. Only the
-    // main thread's panics: the job thread handles the link, never logged.
+    // record that where a browser-started helper can be diagnosed, and the
+    // job thread's panics with where they happened. A panic's message
+    // must never carry the link or the PIN, which the log never holds.
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        if std::thread::current().name() == Some("main") {
-            log(&format!("KeySeal stopped: {info}"));
+        match std::thread::current().name() {
+            Some("main") => log(&format!("KeySeal stopped: {info}")),
+            Some(JOB_THREAD) => log(&format!("The job stopped: {info}")),
+            _ => {}
         }
         default_hook(info);
     }));
@@ -232,8 +235,12 @@ pub fn launch(
     std::process::exit(0)
 }
 
+/// The name of a job's thread, whose panics are logged.
+const JOB_THREAD: &str = "job";
+
 /// Runs `link` on a thread of its own; `cancelled` is set when the signer
-/// cancels the job or closes its window.
+/// cancels the job or closes its window. A panic there shows the error
+/// window; the panic hook has logged it.
 fn start_job(
     link: String,
     cancelled: Arc<AtomicBool>,
@@ -241,14 +248,18 @@ fn start_job(
     log: fn(&str),
     job: fn(&str, &mut dyn Ui) -> i32,
 ) {
-    std::thread::spawn(move || {
+    let thread = std::thread::Builder::new().name(JOB_THREAD.into());
+    let spawned = thread.spawn(move || {
         let mut ui = WindowUi {
             events: events.clone(),
             log,
             cancelled,
         };
         let code = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| job(&link, &mut ui)))
-            .unwrap_or(1);
+            .unwrap_or_else(|_| {
+                ui.show_error(keyseal_core::flow::INTERNAL_ERROR);
+                1
+            });
         // The daily catalogue and update checks run once the job is over
         // and its windows are gone, never before or during it.
         let _ = events.unbounded_send(Event::Finished);
@@ -260,6 +271,7 @@ fn start_job(
         }
         let _ = events.unbounded_send(Event::Done(code));
     });
+    spawned.expect("failed to spawn the job thread");
 }
 
 /// Opens the settings window; the app quits when the last window closes

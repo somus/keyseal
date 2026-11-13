@@ -43,7 +43,7 @@ If the fingerprint isn't in `SHA256SUMS`, don't open the file. The [code signing
 
 1. Open the downloaded `keyseal-macos-universal.dmg`.
 2. Drag KeySeal onto the Applications folder in the window that opens, then eject the KeySeal disk.
-3. Open KeySeal from your Applications folder. macOS says it can't check KeySeal and doesn't open it. Close that message; don't move KeySeal to the Bin.
+3. Open KeySeal from your Applications folder. macOS says it can't check KeySeal and doesn't open it. Close that message; don't move KeySeal to the Bin (Trash).
 4. Open System Settings, choose **Privacy & Security**, and scroll down to Security. Next to the line about KeySeal, click **Open Anyway**.
 5. macOS asks once more. Click **Open**, and enter your Mac's password if it asks for it.
 
@@ -100,7 +100,7 @@ To see what KeySeal found, open its settings:
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="signers/settings-dark.png">
-  <img src="signers/settings-light.png" width="560" alt="KeySeal settings. Trusted sites lists two sites, each with a bin icon. Tokens and drivers says Your token is ready, KeySeal can sign with it; a HyperSecu HYP2003 token with Driver working; another driver installed that does not see the token; and Refresh and Copy diagnostics buttons.">
+  <img src="signers/settings-light.png" width="560" height="388" alt="KeySeal settings. Trusted sites lists two sites, each with a bin icon. Tokens and drivers says Your token is ready, KeySeal can sign with it; a HyperSecu HYP2003 token with Driver working; another driver installed that does not see the token; and Refresh and Copy diagnostics buttons.">
 </picture>
 
 ## Signing a document
@@ -119,7 +119,7 @@ The first time a site uses KeySeal, KeySeal asks before it contacts the site:
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="signers/trust-dark.png">
-  <img src="signers/trust-light.png" width="440" alt="KeySeal asks about a new site: sign.example.org wants to use KeySeal for the first time. Allow it only if you just asked this site to sign a document or set up your certificate. Buttons: Cancel and Allow.">
+  <img src="signers/trust-light.png" width="440" height="260" alt="KeySeal asks about a new site: sign.example.org wants to use KeySeal for the first time. Allow it only if you just asked this site to sign a document or set up your certificate. Buttons: Cancel and Allow.">
 </picture>
 
 Check the site's name. If it's the website you just clicked Sign on, click **Allow**. KeySeal remembers it, and doesn't ask again for that site. If you didn't just ask that site for anything, click **Cancel**: KeySeal sends it nothing.
@@ -132,7 +132,7 @@ KeySeal shows who is asking, the document and the name it signs as. The window c
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="signers/pin-dark.png">
-  <img src="signers/pin-light.png" width="520" alt="KeySeal's signing window with the website's logo: sign.example.org wants you to sign a document. Document: Circular 2026/14: Operation of bank accounts. Signing as: Asha Rao. Show technical details, a Token PIN field, and Cancel and Sign buttons.">
+  <img src="signers/pin-light.png" width="520" height="453" alt="KeySeal's signing window with the website's logo: sign.example.org wants you to sign a document. Document: Circular 2026/14: Operation of bank accounts. Signing as: Asha Rao. Show technical details, a Token PIN field, and Cancel and Sign buttons.">
 </picture>
 
 - **Document** is the document's title, or for several documents, how many there are and each one's title. You sign them all with one PIN.
@@ -161,7 +161,7 @@ KeySeal says **That PIN isn't right. Check it and try again.**, clears the field
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="signers/pin-final-try-dark.png">
-  <img src="signers/pin-final-try-light.png" width="520" alt="KeySeal's signing window after a wrong PIN. A warning above the Token PIN field: One more wrong PIN will lock your token. If you aren't sure of it, cancel and check it first. Under the field: That PIN isn't right. Check it and try again.">
+  <img src="signers/pin-final-try-light.png" width="520" height="453" alt="KeySeal's signing window after a wrong PIN. A warning above the Token PIN field: One more wrong PIN will lock your token. If you aren't sure of it, cancel and check it first. Under the field: That PIN isn't right. Check it and try again.">
 </picture>
 
 When you see the second warning and aren't sure of your PIN, click **Cancel**. A locked token can only be unlocked with its own software or by whoever issued it, and some can't be unlocked at all. Not every token reports its count, so you may get no warning.
@@ -222,7 +222,7 @@ There are three exceptions, where KeySeal shows a window telling you about a new
 
 ## Uninstalling
 
-**Mac:** quit KeySeal, then drag it from Applications to the Bin. Your list of allowed sites, settings and log stay in `~/Library/Application Support/keyseal`; delete that folder too to remove them.
+**Mac:** quit KeySeal, then drag it from Applications to the Bin (Trash). Your list of allowed sites, settings and log stay in `~/Library/Application Support/keyseal`; delete that folder too to remove them.
 
 **Windows:** open Settings, Apps, Installed apps, and choose **Uninstall** on KeySeal. If KeySeal isn't listed there, press Windows+R, type the line below and press Enter:
 

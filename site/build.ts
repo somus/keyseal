@@ -46,7 +46,6 @@ const guide = await new HTMLRewriter()
   })
   .on("img", {
     element(image) {
-      image.setAttribute("loading", "lazy");
       image.setAttribute("decoding", "async");
     },
   })

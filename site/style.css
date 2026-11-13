@@ -107,7 +107,7 @@ li {
 .skip {
   position: absolute;
   left: 16px;
-  top: -48px;
+  top: -100px;
   padding: 8px 12px;
   background: var(--surface);
   border-radius: 8px;

@@ -1,9 +1,9 @@
 # PR evidence for KeySeal
 
-Every PR carries evidence from `boat-kit verify --pr <n>` in its description (boat-kit's README, in the agent-config repository, covers the tool). Push first: the sandboxes check the commit out from origin.
+A maintainer's PR carries evidence from `boat-kit verify --pr <n>` in its description. boat-kit is the maintainers' own tool, in their private agent-config repository, whose README covers it; a contributor without it relies on CI, which runs the same tests. Push first: the sandboxes check the commit out from origin.
 
-- **Tests.** The helper's Rust tests run on the head with SoftHSM, as in CI, together with `bun test`. Arguments filter the Rust tests: `boat-kit verify --pr 12 softhsm`.
-- **Windows.** For a change to what the helper shows, pass `--scenario <file>`: the helper windows to screenshot, in two sandboxes at once, one on the merge base and one on the head. Each opens from the gallery's sample data (`cargo run -p keyseal-ui --example gallery --features gallery -- <view>`) on the sandbox's X display, rendered through software Vulkan.
+- **Tests.** The helper's Rust tests run on the head with SoftHSM, as in CI, together with `bun test` and the signing service's tests. Arguments filter the Rust tests: `boat-kit verify --pr 12 softhsm`. A runner that fails before its tests run, on a build error or a test file that doesn't load, fails the run instead of leaving its tests out of the evidence. The end-to-end test is left to CI.
+- **Helper windows.** For a change to what the helper shows, pass `--scenario <file>`: the helper windows to screenshot, in two sandboxes at once, one on the merge base and one on the head. Each opens from the gallery's sample data (`cargo run -p keyseal-ui --example gallery --features gallery -- <view>`) on the sandbox's X display, rendered through software Vulkan.
 
 ## The scenario
 

@@ -1,11 +1,35 @@
 #!/bin/bash
-# Runs the helper's Rust tests (with SoftHSM, as CI does) and the TypeScript
-# tests, reporting every result. Arguments filter the Rust tests.
+# Runs the helper's Rust tests (with SoftHSM, as CI does), the TypeScript
+# tests and the signing service's tests, reporting every result. Arguments
+# filter the Rust tests.
 set -euo pipefail
 export KEYSEAL_SOFTHSM_MODULE=/usr/lib/softhsm/libsofthsm2.so PATH="$HOME/.local/bin:$PATH"
 
+# Runs a test runner that writes the JUnit report $1. A failed test is in the
+# report; a runner that fails without one (a build error, a test file that
+# didn't load) ran fewer tests than the report shows, which fails the run.
+broken=0
+run() {
+  local report=$1
+  shift
+  "$@" && return
+  if ! grep -qE '<(failure|error)[ >/]' "$report" 2>/dev/null; then
+    echo "$1 failed outside the tests it reported." >&2
+    broken=1
+  fi
+}
+
 config=$(mktemp --suffix .toml)
 printf '[profile.boat.junit]\npath = "junit.xml"\n' >"$config"
-(cd helper && cargo nextest run --config-file "$config" --profile boat --no-fail-fast "$@") || true
-bun test --reporter=junit --reporter-outfile=/tmp/bun-junit.xml || true
-bun "$BOAT_KIT/junit-tests.ts" helper/target/nextest/boat/junit.xml /tmp/bun-junit.xml
+cd helper
+run target/nextest/boat/junit.xml cargo nextest run --config-file "$config" --profile boat --no-fail-fast "$@"
+cd ..
+run /tmp/bun-junit.xml bun test --reporter=junit --reporter-outfile=/tmp/bun-junit.xml
+# Sandbox commands read any directory whatever its mode, which is the one
+# thing the deselected test needs to be refused.
+cd service
+run /tmp/pytest-junit.xml uv run --frozen pytest -q --junitxml=/tmp/pytest-junit.xml \
+  --deselect tests/test_settings.py::test_an_extra_roots_dir_that_cannot_be_listed_refuses_to_start
+cd ..
+bun "$BOAT_KIT/junit-tests.ts" helper/target/nextest/boat/junit.xml /tmp/bun-junit.xml /tmp/pytest-junit.xml
+exit "$broken"

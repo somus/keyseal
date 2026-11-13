@@ -204,7 +204,9 @@ with yours using `helper/packaging/macos/compare-bundle.sh`
 
 The helper statically links crates whose licences ask for their notices to
 go with the binary, so every package holds `THIRD-PARTY-NOTICES.txt`: the
-Windows zip beside `keyseal.exe`, the macOS app in `Contents/Resources`.
+Windows zip beside `keyseal.exe`, the macOS app in `Contents/Resources`,
+the Linux tarball beside `keyseal`, and the deb and the AppImage under
+`usr/share/doc/keyseal`.
 The release run's `notices` job makes it once, with cargo-about 0.9.3 from
 `Cargo.lock`, offline, so the same commit gives the same file anywhere.
 `release.sh` makes it again from the tag and compares. To make it yourself,

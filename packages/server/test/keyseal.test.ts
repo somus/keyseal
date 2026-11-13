@@ -2451,6 +2451,16 @@ describe("expiry", () => {
     expect([...t.adapter.blobs.keys()]).toEqual([`${sha256Hex(live)}/pdf/0`]);
   });
 
+  test("sweep leaves blobs that aren't a job's", async () => {
+    const t = setup();
+    const foreign = ["backup.pdf", "other/file", `${"g".repeat(64)}/pdf/0`];
+    for (const key of foreign) {
+      await t.adapter.putBlob(key, Uint8Array.of(1));
+    }
+    await t.keyseal.sweep();
+    expect([...t.adapter.blobs.keys()]).toEqual(foreign);
+  });
+
   test("creating a job expires old ones and drops their blobs", async () => {
     const t = setup();
     const { token } = await t.preparedJob();

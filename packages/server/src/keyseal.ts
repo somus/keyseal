@@ -1382,7 +1382,11 @@ export function createKeySeal(options: KeySealOptions): KeySeal {
       // ended leaves blobs that nothing else deletes. Open jobs keep theirs.
       const ended = new Map<string, boolean>();
       for (const key of await adapter.listBlobs()) {
-        const id = key.slice(0, key.indexOf("/"));
+        // Only keys this package stored: anything else in the store stays.
+        const id = key.slice(0, 64);
+        if (!SHA256_HEX.test(id) || key[64] !== "/") {
+          continue;
+        }
         if (!ended.has(id)) {
           const job = await adapter.get(id);
           ended.set(id, !job || isTerminal(job) || job.state === "expired");

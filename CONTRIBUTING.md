@@ -11,6 +11,10 @@ Everyone taking part in the project is expected to follow the [code of conduct](
 - For a larger change, especially one to the protocol, open an issue first so the design can be agreed before the code.
 - Security problems go through a private advisory, never a public issue. See [SECURITY.md](SECURITY.md).
 
+## Issues handed to an agent
+
+A maintainer can hand an open issue to an agent by labelling it `agent` (Claude Opus) or `agent:codex` (Codex). The agent swaps that label for `agent:working`, then for `agent:pr` once it links a pull request for review, or for `agent:blocked` after asking a question on the issue. Leave an issue labelled `agent:working` to the agent.
+
 ## Making a change
 
 [docs/development.md](docs/development.md) has the repository layout, the prerequisites and the checks CI runs. Run the checks for every component you touch before opening a pull request.

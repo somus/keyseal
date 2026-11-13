@@ -109,6 +109,31 @@ pub fn is_signing_certificate(der: &[u8], usage: KeyUsage) -> bool {
     !ca && asserted
 }
 
+/// Why a certificate can't sign at the Unix time `now`: it has expired or
+/// isn't valid yet. `None` within its validity period, as the server's
+/// certificate check requires.
+pub fn outside_validity(der: &[u8], now: i64) -> Option<String> {
+    let (_, certificate) = x509_parser::parse_x509_certificate(der).ok()?;
+    let validity = certificate.validity();
+    let date = |time: &x509_parser::time::ASN1Time| {
+        let time = time.to_datetime();
+        format!("{} {} {}", time.day(), time.month(), time.year())
+    };
+    if now > validity.not_after.timestamp() {
+        Some(format!(
+            "The certificate on your token expired on {}. Renew it with the company that issued it, then try again.",
+            date(&validity.not_after)
+        ))
+    } else if now < validity.not_before.timestamp() {
+        Some(format!(
+            "The certificate on your token isn't valid until {}. Try again from that date.",
+            date(&validity.not_before)
+        ))
+    } else {
+        None
+    }
+}
+
 /// The certificates among `others` that form the issuer chain of `der`,
 /// its issuer first: each one's subject is the issuer name of the one
 /// before and, when both carry key identifiers, its subject key identifier
@@ -676,6 +701,25 @@ mod tests {
             NO_KEY_USAGE,
             KeyUsage::DigitalSignature
         ));
+    }
+
+    #[test]
+    fn certificates_sign_only_within_their_validity_period() {
+        // Valid from 1 January 2020 to 1 January 2021.
+        const EXPIRED: &[u8] = include_bytes!("../tests/fixtures/expired.der");
+        assert_eq!(outside_validity(EXPIRED, 1_600_000_000), None);
+        assert_eq!(
+            outside_validity(EXPIRED, 1_700_000_000).as_deref(),
+            Some(
+                "The certificate on your token expired on 1 January 2021. Renew it with the company that issued it, then try again."
+            )
+        );
+        assert_eq!(
+            outside_validity(EXPIRED, 1_500_000_000).as_deref(),
+            Some(
+                "The certificate on your token isn't valid until 1 January 2020. Try again from that date."
+            )
+        );
     }
 
     /// CKM_RSA_PKCS over the DigestInfo hashed here gives the signature the

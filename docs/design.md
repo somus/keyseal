@@ -35,7 +35,7 @@ A branded, origin-locked helper build is a parameterised build option, published
 
 1. The integrator backend creates a job and the page opens a `keyseal://` link carrying the job URL and its one-time token.
 2. The helper `GET`s the job. The server marks it claimed and returns a claim nonce, the job description and optional constraints: `expectedCertificateSha256` pins one certificate, and `certificatePolicy` asks for policy OIDs, issuing CAs or a subject organization where no certificate can be pinned yet.
-3. The helper filters the token's certificates by those constraints and `POST`s the chosen one. The server enforces the same constraints on what it receives.
+3. The helper filters the token's certificates by those constraints, leaving out any outside its validity period, and `POST`s the chosen one. The server enforces the same constraints on what it receives.
 4. The server prepares every PDF of the job through the service and returns each one's DER SignedAttributes, with one `digestAlgorithm` and `signatureAlgorithm` for all of them.
 5. The helper validates every SignedAttributes (contentType, messageDigest, signing-certificate-v2), downloads every prepared PDF and checks that its last `/ByteRange` hashes to its messageDigest, shows the origin, title, signer, documents and certificate, asks for the PIN once, signs every document in the same token session and `POST`s the signatures with the claim nonce.
 6. The server verifies every signature, finishes every PDF through the service and only then calls the adapter's `onCompleted` with all of them.

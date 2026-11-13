@@ -54,6 +54,8 @@ pub(crate) struct Windows {
     /// The signer cancelled the job or closed its window: later job
     /// requests answer Cancel. Shared with the job's thread.
     job_closed: Arc<AtomicBool>,
+    /// The message that a link arrived while a job runs, while it is open.
+    busy: Option<AnyWindowHandle>,
 }
 
 impl Windows {
@@ -62,6 +64,7 @@ impl Windows {
             log,
             job: None,
             job_closed: Arc::default(),
+            busy: None,
         }
     }
 
@@ -165,9 +168,17 @@ impl Windows {
         }
     }
 
-    /// A link arrived while a job runs; the job's windows stay.
-    pub(crate) fn busy(&self, cx: &mut App) {
-        self.message(strings::BUSY_HEADING, strings::BUSY.into(), None, cx);
+    /// A link arrived while a job runs; the job's windows stay. One such
+    /// message at a time: a later link brings it forward.
+    pub(crate) fn busy(&mut self, cx: &mut App) {
+        if let Some(handle) = self.busy
+            && handle
+                .update(cx, |_, window, _| window.activate_window())
+                .is_ok()
+        {
+            return;
+        }
+        self.busy = Some(self.message(strings::BUSY_HEADING, strings::BUSY.into(), None, cx));
     }
 
     /// The job is over: closes every window, and the next job starts afresh.
@@ -182,6 +193,7 @@ impl Windows {
         }
         self.job = None;
         self.job_closed = Arc::default();
+        self.busy = None;
         native::set_brand(None, true, cx);
     }
 
@@ -191,8 +203,8 @@ impl Windows {
         message: String,
         reply: Option<mpsc::Sender<()>>,
         cx: &mut App,
-    ) {
-        open(strings::APP_NAME, 460., 260., self.log, cx, |window, cx| {
+    ) -> AnyWindowHandle {
+        let (handle, _) = open(strings::APP_NAME, 460., 260., self.log, cx, |window, cx| {
             let view = cx.new(|cx| MessageWindow::new(heading, message, reply, window, cx));
             let weak = view.downgrade();
             window.on_window_should_close(cx, move |_, cx| {
@@ -201,6 +213,7 @@ impl Windows {
             });
             view
         });
+        handle
     }
 }
 
@@ -942,8 +955,10 @@ impl JobWindow {
             && self.pin.read(cx).value().is_empty()
     }
 
+    /// What the submit button does, under the same conditions as the
+    /// button: Enter waits for [`INPUT_DELAY`] too.
     fn submit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.pin_missing(cx) {
+        if self.pin_missing(cx) || !self.delay.ready {
             return;
         }
         match std::mem::replace(&mut self.stage, Stage::Busy) {
@@ -1566,6 +1581,7 @@ fn driver_lines(driver: &Driver, name: bool) -> Vec<SharedString> {
         DriverState::Failed(reason) => (strings::DRIVER_FAILED, Some(reason.clone())),
         DriverState::Missing => (strings::DRIVER_MISSING, None),
         DriverState::NotTried => (strings::DRIVER_NOT_TRIED, None),
+        DriverState::Empty => (strings::STORE_EMPTY, None),
     };
     [
         Some(state.into()),
@@ -1583,7 +1599,7 @@ fn token_driver<'a>(report: &'a Report, token: &str) -> Option<&'a Driver> {
     let rank = |driver: &&Driver| match driver.state {
         DriverState::Used => 0,
         DriverState::Failed(_) => 1,
-        DriverState::NoToken => 2,
+        DriverState::NoToken | DriverState::Empty => 2,
         DriverState::NotTried => 3,
         DriverState::Missing => 4,
     };
@@ -1716,7 +1732,10 @@ impl SettingsWindow {
                     driver.token.is_none()
                         && matches!(
                             driver.state,
-                            DriverState::Used | DriverState::NoToken | DriverState::Failed(_)
+                            DriverState::Used
+                                | DriverState::NoToken
+                                | DriverState::Failed(_)
+                                | DriverState::Empty
                         )
                 }) {
                     rows.push(status_row(
@@ -1914,6 +1933,9 @@ pub const GALLERY_VIEWS: &[&str] = &[
     "message",
     "message-driver",
     "message-pin-locked",
+    "message-expired",
+    "message-link",
+    "message-internal",
     "busy-message",
     "settings",
     "settings-empty",
@@ -1939,29 +1961,39 @@ pub(crate) fn sample_report(status: Status) -> Report {
             token: Some("HyperSecu HYP2003".into()),
         }],
     };
+    let mut drivers = vec![
+        Driver {
+            name: "libcastle.dylib".into(),
+            detail: "/usr/local/lib/libcastle.dylib [catalogue, HyperSecu HYP2003 plugged in]"
+                .into(),
+            token: Some("HyperSecu HYP2003".into()),
+            state: plugged,
+        },
+        Driver {
+            name: "libeTPkcs11.dylib".into(),
+            detail: "/usr/local/lib/libeTPkcs11.dylib [known drivers]".into(),
+            token: None,
+            state: DriverState::NoToken,
+        },
+        Driver {
+            name: "libmtoken.dylib".into(),
+            detail: "/usr/local/lib/libmtoken.dylib [known drivers]".into(),
+            token: None,
+            state: DriverState::Missing,
+        },
+    ];
+    // The keychain is looked at once no driver reaches a token.
+    if status != Status::Ready {
+        drivers.push(Driver {
+            name: "macOS keychain".into(),
+            detail: "the macOS keychain (CryptoTokenKit)".into(),
+            token: None,
+            state: DriverState::Empty,
+        });
+    }
     Report {
         devices,
-        drivers: vec![
-            Driver {
-                name: "libcastle.dylib".into(),
-                detail: "/usr/local/lib/libcastle.dylib [catalogue, HyperSecu HYP2003 plugged in]"
-                    .into(),
-                token: Some("HyperSecu HYP2003".into()),
-                state: plugged,
-            },
-            Driver {
-                name: "libeTPkcs11.dylib".into(),
-                detail: "/usr/local/lib/libeTPkcs11.dylib [known drivers]".into(),
-                token: None,
-                state: DriverState::NoToken,
-            },
-            Driver {
-                name: "libmtoken.dylib".into(),
-                detail: "/usr/local/lib/libmtoken.dylib [known drivers]".into(),
-                token: None,
-                state: DriverState::Missing,
-            },
-        ],
+        drivers,
         text: "keyseal 0.1.0\nOS: macos aarch64\nTokens: sample\n".into(),
         status,
     }
@@ -2045,7 +2077,8 @@ pub(crate) fn gallery(view: &str, cx: &mut App) {
             );
             return;
         }
-        "message" | "message-driver" | "message-pin-locked" => {
+        "message" | "message-driver" | "message-pin-locked" | "message-expired"
+        | "message-link" | "message-internal" => {
             let message = match view {
                 "message" => {
                     "The signing service refused the signature: the certificate has expired.".into()
@@ -2054,7 +2087,13 @@ pub(crate) fn gallery(view: &str, cx: &mut App) {
                     "{} Install your token's driver, then try again.",
                     modules::NO_DRIVER
                 ),
-                _ => keyseal_core::token::PIN_LOCKED.into(),
+                "message-pin-locked" => keyseal_core::token::PIN_LOCKED.into(),
+                "message-expired" => {
+                    let expired = include_bytes!("../../keyseal-core/tests/fixtures/expired.der");
+                    keyseal_core::token::outside_validity(expired, i64::MAX).unwrap_or_default()
+                }
+                "message-link" => keyseal_core::protocol::DAMAGED_LINK.into(),
+                _ => keyseal_core::flow::INTERNAL_ERROR.into(),
             };
             windows.message(strings::ERROR_HEADING, message, None, cx);
             return;
@@ -2461,9 +2500,14 @@ mod tests {
             window.input("1234", cx);
             // The field is masked, so it doesn't expose its value.
             assert_eq!(window.find("pin").value(), None);
+            // Enter waits for the delay, as the button does.
             window.press("enter", cx);
         })
         .unwrap();
+        assert_eq!(answer.try_recv(), Err(mpsc::TryRecvError::Empty));
+        pass_input_delay(cx);
+        cx.update_window(handle, |_, window, cx| window.press("enter", cx))
+            .unwrap();
         assert_eq!(answer.recv().unwrap().unwrap().as_str(), "1234");
 
         let (reply, answer) = mpsc::channel();
@@ -2563,6 +2607,7 @@ mod tests {
         let (reply, answer) = mpsc::channel();
         cx.update(|cx| windows.handle(pin(false, None, reply), cx));
         let handle = open_windows(cx)[0];
+        pass_input_delay(cx);
         cx.update_window(handle, |_, window, cx| {
             window.render_frame(cx);
             assert!(window.try_find("pin-wrong").is_none());
@@ -2651,8 +2696,9 @@ mod tests {
         assert_eq!(answer.recv(), Ok(true));
     }
 
-    /// A link during a job gets a window of its own; after the job every
-    /// window closes and the next job opens a new job window.
+    /// A link during a job gets a window of its own, which later links
+    /// reuse; after the job every window closes and the next job opens a
+    /// new job window.
     #[gpui_kit::test]
     fn a_second_job_starts_afresh(cx: &mut TestAppContext) {
         let mut windows = setup(cx);
@@ -2666,7 +2712,10 @@ mod tests {
         let (reply, _first) = mpsc::channel();
         cx.update(|cx| windows.handle(choose(reply), cx));
         cx.update(|cx| windows.busy(cx));
-        assert_eq!(open_windows(cx).len(), 2);
+        let open = open_windows(cx);
+        assert_eq!(open.len(), 2);
+        cx.update(|cx| windows.busy(cx));
+        assert_eq!(open_windows(cx), open);
         cx.update(|cx| windows.close_all(cx));
         cx.run_until_parked();
         assert!(open_windows(cx).is_empty());

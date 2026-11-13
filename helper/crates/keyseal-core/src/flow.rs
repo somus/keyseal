@@ -42,6 +42,8 @@ use crate::trust::TrustStore;
 
 const CANCELLED: &str = "Signing cancelled.";
 const ENROLMENT_CANCELLED: &str = "Enrolment cancelled.";
+/// The error for a panic in the job; the front end logs the panic itself.
+pub const INTERNAL_ERROR: &str = "KeySeal stopped because of a problem in KeySeal itself. Start again from the website. If it happens again, contact your support team.";
 
 impl From<TokenError> for String {
     fn from(error: TokenError) -> Self {
@@ -217,9 +219,10 @@ type BeforeStore<'a> = &'a mut dyn FnMut() -> Result<(), Failure>;
 /// Opens where the key is, for a job that asks for `KeyUsage`.
 type Open<'a> = &'a dyn Fn(KeyUsage, BeforeStore) -> Result<Backend, Failure>;
 
-/// Runs the job in `link`. Any failure is reported to the server once the
-/// job is claimed, shown through `ui` unless the user cancelled, and
-/// returned.
+/// Runs the job in `link`. Any failure is shown through `ui` unless the
+/// user cancelled, reported to the server once the job is claimed, and
+/// returned. The report goes while the error shows; this returns once it
+/// is sent or has timed out.
 pub fn run(link: &str, ui: &mut dyn Ui, env: &Environment) -> Result<Outcome, Failure> {
     run_with(link, ui, env, &|usage, before_store| {
         open_backend(usage, before_store, &mut |_, _| {})
@@ -232,20 +235,26 @@ fn run_with(
     env: &Environment,
     open: Open,
 ) -> Result<Outcome, Failure> {
-    let result = run_link(link, ui, env, open);
+    let mut report = None;
+    let result = run_link(link, ui, env, open, &mut report);
     if let Err(failure) = &result
         && !failure.cancelled
     {
         ui.show_error(&failure.message);
     }
+    if let Some(report) = report {
+        let _ = report.join();
+    }
     result
 }
 
+/// Runs the job; a failure after the claim starts its report in `report`.
 fn run_link(
     link: &str,
     ui: &mut dyn Ui,
     env: &Environment,
     open: Open,
+    report: &mut Option<std::thread::JoinHandle<()>>,
 ) -> Result<Outcome, Failure> {
     let link = protocol::parse_link(link, env.allow_insecure)?;
     let origin = &link.origin;
@@ -308,14 +317,23 @@ fn run_link(
             "The link asked for a {:?} job, but {origin} sent a {:?} job.",
             link.kind, job.kind
         )))
-    } else if job.kind == Kind::Sign {
-        sign(&client, &job, &view, ui, open)
     } else {
-        enrol(&client, &job, &view, ui, open)
+        // A panic still fails the claimed job, so the server hears of it.
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            if job.kind == Kind::Sign {
+                sign(&client, &job, &view, ui, open)
+            } else {
+                enrol(&client, &job, &view, ui, open)
+            }
+        }))
+        .unwrap_or_else(|_| Err(INTERNAL_ERROR.into()))
     };
     if let Err(failure) = &result {
         // Best effort: the helper shows the reason itself regardless.
-        let _ = client.report_failure(&job.claim_nonce, &failure.message);
+        let (nonce, message) = (job.claim_nonce.clone(), failure.message.clone());
+        *report = Some(std::thread::spawn(move || {
+            let _ = client.report_failure(&nonce, &message);
+        }));
     }
     result
 }
@@ -511,7 +529,7 @@ impl Backend {
 
 /// The error of a certificate store attempt that finds no signing
 /// certificate on a token.
-const NO_STORE_CERTIFICATE: &str =
+pub(crate) const NO_STORE_CERTIFICATE: &str =
     "The certificate store holds no signing certificate on a token or smart card.";
 
 /// Opens the first of [`modules::attempts`] that reaches a token; the
@@ -614,8 +632,11 @@ fn key_usage(job: &JobDescription) -> KeyUsage {
 }
 
 /// Certificates the job may use: signing certificates with the key usage
-/// its certificate policy asks for (nonRepudiation without one), and after
-/// login only those with a private key beside them.
+/// its certificate policy asks for (nonRepudiation without one), within
+/// their validity period, and after login only those with a private key
+/// beside them. When every one is outside its validity period, that is the
+/// error, so a token showing only an expired certificate before login
+/// fails without asking for the PIN.
 fn signing_certificates(
     token: &dyn TokenBackend,
     job: &JobDescription,
@@ -624,7 +645,15 @@ fn signing_certificates(
     let usage = key_usage(job);
     let mut found = token.certificates(logged_in)?;
     found.retain(|certificate| token::is_signing_certificate(&certificate.der, usage));
-    Ok(found)
+    let now = x509_parser::time::ASN1Time::now().timestamp();
+    let outside = found
+        .iter()
+        .find_map(|certificate| token::outside_validity(&certificate.der, now));
+    found.retain(|certificate| token::outside_validity(&certificate.der, now).is_none());
+    match outside {
+        Some(reason) if found.is_empty() => Err(reason),
+        _ => Ok(found),
+    }
 }
 
 /// The certificate to use: the expected one if the job names it, else the
@@ -778,6 +807,8 @@ mod tests {
     const NONCE: &str = "Zx8m_Q2aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     const RSA: &[u8] = include_bytes!("../tests/fixtures/rsa-non-repudiation.der");
     const P256: &[u8] = include_bytes!("../tests/fixtures/non-repudiation.der");
+    /// Valid from 1 January 2020 to 1 January 2021.
+    const EXPIRED: &[u8] = include_bytes!("../tests/fixtures/expired.der");
 
     #[derive(Clone, Copy, Debug, PartialEq)]
     enum Stage {
@@ -804,6 +835,8 @@ mod tests {
         pin_states: Vec<(Option<PinWarning>, bool)>,
         /// [`Ui::retries_pin`].
         retries_pin: bool,
+        /// When the last error showed.
+        error_shown: Option<std::time::Instant>,
     }
 
     impl CancellingUi {
@@ -816,6 +849,7 @@ mod tests {
                 pins_to_answer: 0,
                 pin_states: Vec::new(),
                 retries_pin: true,
+                error_shown: None,
             }
         }
     }
@@ -844,6 +878,7 @@ mod tests {
         }
         fn show_error(&mut self, message: &str) {
             self.errors.push(message.to_owned());
+            self.error_shown = Some(std::time::Instant::now());
         }
         fn show_info(&mut self, _: &str) {}
         fn progress(&mut self, progress: Progress) -> bool {
@@ -983,7 +1018,11 @@ mod tests {
         Digest,
         /// It has a byte after the end of its `/ByteRange`.
         ByteRange,
+        /// The job's failure report takes [`SLOW_REPORT`] to answer.
+        SlowReport,
     }
+
+    const SLOW_REPORT: Duration = Duration::from_secs(2);
 
     struct Served {
         origin: String,
@@ -1087,6 +1126,12 @@ mod tests {
                             .to_string()
                             .into_bytes(),
                         )
+                    }
+                    None if request.ends_with("/failure")
+                        && matches!(fault, Some((_, Fault::SlowReport))) =>
+                    {
+                        std::thread::sleep(SLOW_REPORT);
+                        (200, b"{}".to_vec())
                     }
                     None if request.ends_with("/signature") => {
                         let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
@@ -1810,5 +1855,79 @@ mod tests {
         assert_eq!(*attempts.lock().unwrap(), 1);
         assert!(signed.is_empty());
         assert_eq!(failures(&served), 1);
+    }
+
+    /// The error shows without waiting for the failure report, and the run
+    /// ends only once the report has been answered.
+    #[test]
+    fn shows_the_error_before_the_report_is_answered() {
+        let served = serve_documents(
+            "sign",
+            serde_json::Value::Null,
+            1,
+            Some((0, Fault::SlowReport)),
+        );
+        let start = std::time::Instant::now();
+        let (result, ui, _) = run_token(
+            &served.origin,
+            FakeToken::new(vec![], vec![]),
+            CancellingUi::new(Stage::Enrol),
+            "slow-report",
+        );
+        assert!(!result.unwrap_err().cancelled);
+        assert_eq!(ui.errors.len(), 1);
+        assert!(ui.error_shown.unwrap() - start < SLOW_REPORT);
+        assert!(start.elapsed() >= SLOW_REPORT);
+        assert_eq!(failures(&served), 1);
+    }
+
+    /// A panic after the claim fails the job like any error: shown, and
+    /// reported once.
+    #[test]
+    fn a_panic_in_the_job_is_shown_and_reported() {
+        let served = serve_documents("sign", serde_json::Value::Null, 1, None);
+        let config_dir = std::env::temp_dir().join(format!("keyseal-panic-{}", std::process::id()));
+        let env = Environment {
+            allow_insecure: true,
+            config_dir: config_dir.clone(),
+        };
+        let link: String = url::form_urlencoded::byte_serialize(
+            format!("{}/api/keyseal/v1/jobs/{TOKEN}", served.origin).as_bytes(),
+        )
+        .collect();
+        let mut ui = CancellingUi::new(Stage::Enrol);
+        let open = |_: KeyUsage, _: BeforeStore| -> Result<Backend, Failure> { panic!("broken") };
+        let result = run_with(&format!("keyseal://sign?job={link}"), &mut ui, &env, &open);
+        let _ = std::fs::remove_dir_all(&config_dir);
+        assert_eq!(result.unwrap_err().message, INTERNAL_ERROR);
+        assert_eq!(ui.errors, [INTERNAL_ERROR]);
+        assert_eq!(failures(&served), 1);
+    }
+
+    /// An expired certificate is never offered. Beside a valid one it is
+    /// left out; alone it fails the job with its expiry date, before any
+    /// PIN when the token shows it before login, and after the one PIN of
+    /// the login-first path otherwise.
+    #[test]
+    fn expired_certificates_are_not_offered() {
+        let served = serve_documents("sign", serde_json::Value::Null, 1, None);
+        let (result, ui, signed) = run_sign(&served.origin, vec![EXPIRED, RSA], vec![], "mixed");
+        assert_eq!(result.unwrap(), Outcome::Signed);
+        assert_eq!(signed, [1]);
+        assert!(ui.errors.is_empty(), "{:?}", ui.errors);
+
+        let expired = token::outside_validity(EXPIRED, i64::MAX).unwrap();
+        for (public, private, prompts) in [(vec![EXPIRED], vec![], 0), (vec![], vec![EXPIRED], 1)] {
+            let served = serve_documents("sign", serde_json::Value::Null, 1, None);
+            let (result, ui, signed) = run_sign(&served.origin, public, private, "expired");
+            let failure = result.unwrap_err();
+            assert!(!failure.cancelled);
+            assert_eq!(failure.message, expired);
+            assert!(failure.message.contains("expired on 1 January 2021"));
+            assert_eq!(ui.pins.len(), prompts);
+            assert_eq!(ui.errors, std::slice::from_ref(&expired));
+            assert!(signed.is_empty());
+            assert_eq!(failures(&served), 1);
+        }
     }
 }

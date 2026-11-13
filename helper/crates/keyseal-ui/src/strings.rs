@@ -93,6 +93,7 @@ strings! {
     DRIVER_FAILED = "Driver didn't work";
     DRIVER_MISSING = "Driver not installed";
     DRIVER_NOT_TRIED = "Driver installed, not needed";
+    STORE_EMPTY = "Checked, but it holds no certificate from a token";
     NO_DRIVER_LISTED = "No driver is known for this computer";
     REFRESH = "Refresh";
     COPY_DIAGNOSTICS = "Copy diagnostics";

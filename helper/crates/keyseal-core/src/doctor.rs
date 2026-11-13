@@ -67,6 +67,9 @@ pub enum DriverState {
     Missing,
     /// Installed, but an earlier driver was used.
     NotTried,
+    /// The certificate store, which holds no signing certificate on a
+    /// token or smart card.
+    Empty,
 }
 
 /// The outcome: whether a job could use a token now.
@@ -407,6 +410,7 @@ fn drivers(facts: &Facts) -> Vec<Driver> {
             .map(|(_, outcome)| match outcome {
                 Ok(()) => DriverState::Used,
                 Err(message) if message == token::NO_TOKEN => DriverState::NoToken,
+                Err(message) if message == flow::NO_STORE_CERTIFICATE => DriverState::Empty,
                 Err(message) => DriverState::Failed(message.clone()),
             })
     };
@@ -544,15 +548,21 @@ mod tests {
     fn reports_a_missing_token_and_stops_at_a_failure() {
         let mut no_token = facts();
         let known = no_token.candidates.as_ref().unwrap()[1].0.clone();
-        no_token.tried = vec![(Attempt::Module(known), Err(token::NO_TOKEN.into()))];
+        no_token.tried = vec![
+            (Attempt::Module(known), Err(token::NO_TOKEN.into())),
+            (Attempt::Store, Err(flow::NO_STORE_CERTIFICATE.into())),
+        ];
         no_token.opened = Ok(None);
         let no_token = report(&no_token);
         assert_eq!(no_token.status, Status::NoToken);
         assert!(no_token.text.ends_with(&format!(
-            "/usr/local/lib/libeTPkcs11.dylib [known drivers]: {}\nTokens: none plugged in\n",
-            token::NO_TOKEN
+            "{}: {}\nTokens: none plugged in\n",
+            Attempt::Store,
+            flow::NO_STORE_CERTIFICATE
         )));
         assert_eq!(no_token.drivers[1].state, DriverState::NoToken);
+        // An empty certificate store found nothing; it didn't fail.
+        assert_eq!(no_token.drivers[3].state, DriverState::Empty);
 
         let mut failed = facts();
         let reason = "Couldn't start the token driver: bad".to_owned();

@@ -23,6 +23,8 @@ lines under the new version with the release date.
 
 - Every release asset has a build provenance attestation, which
   `gh attestation verify <file> --repo somus/keyseal` checks.
+- Every package includes `THIRD-PARTY-NOTICES.txt`, the
+  licences and notices of the open source crates the helper is built from.
 
 #### Changed
 

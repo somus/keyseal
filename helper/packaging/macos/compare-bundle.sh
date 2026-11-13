@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # Checks that KeySeal.app in a release's macOS zip or disk image is exactly
 # the executables rebuilt with build-release.sh, the entitlements, Info.plist
-# and PkgInfo in this directory, and nothing else:
+# and PkgInfo in this directory, the third-party notices, and nothing else:
 #
-#   helper/packaging/macos/compare-bundle.sh <zip or dmg> <rebuilt dir>
+#   helper/packaging/macos/compare-bundle.sh <zip or dmg> <rebuilt dir> <notices>
+#
+# <notices> is third-party-notices.sh's output for the tagged source.
 #
 # <rebuilt dir> is build-release.sh macos-universal's output, from the
 # tagged source. The release signs each executable, which rewrites its code
@@ -18,6 +20,7 @@ set -euo pipefail
 
 archive="$1"
 rebuilt="$2"
+notices="$3"
 here="$(cd "$(dirname "$0")" && pwd)"
 version="$(awk -F'"' '/^version = /{print $2; exit}' "$here/../../Cargo.toml")"
 work="$(mktemp -d)"
@@ -54,6 +57,7 @@ expected="./Contents
 ./Contents/PkgInfo
 ./Contents/Resources
 ./Contents/Resources/AppIcon.icns
+./Contents/Resources/THIRD-PARTY-NOTICES.txt
 ./Contents/_CodeSignature
 ./Contents/_CodeSignature/CodeResources"
 if [ "$files" != "$expected" ]; then
@@ -71,6 +75,10 @@ if ! sed "s/@VERSION@/$version/g" "$here/Info.plist" | cmp -s - "$app/Contents/I
 fi
 if ! cmp -s "$here/PkgInfo" "$app/Contents/PkgInfo"; then
   echo "Contents/PkgInfo differs from PkgInfo." >&2
+  exit 1
+fi
+if ! cmp -s "$notices" "$app/Contents/Resources/THIRD-PARTY-NOTICES.txt"; then
+  echo "Contents/Resources/THIRD-PARTY-NOTICES.txt differs from $notices." >&2
   exit 1
 fi
 if ! cmp -s "$here/AppIcon.icns" "$app/Contents/Resources/AppIcon.icns"; then

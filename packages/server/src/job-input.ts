@@ -1,4 +1,8 @@
-import { MAX_DOCUMENTS, MAX_JOB_PDF_BYTES } from "./keyseal.js";
+import {
+  InvalidJobInput,
+  MAX_DOCUMENTS,
+  MAX_JOB_PDF_BYTES,
+} from "./keyseal.js";
 import { MAX_PDF_BYTES } from "./service.js";
 import type {
   CertificatePolicy,
@@ -21,7 +25,7 @@ export function characters(value: string): number {
 export function checkText(name: string, value: unknown, max: number): void {
   const length = typeof value === "string" ? characters(value) : 0;
   if (length < 1 || length > max) {
-    throw new TypeError(`${name} must be 1 to ${max} characters`);
+    throw new InvalidJobInput(`${name} must be 1 to ${max} characters`);
   }
 }
 
@@ -37,7 +41,7 @@ function checkList(
     value.length > MAX_POLICY_ENTRIES ||
     !value.every(check)
   ) {
-    throw new TypeError(
+    throw new InvalidJobInput(
       `${name} must be a list of 1 to ${MAX_POLICY_ENTRIES} entries, each ${each}`
     );
   }
@@ -46,7 +50,7 @@ function checkList(
 /** Protocol section 8.2: a copy of the policy with only its known members. */
 export function checkPolicy(policy: unknown): CertificatePolicy {
   if (!isObject(policy)) {
-    throw new TypeError("certificatePolicy must be an object");
+    throw new InvalidJobInput("certificatePolicy must be an object");
   }
   const { policyOids, issuerCommonNames, subjectOrganization, keyUsage } =
     policy;
@@ -85,14 +89,14 @@ export function checkPolicy(policy: unknown): CertificatePolicy {
   }
   if (keyUsage !== undefined) {
     if (keyUsage !== "nonRepudiation" && keyUsage !== "digitalSignature") {
-      throw new TypeError(
+      throw new InvalidJobInput(
         'certificatePolicy.keyUsage must be "nonRepudiation" or "digitalSignature"'
       );
     }
     checked.keyUsage = keyUsage;
   }
   if (Object.keys(checked).length === 0) {
-    throw new TypeError(
+    throw new InvalidJobInput(
       "certificatePolicy needs policyOids, issuerCommonNames, subjectOrganization or keyUsage"
     );
   }
@@ -107,7 +111,7 @@ function checkSignatureDetails(
   name: string
 ): SignatureDetails | null {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    throw new TypeError(`${name} must be an object`);
+    throw new InvalidJobInput(`${name} must be an object`);
   }
   const given = value as Record<string, unknown>;
   const details: SignatureDetails = {};
@@ -119,7 +123,7 @@ function checkSignatureDetails(
     const trimmed = typeof text === "string" ? text.trim() : "";
     checkText(`${name}.${member}`, trimmed, 200);
     if (CONTROL.test(trimmed)) {
-      throw new TypeError(
+      throw new InvalidJobInput(
         `${name}.${member} must not contain control characters`
       );
     }
@@ -138,7 +142,7 @@ export function checkDocuments(
     value.length < 1 ||
     value.length > MAX_DOCUMENTS
   ) {
-    throw new TypeError(
+    throw new InvalidJobInput(
       `documents must be a list of 1 to ${MAX_DOCUMENTS} documents`
     );
   }
@@ -146,19 +150,19 @@ export function checkDocuments(
   const documents = value.map((entry: unknown, index): JobDocument => {
     const name = `documents[${index}]`;
     if (!isObject(entry)) {
-      throw new TypeError(`${name} must be an object`);
+      throw new InvalidJobInput(`${name} must be an object`);
     }
     const { fieldName, pdf, signatureDetails, stampStyle } = entry;
     if (typeof fieldName !== "string" || !FIELD_NAME.test(fieldName)) {
-      throw new TypeError(
+      throw new InvalidJobInput(
         `${name}.fieldName must be 1 to 64 letters, digits or underscores`
       );
     }
     if (!(pdf instanceof Uint8Array)) {
-      throw new TypeError(`${name}.pdf must be a Uint8Array`);
+      throw new InvalidJobInput(`${name}.pdf must be a Uint8Array`);
     }
     if (pdf.byteLength > MAX_PDF_BYTES) {
-      throw new TypeError(`${name}.pdf must be at most 25 MiB`);
+      throw new InvalidJobInput(`${name}.pdf must be at most 25 MiB`);
     }
     total += pdf.byteLength;
     if (stampStyle !== undefined) {
@@ -166,7 +170,7 @@ export function checkDocuments(
     }
     const title = entry.title ?? (value.length === 1 ? jobTitle : undefined);
     if (title === undefined) {
-      throw new TypeError(
+      throw new InvalidJobInput(
         `${name}.title is required when a job has several documents`
       );
     }
@@ -183,7 +187,9 @@ export function checkDocuments(
     };
   });
   if (total > MAX_JOB_PDF_BYTES) {
-    throw new TypeError("documents must hold at most 240 MiB of PDF together");
+    throw new InvalidJobInput(
+      "documents must hold at most 240 MiB of PDF together"
+    );
   }
   return documents;
 }

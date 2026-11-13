@@ -167,7 +167,8 @@ lines under the new version with the release date.
 
 - `/certificate`, `/finalize` and `/retimestamp` stop after 45 seconds,
   fetches included, as `/validate` does, and `/finalize` refuses a PDF with
-  more than 50 signatures; each is a 422.
+  more than 50 signatures. Each is a 422, except `/certificate`, which
+  answers 504 so that `@keyseal/server` leaves the job for a retry.
 
 ### [0.3.0][service-0.3.0] - 2026-11-04
 

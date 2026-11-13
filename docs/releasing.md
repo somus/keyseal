@@ -104,7 +104,8 @@ revocation are described in `docs/code-signing-policy.md`.
    Each of these files has a build provenance attestation
    ([Checking build provenance](#checking-build-provenance)).
 4. Check, sign and publish with one script on a Mac, with Bitwarden
-   unlocked, Docker running and cargo-about 0.9.3 installed:
+   unlocked, Docker running and cargo-about 0.9.3 installed
+   (`cargo install --locked --features cli cargo-about@0.9.3`, once):
 
    ```sh
    export BW_SESSION="$(bw unlock --raw)"

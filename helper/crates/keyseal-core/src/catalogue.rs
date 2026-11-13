@@ -13,7 +13,6 @@ use ed25519_dalek::{Signature, VerifyingKey};
 use nusb::MaybeFuture;
 use serde::Deserialize;
 use ureq::Agent;
-use ureq::tls::{RootCerts, TlsConfig};
 
 use crate::update::key_id;
 
@@ -204,16 +203,7 @@ pub fn current() -> (Catalogue, Source) {
 pub fn fetch(url: &str) -> Result<Catalogue, String> {
     let dir = cache_dir().ok_or("This system has no config directory for the helper.")?;
     let deadline = Instant::now() + FETCH_BUDGET;
-    // The system trust store, as every other fetch the helper makes.
-    let tls = TlsConfig::builder()
-        .root_certs(RootCerts::PlatformVerifier)
-        .build();
-    let agent: Agent = Agent::config_builder()
-        .https_only(true)
-        .tls_config(tls)
-        .user_agent(format!("keyseal/{}", crate::VERSION))
-        .build()
-        .into();
+    let agent = crate::download_agent(true);
     let catalogue = get(&agent, url, deadline)?;
     let signature = get(&agent, &format!("{url}.sig"), deadline)?;
     store(&dir, &catalogue, &signature, CATALOGUE_KEYS)
@@ -262,9 +252,7 @@ fn store(
         ("catalogue.json", catalogue),
         ("catalogue.json.sig", signature),
     ] {
-        let temporary = dir.join(format!("{name}.tmp"));
-        crate::write_private(&temporary, bytes).map_err(error)?;
-        std::fs::rename(&temporary, dir.join(name)).map_err(error)?;
+        crate::replace_private(&dir.join(name), bytes).map_err(error)?;
     }
     Ok(verified)
 }
@@ -274,19 +262,8 @@ fn get(agent: &Agent, url: &str, deadline: Instant) -> Result<Vec<u8>, String> {
     let timeout = deadline
         .checked_duration_since(Instant::now())
         .ok_or("The driver catalogue download ran out of time.")?;
-    let failed = |e: ureq::Error| format!("Couldn't download {url}: {e}");
-    agent
-        .get(url)
-        .config()
-        .timeout_global(Some(timeout))
-        .build()
-        .call()
-        .map_err(failed)?
-        .body_mut()
-        .with_config()
-        .limit(MAX_BYTES)
-        .read_to_vec()
-        .map_err(failed)
+    crate::download(agent, url, MAX_BYTES, timeout)
+        .map_err(|e| format!("Couldn't download {url}: {e}"))
 }
 
 #[cfg(test)]

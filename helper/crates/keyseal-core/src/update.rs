@@ -18,7 +18,6 @@ use ed25519_dalek::{Signature, VerifyingKey};
 use semver::Version;
 use serde::Deserialize;
 use ureq::Agent;
-use ureq::tls::{RootCerts, TlsConfig};
 
 use crate::token::sha256_hex;
 
@@ -247,14 +246,7 @@ fn fetch(agent: &Agent, url: &str, limit: u64, deadline: Instant) -> Result<Vec<
     let timeout = deadline
         .checked_duration_since(Instant::now())
         .ok_or("The update check ran out of time.")?;
-    agent
-        .get(url)
-        .config()
-        .timeout_global(Some(timeout))
-        .build()
-        .call()
-        .and_then(|mut response| response.body_mut().with_config().limit(limit).read_to_vec())
-        .map_err(|e| format!("{url}: {e}"))
+    crate::download(agent, url, limit, timeout).map_err(|e| format!("{url}: {e}"))
 }
 
 /// Reads the manifest at `base`, and if it offers a newer build for
@@ -275,16 +267,7 @@ fn check_and_stage(
     // Releases are served over https; a redirect to plain http is refused,
     // although the signed manifest and hashes would catch tampering anyway.
     // Tests serve updates from a local http server.
-    let agent: Agent = Agent::config_builder()
-        .tls_config(
-            TlsConfig::builder()
-                .root_certs(RootCerts::PlatformVerifier)
-                .build(),
-        )
-        .https_only(base.starts_with("https://"))
-        .user_agent(format!("keyseal/{}", crate::VERSION))
-        .build()
-        .into();
+    let agent = crate::download_agent(base.starts_with("https://"));
     let base = base.trim_end_matches('/');
     let deadline = Instant::now() + MANIFEST_BUDGET;
     let manifest = fetch(

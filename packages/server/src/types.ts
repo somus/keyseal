@@ -181,6 +181,8 @@ export interface Adapter {
   getBlob(key: string): Promise<Uint8Array | null>;
   /** Deleting a missing blob is not an error. */
   deleteBlob(key: string): Promise<void>;
+  /** The key of every stored blob; `sweep` deletes those of ended jobs. */
+  listBlobs(): Promise<string[]>;
   /**
    * Called once every signed PDF or the enrolled certificate is ready, while
    * the request still holds the job, before it is marked completed. A sign

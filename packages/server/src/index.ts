@@ -10,6 +10,7 @@ export {
   ServiceError,
   type PrepareField,
   type ServiceClientOptions,
+  type SigningService,
   type SignStartInput,
   type SignStartResult,
   type ValidatedSignature,

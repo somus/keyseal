@@ -89,6 +89,8 @@ const { id, link } = await keyseal.createSignJob({
 
 Return `link` to the page and keep `id` for status checks with `keyseal.status(id)`. The job token in `link` is the helper's credential for the job endpoint; your server never needs it again, so don't store or log it. `expectedCertificateSha256` is strongly recommended: without it, any valid certificate on any token can sign. Each document's `signatureDetails` is optional: its `reason`, `location` and `contactInfo` (up to 200 characters each) appear in the signature panel of PDF viewers, and the built-in stamp shows the reason. An enrol job (`createEnrolJob`) captures the signer's certificate first, so you can pin it on later sign jobs.
 
+`service.prepare` throws a `ServiceError` with status 422 for a PDF no signature can be added to: an encrypted one, even when it opens without a password, or one already certified with no changes allowed. Its message says which, so you can ask for an unprotected copy before creating the job.
+
 ### Several documents at once
 
 `documents` takes up to 20 PDFs, which the signer signs together with one PIN entry. Give the job a `title` that describes the batch and each document its own `title`:

@@ -155,6 +155,27 @@ lines under the new version with the release date.
 
 ### [Unreleased][service-unreleased]
 
+#### Added
+
+- `SIGNING_LOG_LEVEL` sets the level of the service's own log records,
+  `INFO` by default. Before, uvicorn left them unconfigured, so only
+  warnings and errors appeared, without level or logger name.
+
+#### Changed
+
+- An encrypted PDF is a 422 saying so on `/prepare`, `/sign/start`,
+  `/finalize` and `/retimestamp`, and a PDF certified with no changes allowed
+  is one on `/prepare` and `/sign/start`. `/sign/start` answered 500 for a
+  certified PDF and `/prepare` for an encrypted one, so `@keyseal/server`
+  now fails the job with that message instead of answering 502.
+
+#### Security
+
+- `/certificate`, `/finalize` and `/retimestamp` stop after 45 seconds,
+  fetches included, as `/validate` does, and `/finalize` refuses a PDF with
+  more than 50 signatures. Each is a 422, except `/certificate`, which
+  answers 504 so that `@keyseal/server` leaves the job for a retry.
+
 ### [0.3.0][service-0.3.0] - 2026-11-04
 
 #### Added

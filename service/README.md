@@ -27,7 +27,9 @@ Supported keys: RSA (PKCS#1 v1.5 or PSS with MGF1 and a 32-byte salt, SHA-256) a
 
 Bodies are capped as they stream in, so a chunked body is held to the same limits as one with a `Content-Length`: 25 MB for the raw PDF that `/validate`, `/finalize` and `/retimestamp` take, and 60 MB plus 16 KB for a JSON body. A larger body is a 413, and a `Content-Length` that isn't a non-negative decimal number is a 400.
 
-`/validate` refuses a PDF with more than 50 signatures and document timestamps with a 422, and gives one validation 45 seconds, fetches included, before answering 422 too; that's under the 60-second request timeout `@keyseal/server` uses by default. The budget cancels the work at its next await, so a synchronous step already running, such as parsing or pyHanko's diff analysis of one signature, finishes on its worker thread first. The 25 MB and 50-signature caps bound how long that can be.
+`/validate` and `/finalize` refuse a PDF with more than 50 signatures and document timestamps with a 422. `/validate`, `/certificate`, `/finalize` and `/retimestamp` each get 45 seconds, fetches and the TSA's answer included; that's under the 60-second request timeout `@keyseal/server` uses by default. Past it they answer 422 too, except `/certificate`, which answers 504: there the cause is a slow revocation server, and `@keyseal/server` leaves a job for the helper to retry on anything but a 400 or 422. The budget cancels the work at its next await, so a synchronous step already running, such as parsing or pyHanko's diff analysis of one signature, finishes on its worker thread first. The 25 MB and 50-signature caps bound how long that can be.
+
+A PDF no signature can be added to is a 422 that says why: an encrypted one, even when it opens without a password, on `/prepare`, `/sign/start`, `/finalize` and `/retimestamp`, and one certified with no changes allowed (DocMDP level 1) on `/prepare` and `/sign/start`. A certified PDF still takes revocation data and document timestamps, which PAdES allows.
 
 ## Run
 
@@ -50,6 +52,7 @@ The service refuses to start, logging which rule failed and exiting 1, when the 
 | `SIGNING_TRUST_ROOTS_DIR` | bundled CCA India roots and intermediates | Directory of `.pem`, `.cer`, `.crt` or `.der` certificates replacing the bundled ones; self-signed ones are roots, the rest intermediates |
 | `SIGNING_EXTRA_TRUST_ROOTS_DIR` | none | Directory of `.pem`, `.cer`, `.crt` or `.der` certificates added to the bundled ones, or to `SIGNING_TRUST_ROOTS_DIR`'s; self-signed ones are roots, the rest intermediates |
 | `SIGNING_ALLOW_FETCHING` | off | `true` lets validation fetch issuer certificates, OCSP and CRL data |
+| `SIGNING_LOG_LEVEL` | `INFO` | Level of the service's own log records: `DEBUG`, `INFO`, `WARNING`, `ERROR` or `CRITICAL`, in any case. They go to stderr as `LEVEL: logger: message`, beside uvicorn's own; any other value refuses to start. At `INFO` they include why `/certificate` refused a certificate |
 | `TZ` | container's (UTC) | Time zone of the date in the built-in stamp, for example `Asia/Kolkata`; a zone name, since pyHanko refuses POSIX zones such as `IST-5:30` |
 
 The default TSA is plain HTTP, as DigiCert serves no HTTPS endpoint for it. `/sign/finish` refuses a token whose imprint isn't the digest of the signature, but someone on the network path could still answer with a correctly imprinted token from another TSA. That shows up only at validation, and only where the TSA's trust is checked: `timestampValid` says the timestamp is intact and matches, not who issued it, and a token from any TSA chaining to a system root is trusted. Point `SIGNING_TSA_URL` at an HTTPS TSA to close the gap.

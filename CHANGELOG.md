@@ -19,6 +19,19 @@ lines under the new version with the release date.
 
 ### [Unreleased][helper-unreleased]
 
+#### Changed
+
+- A wrong PIN on a PKCS#11 token no longer ends the job: the window clears
+  the field and asks again in the same token session, until the signer
+  enters the right PIN or cancels. The token's own counter is the only
+  limit. Headless runs still try `KEYSEAL_PIN` once.
+- The PIN prompt warns when one more wrong PIN will lock the token, and when
+  a wrong PIN was entered before and few tries remain, reading the token's
+  flags before each prompt.
+- A token whose PIN is locked no longer shows the PIN field: the helper
+  shows an error saying the token's own software or its issuer unlocks it,
+  and reports the failure to the server.
+
 ### [0.3.0][helper-0.3.0] - 2026-11-05
 
 #### Added
@@ -259,6 +272,28 @@ lines under the new version with the release date.
 
 ### [Unreleased][server-unreleased]
 
+#### Added
+
+- `keyseal.sweep()` expires old jobs and deletes their blobs, as creating a
+  job does, and deletes the blobs of jobs that ended or are gone, which a
+  failed or interrupted deletion used to leave forever. Call it from a
+  scheduler.
+- The `service` option takes any object with `ServiceClient`'s
+  `certificate`, `signStart` and `signFinish` methods, typed as the new
+  `SigningService`.
+
+#### Changed
+
+- Adapters must implement `listBlobs()`, returning every stored blob key;
+  `sweep()` uses it. The conformance suite checks it.
+- A job is now stored before its PDFs, so a failure storing a PDF leaves a
+  pending job that expires instead of no job.
+
+#### Fixed
+
+- `basePath` refuses `.` and `..` segments. URL parsing resolves them in the
+  helper's requests, so no job URL under such a path could be reached.
+
 ### [0.4.0][server-0.4.0] - 2026-11-04
 
 #### Added
@@ -326,6 +361,12 @@ lines under the new version with the release date.
 ## @keyseal/browser
 
 ### [Unreleased][browser-unreleased]
+
+#### Fixed
+
+- `watchJob` rejects with a `TypeError` for a status without a known
+  `state`, or with a `message` that isn't a string, instead of polling until
+  its timeout.
 
 ### [0.2.0][browser-0.2.0] - 2026-11-05
 

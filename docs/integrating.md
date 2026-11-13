@@ -19,7 +19,7 @@ Run the service image where only your backend can reach it, with a strong bearer
 ```sh
 docker run -p 127.0.0.1:8090:8080 \
   -e SIGNING_SERVICE_TOKEN="$(openssl rand -base64 32)" \
-  ghcr.io/somus/keyseal-service:0.2
+  ghcr.io/somus/keyseal-service:0.3
 ```
 
 It trusts the CCA India roots by default; for another PKI, set `SIGNING_TRUST_ROOTS_DIR` to a directory of its roots and intermediates, or `SIGNING_EXTRA_TRUST_ROOTS_DIR` to trust it alongside them. [service/README.md](../service/README.md) covers its routes, environment, timestamp authority and plugins (extra stamp styles and routes in a derived image).
@@ -41,13 +41,17 @@ export const keyseal = createKeySeal({
     icon: "https://app.example.org/keyseal-logo.png",
     accentColor: "#1f6feb",
   },
-  minHelperVersion: "1.0.0",
+  minHelperVersion: "0.3.0",
 });
 ```
 
 Route requests to `keyseal.handle(request)`; it answers the manifest at `/.well-known/keyseal.json` and the job endpoint under `basePath`, and returns 404 for anything else. The helper calls these routes directly, without your session, so they authenticate by the job token alone.
 
 The adapter stores jobs and blobs (Postgres and S3, for example) and receives the result in `onCompleted`. Its contract, including the atomic `transition` the settle lease relies on, is in [packages/server/README.md](../packages/server/README.md). `createMemoryAdapter` is enough for tests.
+
+Creating a job expires old jobs and deletes their PDFs and signing states. Run `await keyseal.sweep()` from a scheduler, such as a cron job every five minutes, so that also happens when no one is creating jobs, and to clear blobs a failed deletion left behind.
+
+`service` can be any object with `ServiceClient`'s `certificate`, `signStart` and `signFinish` methods, for a proxy, retries or tests; see the server README for the errors it throws.
 
 ### Branding
 

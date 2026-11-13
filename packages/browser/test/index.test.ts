@@ -244,6 +244,27 @@ describe("watchJob polling", () => {
     });
     await expect(result).rejects.toThrow("offline");
   });
+
+  test("rejects a status it doesn't know and stops polling", async () => {
+    for (const status of [
+      { state: "done" },
+      null,
+      { state: "failed", message: 7 },
+    ]) {
+      let calls = 0;
+      const result = watchJob({
+        getStatus: async () => {
+          calls += 1;
+          return status as unknown as JobStatus;
+        },
+      });
+      await expect(result).rejects.toThrow(
+        `Unexpected job status: ${JSON.stringify(status)}`
+      );
+      await advance(10_000);
+      expect(calls).toBe(1);
+    }
+  });
 });
 
 class FakeEventSource extends EventTarget {
@@ -292,6 +313,16 @@ describe("watchJob with SSE", () => {
     source.readyState = 2;
     source.dispatchEvent(new Event("error"));
     await expect(result).rejects.toThrow("closed");
+  });
+
+  test("rejects a state event it doesn't know and closes the stream", async () => {
+    const source = new FakeEventSource();
+    const result = watchJob({ eventSource: source as unknown as EventSource });
+    source.send({ state: "done" } as unknown as JobStatus);
+    await expect(result).rejects.toThrow(
+      'Unexpected job status: {"state":"done"}'
+    );
+    expect(source.closed).toBe(true);
   });
 });
 

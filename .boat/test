@@ -1,0 +1,11 @@
+#!/bin/bash
+# Runs the helper's Rust tests (with SoftHSM, as CI does) and the TypeScript
+# tests, reporting every result. Arguments filter the Rust tests.
+set -euo pipefail
+export KEYSEAL_SOFTHSM_MODULE=/usr/lib/softhsm/libsofthsm2.so PATH="$HOME/.local/bin:$PATH"
+
+config=$(mktemp --suffix .toml)
+printf '[profile.boat.junit]\npath = "junit.xml"\n' >"$config"
+(cd helper && cargo nextest run --config-file "$config" --profile boat --no-fail-fast "$@") || true
+bun test --reporter=junit --reporter-outfile=/tmp/bun-junit.xml || true
+bun "$BOAT_KIT/junit-tests.ts" helper/target/nextest/boat/junit.xml /tmp/bun-junit.xml

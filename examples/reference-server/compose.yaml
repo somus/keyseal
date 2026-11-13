@@ -22,7 +22,8 @@ services:
         target: /quickstart-roots
         read_only: true
     ports:
-      - 127.0.0.1:8090:8080
+      # Only for checking the signed PDF from the host; the server doesn't need it.
+      - 127.0.0.1:${KEYSEAL_QUICKSTART_SERVICE_PORT:-8090}:8080
 
   reference-server:
     build:

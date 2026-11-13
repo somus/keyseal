@@ -51,7 +51,7 @@ curl -fsS http://127.0.0.1:8090/health
 
 [compose.yaml](../examples/reference-server/compose.yaml) builds both images from this checkout, so they match the helper you build next; the [published service image](../service/README.md#docker) may be older than the checkout. The service trusts the test CA through `SIGNING_EXTRA_TRUST_ROOTS_DIR`, beside the bundled CCA India roots, and `/health` counts its roots with the others. It signs without a timestamp, so it works offline; `SIGNING_TSA_URL=http://timestamp.digicert.com docker compose up --build --detach` adds one. Revocation data isn't fetched (`SIGNING_ALLOW_FETCHING` is off), and the test certificates name no CRL or OCSP responder anyway.
 
-Both containers listen on 127.0.0.1 only. The reference server reaches the service at `http://service:8080` with the shared bearer token, and puts `http://127.0.0.1:8787` in its `keyseal://` links, which is where the helper on your computer finds it.
+Both containers listen on 127.0.0.1 only. If port 8090 is taken, run `export KEYSEAL_QUICKSTART_SERVICE_PORT=18090` before `docker compose up` and use that port wherever this page says 8090; the service's port is published only so you can check the signed PDF from your computer. The reference server reaches the service at `http://service:8080` with the shared bearer token, and puts `http://127.0.0.1:8787` in its `keyseal://` links, which is where the helper on your computer finds it.
 
 ## 3. Build the helper
 

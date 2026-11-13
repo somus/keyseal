@@ -16,11 +16,13 @@ services:
       # No timestamps unless a TSA is given, so signing works offline.
       SIGNING_TSA_URL: ${SIGNING_TSA_URL:-none}
     volumes:
-      # Long syntax, so a missing directory fails instead of being created.
+      # A missing directory fails instead of being created, as root.
       - type: bind
         source: ./quickstart/token/roots
         target: /quickstart-roots
         read_only: true
+        bind:
+          create_host_path: false
     ports:
       # Only for checking the signed PDF from the host; the server doesn't need it.
       - 127.0.0.1:${KEYSEAL_QUICKSTART_SERVICE_PORT:-8090}:8080

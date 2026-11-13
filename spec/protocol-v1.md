@@ -1,6 +1,6 @@
 # KeySeal protocol v1
 
-Status: draft. This document is normative except where a section or paragraph is marked informative. The machine-readable companion is [openapi.yaml](openapi.yaml); the schema names used here (`Manifest`, `JobDescription`, `DocumentEntry`, `CertificateSubmission`, `PreparedSignature`, `EnrolResult`, `SignatureSubmission`, `FailureReport`, `Empty`, `Error`, `UpgradeRequired`) are the names of its component schemas. Where the two disagree, this document wins and the disagreement is a bug.
+Status: version 1, the version the released helper and the `@keyseal` packages implement. It changes only by adding optional members (section 7.1); any other change needs a new protocol version with its own path segment. This document is normative except where a section or paragraph is marked informative. The machine-readable companion is [openapi.yaml](openapi.yaml); the schema names used here (`Manifest`, `JobDescription`, `DocumentEntry`, `CertificateSubmission`, `PreparedSignature`, `EnrolResult`, `SignatureSubmission`, `FailureReport`, `Empty`, `Error`, `UpgradeRequired`) are the names of its component schemas. Where the two disagree, this document wins and the disagreement is a bug.
 
 ## 1. Conventions and terminology
 
@@ -165,7 +165,7 @@ Branding (name, icon, accent colour) MAY appear in the helper's windows for a jo
 
 This document defines protocol version 1. It appears as `"protocol": 1` in the manifest and as the `v1` path segment of the job URL. A helper that does not support the version in a job URL MUST refuse the link.
 
-Within version 1, new OPTIONAL members MAY be added to requests and responses. Receivers MUST ignore members they do not know. A change that alters or removes the meaning of an existing member, or adds a required one, needs a new protocol version and a new path segment.
+Within version 1, new OPTIONAL members MAY be added to requests and responses. Receivers MUST ignore members they do not know, on requests and responses alike, so the schemas in [openapi.yaml](openapi.yaml) do not set `additionalProperties: false`. A change that alters or removes the meaning of an existing member, or adds a required one, needs a new protocol version and a new path segment.
 
 ### 7.2 `X-KeySeal-Version`
 
@@ -178,6 +178,8 @@ A server MAY be configured with a minimum helper version. If it is, the server M
 ```json
 { "minVersion": "1.2.0", "message": "Update the signing helper, then try again." }
 ```
+
+The `426` carries no `Upgrade` header, which RFC 9110 otherwise asks for, since no protocol upgrade applies.
 
 The server SHOULD also mark the job `failed` with the same message, so the browser page can show the reason, when the job is `pending`, or when the request is a `POST` whose body carries the job's claim nonce and no other request holds a live settle lease (section 9.3). In every other case the `426` leaves the job unchanged, so a request that has only the token, such as one replayed from a leaked link, cannot end a claimed job.
 
@@ -316,7 +318,7 @@ Request, `FailureReport`:
 
 `message` is 1 to 500 characters after trimming whitespace, written for the user. The job MUST be `claimed` or `prepared`. The server moves the job to `failed`, keeps the message for the browser page, and returns `200` with `Empty`.
 
-After a successful claim, the helper MUST send a failure report whenever it stops the job without completing it: the user cancels, no usable certificate or token is found, a validation in sections 8.2 to 8.4 or 10 fails, the PIN is wrong or the token is locked, or signing fails. Sending is best effort; the helper shows the reason in its own window regardless. The message MUST NOT contain the PIN or any secret.
+After a successful claim, the helper MUST send a failure report whenever it stops the job without completing it: the user cancels, no usable certificate or token is found, a validation in sections 8.2 to 8.4 or 10 fails, a wrong PIN is not entered again (section 12.3), the token's PIN is locked, or signing fails. Sending is best effort; the helper shows the reason in its own window regardless, without waiting for the report. The message MUST NOT contain the PIN or any secret.
 
 ### 8.8 Status codes
 
@@ -465,7 +467,9 @@ Before asking for a PIN or reading certificates, the helper MUST show the origin
 ### 12.3 PIN handling
 
 - The helper asks for the PIN once per job, whatever the number of documents, and MUST NOT retry a PIN automatically.
-- The helper SHOULD show the remaining retry count where the driver exposes it.
+- When the token refuses the PIN as wrong (`CKR_PIN_INCORRECT`, or `CKR_PIN_INVALID` or `CKR_PIN_LEN_RANGE`), the helper MAY ask the user for it again in the same token session, keeping the chosen certificate, until the user enters the right one or cancels. It MUST NOT add a limit of its own, since the token counts the attempts. A helper running without a user (headless) MUST NOT try its PIN a second time.
+- Before each PIN prompt the helper SHOULD read the token's flags and say when one more wrong PIN will lock the token (`CKF_USER_PIN_FINAL_TRY`) or when a wrong PIN was entered before and few attempts remain (`CKF_USER_PIN_COUNT_LOW`).
+- When the token's PIN is locked (`CKF_USER_PIN_LOCKED`, or `CKR_PIN_LOCKED` from login), the helper MUST NOT ask for a PIN; it stops the job, tells the user the token has to be unlocked with its own software or by its issuer, and reports a failure (section 8.7).
 - For tokens with a PIN pad, the helper MUST use the protected authentication path.
 - The PIN MUST NOT leave the helper: it is never sent over the network, written to disk or logged, and the helper clears it from memory after login. For a key that requires a context-specific login before each signature (section 12.1), the helper keeps it in memory it clears until the job's signatures are done, and no longer.
 

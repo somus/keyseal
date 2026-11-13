@@ -1,7 +1,7 @@
 name: service
 
 # Publishes the signing service image to ghcr.io/somus/keyseal-service when a
-# service-v* tag is pushed (docs/releasing-service.md), for linux/amd64 and
+# service-v* tag is pushed (docs/releasing.md), for linux/amd64 and
 # linux/arm64, with a build provenance attestation pushed beside it. No
 # cache is restored: a release build uses nothing other branches could write.
 
@@ -20,6 +20,7 @@ jobs:
     runs-on: ubuntu-24.04
     permissions:
       contents: read
+      actions: read
       packages: write
       id-token: write
       attestations: write
@@ -36,6 +37,10 @@ jobs:
           test "${GITHUB_REF_NAME#service-v}" = "$version" \
             || { echo "Tag $GITHUB_REF_NAME doesn't match service version $version"; exit 1; }
           echo "version=$version" >>"$GITHUB_OUTPUT"
+      - name: The checks passed on this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/ci/ci-passed.sh
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
       - run: uv sync --frozen && uv run pytest
         working-directory: service

@@ -21,6 +21,10 @@ lines under the new version with the release date.
 
 #### Added
 
+- Every release asset has a build provenance attestation, which
+  `gh attestation verify <file> --repo somus/keyseal` checks.
+- Every package includes `THIRD-PARTY-NOTICES.txt`, the
+  licences and notices of the open source crates the helper is built from.
 - On Windows, `keyseal install` adds a KeySeal shortcut to the Start menu
   that opens the settings, and an entry under Apps (Add or remove programs)
   that uninstalls. `keyseal uninstall` removes both.
@@ -32,8 +36,40 @@ lines under the new version with the release date.
 - `install.cmd /quiet` installs without waiting for a key and exits with
   the install's exit code.
 
+#### Changed
+
+- A wrong PIN on a PKCS#11 token no longer ends the job: the window clears
+  the field and asks again in the same token session, until the signer
+  enters the right PIN or cancels. The token's own counter is the only
+  limit. Headless runs still try `KEYSEAL_PIN` once.
+- The PIN prompt warns when one more wrong PIN will lock the token, and when
+  a wrong PIN was entered before and few tries remain, reading the token's
+  flags before each prompt.
+- A token whose PIN is locked no longer shows the PIN field: the helper
+  shows an error saying the token's own software or its issuer unlocks it,
+  and reports the failure to the server.
+- Certificates that have expired or aren't valid yet are no longer offered.
+  When the token holds no other, the error says when its certificate
+  expired, or from when it is valid, instead of the server refusing it
+  after the PIN.
+- A malformed `keyseal://` link shows a plain message to start again from
+  the website instead of the URL parser's error.
+- An empty Windows certificate store or macOS keychain shows in Settings and
+  `keyseal doctor --json` as checked with nothing found, not as a driver
+  that didn't work.
+- A `KEYSEAL_PKCS11_MODULE` path with no file there is an error naming the
+  variable and the path, not "no driver found".
+
 #### Fixed
 
+- Enter no longer submits the PIN before the Sign button responds, so a
+  keystroke meant for another window can't confirm a signature.
+- Links that arrive during a job reuse one busy message instead of opening
+  a window each.
+- A panic in the job shows an error window, is written to `keyseal.log` with
+  where it happened, and is reported to the server once the job is claimed.
+- The error shows at once when a job fails; the failure report to the server
+  is sent alongside it, with its own 10 second limit, instead of first.
 - On Windows, `keyseal uninstall` removes `%LOCALAPPDATA%\keyseal` once the
   helper has exited, instead of leaving the exe there. Only the helper's
   own files are deleted, and the folder only when it is then empty.
@@ -170,6 +206,34 @@ lines under the new version with the release date.
 
 ### [Unreleased][service-unreleased]
 
+#### Added
+
+- `SIGNING_LOG_LEVEL` sets the level of the service's own log records,
+  `INFO` by default. Before, uvicorn left them unconfigured, so only
+  warnings and errors appeared, without level or logger name.
+
+#### Changed
+
+- An encrypted PDF is a 422 saying so on `/prepare`, `/sign/start`,
+  `/finalize` and `/retimestamp`, and a PDF certified with no changes allowed
+  is one on `/prepare` and `/sign/start`. `/sign/start` answered 500 for a
+  certified PDF and `/prepare` for an encrypted one, so `@keyseal/server`
+  now fails the job with that message instead of answering 502.
+
+- The system roots trusted beside the configured ones are read from
+  OpenSSL's default CA bundle, the image's ca-certificates (the same set as
+  before), so `SSL_CERT_FILE` and `SSL_CERT_DIR` now change them. oscrypto,
+  unmaintained since 2022 and unable to detect OpenSSL 3.0.10 and later, is
+  no longer a direct dependency; pyHanko still installs it but never imports
+  it here.
+
+#### Security
+
+- `/certificate`, `/finalize` and `/retimestamp` stop after 45 seconds,
+  fetches included, as `/validate` does, and `/finalize` refuses a PDF with
+  more than 50 signatures. Each is a 422, except `/certificate`, which
+  answers 504 so that `@keyseal/server` leaves the job for a retry.
+
 ### [0.3.0][service-0.3.0] - 2026-11-04
 
 #### Added
@@ -259,6 +323,28 @@ lines under the new version with the release date.
 
 ### [Unreleased][server-unreleased]
 
+#### Added
+
+- `keyseal.sweep()` expires old jobs and deletes their blobs, as creating a
+  job does, and deletes the blobs of jobs that ended or are gone, which a
+  failed or interrupted deletion used to leave forever. Call it from a
+  scheduler.
+- The `service` option takes any object with `ServiceClient`'s
+  `certificate`, `signStart` and `signFinish` methods, typed as the new
+  `SigningService`.
+
+#### Changed
+
+- Adapters must implement `listBlobs()`, returning every stored blob key;
+  `sweep()` uses it. The conformance suite checks it.
+- A job is now stored before its PDFs, so a failure storing a PDF leaves a
+  pending job that expires instead of no job.
+
+#### Fixed
+
+- `basePath` refuses `.` and `..` segments. URL parsing resolves them in the
+  helper's requests, so no job URL under such a path could be reached.
+
 ### [0.4.0][server-0.4.0] - 2026-11-04
 
 #### Added
@@ -326,6 +412,12 @@ lines under the new version with the release date.
 ## @keyseal/browser
 
 ### [Unreleased][browser-unreleased]
+
+#### Fixed
+
+- `watchJob` rejects with a `TypeError` for a status without a known
+  `state`, or with a `message` that isn't a string, instead of polling until
+  its timeout.
 
 ### [0.2.0][browser-0.2.0] - 2026-11-05
 

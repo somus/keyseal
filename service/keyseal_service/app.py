@@ -31,7 +31,7 @@ from .appearance import SignedByStampStyle
 from .fetching import public_fetch_session
 from .prepare import MAX_FIELDS, FieldRequest, PrepareError, prepare_fields
 from .request_guard import RequestGuard
-from .settings import Settings, TrustRootsError, WeakTokenError, check_token
+from .settings import LogLevelError, Settings, TrustRootsError, WeakTokenError, check_token
 from .validate import (
     DEFAULT_KEY_USAGE,
     KeyUsage,
@@ -117,14 +117,27 @@ class PrepareRequest(BaseModel):
     fields: list[PrepareField] = Field(max_length=MAX_FIELDS)
 
 
+def configure_logging(level: str) -> None:
+    """Sends the service's own records to stderr at `level`. uvicorn only
+    configures its own loggers, so without this they reach Python's
+    last-resort handler: warnings and above, without level or logger name."""
+    logger = logging.getLogger("keyseal_service")
+    if not logger.handlers:
+        handler = logging.StreamHandler()
+        handler.setFormatter(logging.Formatter("%(levelname)s: %(name)s: %(message)s"))
+        logger.addHandler(handler)
+    logger.setLevel(level)
+
+
 def create_app(settings: Settings | None = None) -> FastAPI:
     try:
         resolved = settings or Settings.from_env()
+        configure_logging(resolved.log_level)
         check_token(resolved.token)
     except WeakTokenError as error:
         log.critical("Refusing to start: %s. Generate one with `openssl rand -base64 32`.", error)
         raise SystemExit(1) from error
-    except TrustRootsError as error:
+    except (TrustRootsError, LogLevelError) as error:
         log.critical("Refusing to start: %s.", error)
         raise SystemExit(1) from error
 
@@ -213,9 +226,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             remote_sign.algorithms(cert)
         except remote_sign.RemoteSignError as error:
             raise HTTPException(400, str(error)) from error
-        trusted, revocation_checked = await _validating(
-            lambda settings: certificate_trusted(cert, chain, settings, body.keyUsage)
-        )
+        try:
+            trusted, revocation_checked = await _validating(
+                lambda settings: certificate_trusted(cert, chain, settings, body.keyUsage)
+            )
+        except ValidationLimitError as error:
+            # Slow revocation servers, not a bad certificate: @keyseal/server
+            # leaves the job for the helper to retry.
+            raise HTTPException(504, str(error)) from error
         return {"revocationChecked": revocation_checked, "trusted": trusted}
 
     @app.post("/sign/start")
@@ -268,6 +286,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             out = await _validating(
                 lambda settings: remote_sign.finalize(pdf, tsa, settings.context())
             )
+        except (remote_sign.RemoteSignError, ValidationLimitError) as error:
+            raise HTTPException(422, str(error)) from error
         except Exception as error:  # noqa: BLE001 - reported, the PDF stays as it was
             log.exception("Couldn't finalise")
             raise HTTPException(422, f"Couldn't finalise: {type(error).__name__}") from error
@@ -282,6 +302,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             out = await _validating(
                 lambda settings: remote_sign.retimestamp(pdf, tsa, settings.context())
             )
+        except (remote_sign.RemoteSignError, ValidationLimitError) as error:
+            raise HTTPException(422, str(error)) from error
         except Exception as error:  # noqa: BLE001 - reported, the PDF stays as it was
             log.exception("Couldn't timestamp")
             raise HTTPException(422, f"Couldn't timestamp: {type(error).__name__}") from error

@@ -22,6 +22,7 @@ use keyseal_core::doctor::Report;
 use keyseal_core::flow::{DigestConfirm, JobView, PinPrompt, Progress, Step, Ui};
 use keyseal_core::origin::Origin;
 use keyseal_core::protocol::{Kind, plain};
+use keyseal_core::token::PinWarning;
 use zeroize::Zeroizing;
 
 actions!(keyseal, [OpenSettings]);
@@ -130,12 +131,19 @@ pub fn launch(
         std::process::exit(1);
     }
     // GPUI panics when it can't set up the GPU, before any window opens;
-    // record that where a browser-started helper can be diagnosed. Only the
-    // main thread's panics: the job thread handles the link, never logged.
+    // record that where a browser-started helper can be diagnosed. The job
+    // thread's panics are recorded by where they happened only: their
+    // message could quote the link, which the log never holds.
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        if std::thread::current().name() == Some("main") {
-            log(&format!("KeySeal stopped: {info}"));
+        match std::thread::current().name() {
+            Some("main") => log(&format!("KeySeal stopped: {info}")),
+            Some(JOB_THREAD) => {
+                if let Some(location) = info.location() {
+                    log(&format!("The job stopped at {location}"));
+                }
+            }
+            _ => {}
         }
         default_hook(info);
     }));
@@ -231,8 +239,12 @@ pub fn launch(
     std::process::exit(0)
 }
 
+/// The name of a job's thread, whose panics are logged.
+const JOB_THREAD: &str = "job";
+
 /// Runs `link` on a thread of its own; `cancelled` is set when the signer
-/// cancels the job or closes its window.
+/// cancels the job or closes its window. A panic there shows the error
+/// window; the panic hook has logged it.
 fn start_job(
     link: String,
     cancelled: Arc<AtomicBool>,
@@ -240,14 +252,18 @@ fn start_job(
     log: fn(&str),
     job: fn(&str, &mut dyn Ui) -> i32,
 ) {
-    std::thread::spawn(move || {
+    let thread = std::thread::Builder::new().name(JOB_THREAD.into());
+    let spawned = thread.spawn(move || {
         let mut ui = WindowUi {
             events: events.clone(),
             log,
             cancelled,
         };
         let code = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| job(&link, &mut ui)))
-            .unwrap_or(1);
+            .unwrap_or_else(|_| {
+                ui.show_error(keyseal_core::flow::INTERNAL_ERROR);
+                1
+            });
         // The daily catalogue and update checks run once the job is over
         // and its windows are gone, never before or during it.
         let _ = events.unbounded_send(Event::Finished);
@@ -259,6 +275,7 @@ fn start_job(
         }
         let _ = events.unbounded_send(Event::Done(code));
     });
+    spawned.expect("failed to spawn the job thread");
 }
 
 /// Opens the settings window; the app quits when the last window closes
@@ -426,6 +443,8 @@ pub(crate) enum Stage {
         digests: Option<Vec<String>>,
         pin_pad: bool,
         warning: Option<&'static str>,
+        /// The PIN entered last was wrong.
+        wrong_pin: bool,
         reply: mpsc::Sender<Option<Zeroizing<String>>>,
     },
     Confirm {
@@ -501,7 +520,13 @@ impl Ui for WindowUi {
                 certificate: prompt.certificate.as_deref().map(plain),
                 digests: prompt.digests.clone(),
                 pin_pad: prompt.pin_pad,
-                warning: prompt.pin_warning,
+                // The flow fails a locked PIN instead of asking for it.
+                warning: match prompt.pin_warning {
+                    Some(PinWarning::FinalTry) => Some(strings::PIN_FINAL_TRY),
+                    Some(PinWarning::CountLow) => Some(strings::PIN_COUNT_LOW),
+                    Some(PinWarning::Locked) | None => None,
+                },
+                wrong_pin: prompt.wrong_pin,
                 reply,
             },
         })

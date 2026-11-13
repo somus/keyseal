@@ -289,7 +289,7 @@ impl Ui for Headless {
             (None, Kind::Enrol) => eprintln!("Enrol the certificate on this token."),
         }
         if let Some(warning) = prompt.pin_warning {
-            eprintln!("{warning}");
+            eprintln!("{}", warning.message());
         }
         if prompt.pin_pad {
             eprintln!("Enter the PIN on the token's PIN pad.");
@@ -301,6 +301,10 @@ impl Ui for Headless {
             eprintln!("KEYSEAL_PIN isn't set.");
         }
         pin
+    }
+
+    fn retries_pin(&self) -> bool {
+        false
     }
 
     fn confirm_digest(&mut self, confirm: &DigestConfirm) -> bool {
@@ -336,7 +340,7 @@ fn list() -> Result<(), String> {
     if certificates.is_empty()
         && let Some(pin) = env_var("KEYSEAL_PIN").map(Zeroizing::new)
     {
-        token.login(pin)?;
+        token.login(pin).map_err(|e| e.to_string())?;
         certificates = token.certificates(false)?;
     }
     if certificates.is_empty() {

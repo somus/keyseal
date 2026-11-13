@@ -54,6 +54,8 @@ pub(crate) struct Windows {
     /// The signer cancelled the job or closed its window: later job
     /// requests answer Cancel. Shared with the job's thread.
     job_closed: Arc<AtomicBool>,
+    /// The message that a link arrived while a job runs, while it is open.
+    busy: Option<AnyWindowHandle>,
 }
 
 impl Windows {
@@ -62,6 +64,7 @@ impl Windows {
             log,
             job: None,
             job_closed: Arc::default(),
+            busy: None,
         }
     }
 
@@ -165,9 +168,17 @@ impl Windows {
         }
     }
 
-    /// A link arrived while a job runs; the job's windows stay.
-    pub(crate) fn busy(&self, cx: &mut App) {
-        self.message(strings::BUSY_HEADING, strings::BUSY.into(), None, cx);
+    /// A link arrived while a job runs; the job's windows stay. One such
+    /// message at a time: a later link brings it forward.
+    pub(crate) fn busy(&mut self, cx: &mut App) {
+        if let Some(handle) = self.busy
+            && handle
+                .update(cx, |_, window, _| window.activate_window())
+                .is_ok()
+        {
+            return;
+        }
+        self.busy = Some(self.message(strings::BUSY_HEADING, strings::BUSY.into(), None, cx));
     }
 
     /// The job is over: closes every window, and the next job starts afresh.
@@ -182,6 +193,7 @@ impl Windows {
         }
         self.job = None;
         self.job_closed = Arc::default();
+        self.busy = None;
         native::set_brand(None, true, cx);
     }
 
@@ -191,8 +203,8 @@ impl Windows {
         message: String,
         reply: Option<mpsc::Sender<()>>,
         cx: &mut App,
-    ) {
-        open(strings::APP_NAME, 460., 260., self.log, cx, |window, cx| {
+    ) -> AnyWindowHandle {
+        let (handle, _) = open(strings::APP_NAME, 460., 260., self.log, cx, |window, cx| {
             let view = cx.new(|cx| MessageWindow::new(heading, message, reply, window, cx));
             let weak = view.downgrade();
             window.on_window_should_close(cx, move |_, cx| {
@@ -201,6 +213,7 @@ impl Windows {
             });
             view
         });
+        handle
     }
 }
 
@@ -415,7 +428,20 @@ fn banner(
         .bg(tint.opacity(0.14))
         .text_sm()
         .child(icon(name).size_4().mt_0p5().flex_none().text_color(tint))
-        .child(div().flex_1().child(text))
+        // min_w_0 lets the text wrap instead of widening the strip.
+        .child(div().flex_1().min_w_0().child(text))
+        .test_support()
+}
+
+/// Under the PIN field when the token refused the PIN entered last.
+fn wrong_pin_line(cx: &App) -> impl IntoElement {
+    div()
+        .id("pin-wrong")
+        .role(Role::Alert)
+        .aria_label(strings::PIN_WRONG)
+        .text_sm()
+        .text_color(cx.theme().danger)
+        .child(strings::PIN_WRONG)
         .test_support()
 }
 
@@ -929,8 +955,10 @@ impl JobWindow {
             && self.pin.read(cx).value().is_empty()
     }
 
+    /// What the submit button does, under the same conditions as the
+    /// button: Enter waits for [`INPUT_DELAY`] too.
     fn submit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.pin_missing(cx) {
+        if self.pin_missing(cx) || !self.delay.ready {
             return;
         }
         match std::mem::replace(&mut self.stage, Stage::Busy) {
@@ -1013,6 +1041,7 @@ impl JobWindow {
             Stage::Pin {
                 pin_pad,
                 warning,
+                wrong_pin,
                 digests,
                 ..
             } => body
@@ -1044,6 +1073,7 @@ impl JobWindow {
                                 .child(note(text, cx))
                                 .test_support(),
                         )
+                        .when(*wrong_pin, |this| this.child(wrong_pin_line(cx)))
                     } else {
                         this.child(
                             v_flex()
@@ -1058,7 +1088,8 @@ impl JobWindow {
                                                 .size_4()
                                                 .text_color(cx.theme().muted_foreground),
                                         ),
-                                ),
+                                )
+                                .when(*wrong_pin, |this| this.child(wrong_pin_line(cx))),
                         )
                     }
                 })
@@ -1550,6 +1581,7 @@ fn driver_lines(driver: &Driver, name: bool) -> Vec<SharedString> {
         DriverState::Failed(reason) => (strings::DRIVER_FAILED, Some(reason.clone())),
         DriverState::Missing => (strings::DRIVER_MISSING, None),
         DriverState::NotTried => (strings::DRIVER_NOT_TRIED, None),
+        DriverState::Empty => (strings::STORE_EMPTY, None),
     };
     [
         Some(state.into()),
@@ -1567,7 +1599,7 @@ fn token_driver<'a>(report: &'a Report, token: &str) -> Option<&'a Driver> {
     let rank = |driver: &&Driver| match driver.state {
         DriverState::Used => 0,
         DriverState::Failed(_) => 1,
-        DriverState::NoToken => 2,
+        DriverState::NoToken | DriverState::Empty => 2,
         DriverState::NotTried => 3,
         DriverState::Missing => 4,
     };
@@ -1700,7 +1732,10 @@ impl SettingsWindow {
                     driver.token.is_none()
                         && matches!(
                             driver.state,
-                            DriverState::Used | DriverState::NoToken | DriverState::Failed(_)
+                            DriverState::Used
+                                | DriverState::NoToken
+                                | DriverState::Failed(_)
+                                | DriverState::Empty
                         )
                 }) {
                     rows.push(status_row(
@@ -1885,6 +1920,8 @@ pub const GALLERY_VIEWS: &[&str] = &[
     "pin-opaque",
     "pin-pad",
     "pin-warning",
+    "pin-wrong",
+    "pin-final-try",
     "pin-batch",
     "pin-batch-details",
     "confirm",
@@ -1895,6 +1932,10 @@ pub const GALLERY_VIEWS: &[&str] = &[
     "progress-certificate",
     "message",
     "message-driver",
+    "message-pin-locked",
+    "message-expired",
+    "message-link",
+    "message-internal",
     "busy-message",
     "settings",
     "settings-empty",
@@ -1920,29 +1961,39 @@ pub(crate) fn sample_report(status: Status) -> Report {
             token: Some("HyperSecu HYP2003".into()),
         }],
     };
+    let mut drivers = vec![
+        Driver {
+            name: "libcastle.dylib".into(),
+            detail: "/usr/local/lib/libcastle.dylib [catalogue, HyperSecu HYP2003 plugged in]"
+                .into(),
+            token: Some("HyperSecu HYP2003".into()),
+            state: plugged,
+        },
+        Driver {
+            name: "libeTPkcs11.dylib".into(),
+            detail: "/usr/local/lib/libeTPkcs11.dylib [known drivers]".into(),
+            token: None,
+            state: DriverState::NoToken,
+        },
+        Driver {
+            name: "libmtoken.dylib".into(),
+            detail: "/usr/local/lib/libmtoken.dylib [known drivers]".into(),
+            token: None,
+            state: DriverState::Missing,
+        },
+    ];
+    // The keychain is looked at once no driver reaches a token.
+    if status != Status::Ready {
+        drivers.push(Driver {
+            name: "macOS keychain".into(),
+            detail: "the macOS keychain (CryptoTokenKit)".into(),
+            token: None,
+            state: DriverState::Empty,
+        });
+    }
     Report {
         devices,
-        drivers: vec![
-            Driver {
-                name: "libcastle.dylib".into(),
-                detail: "/usr/local/lib/libcastle.dylib [catalogue, HyperSecu HYP2003 plugged in]"
-                    .into(),
-                token: Some("HyperSecu HYP2003".into()),
-                state: plugged,
-            },
-            Driver {
-                name: "libeTPkcs11.dylib".into(),
-                detail: "/usr/local/lib/libeTPkcs11.dylib [known drivers]".into(),
-                token: None,
-                state: DriverState::NoToken,
-            },
-            Driver {
-                name: "libmtoken.dylib".into(),
-                detail: "/usr/local/lib/libmtoken.dylib [known drivers]".into(),
-                token: None,
-                state: DriverState::Missing,
-            },
-        ],
+        drivers,
         text: "keyseal 0.1.0\nOS: macos aarch64\nTokens: sample\n".into(),
         status,
     }
@@ -1969,13 +2020,15 @@ pub(crate) fn gallery(view: &str, cx: &mut App) {
         signer: "Asha Rao".into(),
         documents: vec!["Circular 2026/14: Operation of bank accounts".into()],
     };
-    let pin = |certificate: Option<&str>, digest: Option<&str>, pin_pad, warning| Stage::Pin {
-        certificate: certificate.map(Into::into),
-        digests: digest.map(|digest| vec![digest.into()]),
-        pin_pad,
-        warning,
-        reply: mpsc::channel().0,
-    };
+    let pin =
+        |certificate: Option<&str>, digest: Option<&str>, pin_pad, warning, wrong_pin| Stage::Pin {
+            certificate: certificate.map(Into::into),
+            digests: digest.map(|digest| vec![digest.into()]),
+            pin_pad,
+            warning,
+            wrong_pin,
+            reply: mpsc::channel().0,
+        };
     let mut windows = Windows::new(|_| {});
     // pin-details: the signer chose to always see the technical details.
     set_always_show_details(matches!(view, "pin-details" | "pin-batch-details"), cx);
@@ -1999,6 +2052,7 @@ pub(crate) fn gallery(view: &str, cx: &mut App) {
                     digests: Some(digests),
                     pin_pad: false,
                     warning: None,
+                    wrong_pin: false,
                     reply: mpsc::channel().0,
                 },
             },
@@ -2023,14 +2077,23 @@ pub(crate) fn gallery(view: &str, cx: &mut App) {
             );
             return;
         }
-        "message" | "message-driver" => {
-            let message = if view == "message" {
-                "The signing service refused the signature: the certificate has expired.".into()
-            } else {
-                format!(
+        "message" | "message-driver" | "message-pin-locked" | "message-expired"
+        | "message-link" | "message-internal" => {
+            let message = match view {
+                "message" => {
+                    "The signing service refused the signature: the certificate has expired.".into()
+                }
+                "message-driver" => format!(
                     "{} Install your token's driver, then try again.",
                     modules::NO_DRIVER
-                )
+                ),
+                "message-pin-locked" => keyseal_core::token::PIN_LOCKED.into(),
+                "message-expired" => {
+                    let expired = include_bytes!("../../keyseal-core/tests/fixtures/expired.der");
+                    keyseal_core::token::outside_validity(expired, i64::MAX).unwrap_or_default()
+                }
+                "message-link" => keyseal_core::protocol::DAMAGED_LINK.into(),
+                _ => keyseal_core::flow::INTERNAL_ERROR.into(),
             };
             windows.message(strings::ERROR_HEADING, message, None, cx);
             return;
@@ -2091,14 +2154,18 @@ pub(crate) fn gallery(view: &str, cx: &mut App) {
         // pin-plain: a brand without a logo; pin-opaque: a brand that asks
         // for opaque windows.
         "pin" | "pin-details" | "pin-plain" | "pin-opaque" => {
-            pin(Some(CERTIFICATE), Some(DIGEST), false, None)
+            pin(Some(CERTIFICATE), Some(DIGEST), false, None, false)
         }
-        "pin-pad" => pin(Some(CERTIFICATE), Some(DIGEST), true, None),
-        "pin-warning" => pin(
-            None,
-            None,
+        "pin-pad" => pin(Some(CERTIFICATE), Some(DIGEST), true, None, false),
+        "pin-warning" => pin(None, None, false, Some(strings::PIN_COUNT_LOW), false),
+        // The token refused the PIN just entered, then says one try is left.
+        "pin-wrong" => pin(Some(CERTIFICATE), Some(DIGEST), false, None, true),
+        "pin-final-try" => pin(
+            Some(CERTIFICATE),
+            Some(DIGEST),
             false,
-            Some("A wrong PIN was entered recently; few attempts are left."),
+            Some(strings::PIN_FINAL_TRY),
+            true,
         ),
         "confirm" => Stage::Confirm {
             certificate: CERTIFICATE.into(),
@@ -2367,6 +2434,7 @@ mod tests {
                             digests: Some(digests),
                             pin_pad: true,
                             warning: None,
+                            wrong_pin: false,
                             reply: mpsc::channel().0,
                         },
                     },
@@ -2396,6 +2464,7 @@ mod tests {
                         digests: Some(vec![DIGEST.into()]),
                         pin_pad: false,
                         warning: Some("One PIN attempt is left before the token locks."),
+                        wrong_pin: false,
                         reply,
                     },
                 },
@@ -2431,9 +2500,14 @@ mod tests {
             window.input("1234", cx);
             // The field is masked, so it doesn't expose its value.
             assert_eq!(window.find("pin").value(), None);
+            // Enter waits for the delay, as the button does.
             window.press("enter", cx);
         })
         .unwrap();
+        assert_eq!(answer.try_recv(), Err(mpsc::TryRecvError::Empty));
+        pass_input_delay(cx);
+        cx.update_window(handle, |_, window, cx| window.press("enter", cx))
+            .unwrap();
         assert_eq!(answer.recv().unwrap().unwrap().as_str(), "1234");
 
         let (reply, answer) = mpsc::channel();
@@ -2498,6 +2572,7 @@ mod tests {
                         digests: None,
                         pin_pad: false,
                         warning: None,
+                        wrong_pin: false,
                         reply,
                     },
                 },
@@ -2511,6 +2586,58 @@ mod tests {
         })
         .unwrap();
         assert_eq!(answer.recv(), Err(mpsc::RecvError));
+    }
+
+    /// After a wrong PIN the same window asks again: the field is empty and
+    /// focused, the message sits by it, and the token's warning shows.
+    #[gpui_kit::test]
+    fn a_wrong_pin_is_asked_for_again_in_the_same_window(cx: &mut TestAppContext) {
+        let mut windows = setup(cx);
+        let pin = |wrong_pin, warning, reply| Request::Job {
+            job: job(),
+            stage: Stage::Pin {
+                certificate: Some("CN=A. Signer".into()),
+                digests: Some(vec![DIGEST.into()]),
+                pin_pad: false,
+                warning,
+                wrong_pin,
+                reply,
+            },
+        };
+        let (reply, answer) = mpsc::channel();
+        cx.update(|cx| windows.handle(pin(false, None, reply), cx));
+        let handle = open_windows(cx)[0];
+        pass_input_delay(cx);
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            assert!(window.try_find("pin-wrong").is_none());
+            window.input("0000", cx);
+            window.press("enter", cx);
+        })
+        .unwrap();
+        assert_eq!(answer.recv().unwrap().unwrap().as_str(), "0000");
+
+        let (reply, answer) = mpsc::channel();
+        cx.update(|cx| windows.handle(pin(true, Some(strings::PIN_FINAL_TRY), reply), cx));
+        assert_eq!(open_windows(cx), [handle]);
+        pass_input_delay(cx);
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            assert_eq!(window.find("pin-wrong").label(), Some(strings::PIN_WRONG));
+            assert_eq!(
+                window.find("pin-warning").label(),
+                Some(strings::PIN_FINAL_TRY)
+            );
+            assert_eq!(window.find("pin").focused(), Some(true));
+            // The field was cleared, so there is nothing to submit yet.
+            assert_eq!(window.find("submit").disabled(), Some(true));
+            window.input("1234", cx);
+            window.render_frame(cx);
+            assert_ne!(window.find("submit").disabled(), Some(true));
+            window.press("enter", cx);
+        })
+        .unwrap();
+        assert_eq!(answer.recv().unwrap().unwrap().as_str(), "1234");
     }
 
     /// From the certificate store the digest confirmation, or the enrol
@@ -2569,8 +2696,9 @@ mod tests {
         assert_eq!(answer.recv(), Ok(true));
     }
 
-    /// A link during a job gets a window of its own; after the job every
-    /// window closes and the next job opens a new job window.
+    /// A link during a job gets a window of its own, which later links
+    /// reuse; after the job every window closes and the next job opens a
+    /// new job window.
     #[gpui_kit::test]
     fn a_second_job_starts_afresh(cx: &mut TestAppContext) {
         let mut windows = setup(cx);
@@ -2584,7 +2712,10 @@ mod tests {
         let (reply, _first) = mpsc::channel();
         cx.update(|cx| windows.handle(choose(reply), cx));
         cx.update(|cx| windows.busy(cx));
-        assert_eq!(open_windows(cx).len(), 2);
+        let open = open_windows(cx);
+        assert_eq!(open.len(), 2);
+        cx.update(|cx| windows.busy(cx));
+        assert_eq!(open_windows(cx), open);
         cx.update(|cx| windows.close_all(cx));
         cx.run_until_parked();
         assert!(open_windows(cx).is_empty());
@@ -2779,6 +2910,7 @@ mod tests {
                         digests: Some(vec![DIGEST.into()]),
                         pin_pad: false,
                         warning: None,
+                        wrong_pin: false,
                         reply,
                     },
                 },
@@ -2824,6 +2956,7 @@ mod tests {
                         digests: Some(digests.clone()),
                         pin_pad: false,
                         warning: None,
+                        wrong_pin: false,
                         reply,
                     },
                 },
@@ -2871,6 +3004,7 @@ mod tests {
                         digests: None,
                         pin_pad: false,
                         warning: None,
+                        wrong_pin: false,
                         reply,
                     },
                 },
@@ -2941,6 +3075,7 @@ mod tests {
                         digests: Some(vec![DIGEST.into()]),
                         pin_pad: false,
                         warning: None,
+                        wrong_pin: false,
                         reply,
                     },
                 },
@@ -2975,6 +3110,7 @@ mod tests {
                 digests: None,
                 pin_pad: false,
                 warning: None,
+                wrong_pin: false,
                 reply,
             },
         };

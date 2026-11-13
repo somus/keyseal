@@ -12,7 +12,6 @@ on:
       - helper/Cargo.lock
       - service/uv.lock
       - bun.lock
-      - catalogue/bun.lock
       - .cargo/audit.toml
       - .github/workflows/audit.yml
   schedule:
@@ -58,5 +57,3 @@ jobs:
         with:
           bun-version-file: package.json
       - run: bun audit
-      - run: bun audit
-        working-directory: catalogue

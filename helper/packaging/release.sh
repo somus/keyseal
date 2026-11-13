@@ -11,7 +11,9 @@
 # 2. Checks keyseal-update.json and SHA256SUMS against the assets, the
 #    Windows exe and zip against the unsigned exe the release run built, and
 #    the macOS zip and disk image against its unsigned binaries
-#    (compare-bundle.sh), with their Developer ID or ad-hoc signature.
+#    (compare-bundle.sh), with their Developer ID or ad-hoc signature. The
+#    zip and the app must hold the third-party notices this script makes
+#    from the tagged source (third-party-notices.sh).
 # 3. Rebuilds the Linux binary in the pinned container and requires it to
 #    equal SHA256SUMS-unsigned and the binary in the tarball, deb and
 #    AppImage (unpacked, never run). The source and the Linux packages are
@@ -31,10 +33,10 @@
 # and sends their two .json entries; whoever publishes puts every entry in
 # the work directory before running it without.
 #
-# Needs gh, jq, git, docker, bw, OpenSSL 3 or later and the Xcode command
-# line tools. Works in $KEYSEAL_RELEASE_DIR, a directory you own (made
-# private), or by default a new private one under $TMPDIR; its path must not
-# hold a space.
+# Needs gh, jq, git, docker, bw, OpenSSL 3 or later, the Xcode command
+# line tools, and rustup and cargo-about 0.9.3 for the notices. Works in
+# $KEYSEAL_RELEASE_DIR, a directory you own (made private), or by default a
+# new private one under $TMPDIR; its path must not hold a space.
 set -euo pipefail
 
 usage() {
@@ -80,7 +82,7 @@ esac
   || fail "$tag is not a draft release in $repo"
 
 step "Downloading the draft and the tagged source into $work"
-rm -rf "$work/draft" "$work/src" "$work/ci-unsigned" "$work/ci-windows" "$work/mine" "$work/unzipped" "$work/rebuilt" "$work/rebuild.sh"
+rm -rf "$work/draft" "$work/src" "$work/ci-unsigned" "$work/ci-windows" "$work/mine" "$work/unzipped" "$work/rebuilt" "$work/rebuild.sh" "$work/THIRD-PARTY-NOTICES.txt"
 gh release download "$tag" --repo "$repo" --dir "$work/draft"
 # Not `clone --branch`: it would take a branch named like the tag over the tag.
 git clone -q --no-checkout "https://github.com/$repo.git" "$work/src"
@@ -110,18 +112,27 @@ cmp "$work/mine/keyseal-update.json" "$draft/keyseal-update.json" || fail "keyse
 cmp "$work/mine/SHA256SUMS" "$draft/SHA256SUMS" || fail "SHA256SUMS"
 jq . "$draft/keyseal-update.json"
 
+step "Third-party notices from the tagged source"
+# cargo-about isn't one of this checkout's scripts, so it doesn't get
+# BW_SESSION.
+env -u BW_SESSION "$src/helper/packaging/third-party-notices.sh" "$work/THIRD-PARTY-NOTICES.txt" \
+  || fail "making the third-party notices"
+notices="$work/THIRD-PARTY-NOTICES.txt"
+
 step "Windows"
 win="$draft/keyseal-helper-$version-windows-x64"
 cmp "$win.exe" "$work/ci-windows/keyseal-helper-$version-windows-x64.exe" \
   || fail "the update exe isn't the run's unsigned build"
 [ "$(shasum -a 256 "$win.exe" | cut -d' ' -f1)" = "$(unsigned_hash "keyseal-helper-$version-windows-x64.exe")" ] \
   || fail "the update exe isn't in SHA256SUMS-unsigned"
-[ "$(unzip -Z1 "$win.zip" | sort | tr '\n' ' ')" = "install.cmd keyseal.exe " ] || fail "the zip holds other files"
+[ "$(unzip -Z1 "$win.zip" | LC_ALL=C sort | tr '\n' ' ')" = "THIRD-PARTY-NOTICES.txt install.cmd keyseal.exe " ] \
+  || fail "the zip holds other files"
 unzip -p "$win.zip" keyseal.exe | cmp - "$win.exe" || fail "the zip's keyseal.exe"
 # The Windows checkout gives install.cmd CRLF line endings.
 unzip -p "$win.zip" install.cmd | tr -d '\r' | cmp - "$src/helper/packaging/windows/install.cmd" \
   || fail "the zip's install.cmd"
-echo "The zip holds the update exe and install.cmd."
+unzip -p "$win.zip" THIRD-PARTY-NOTICES.txt | cmp - "$notices" || fail "the zip's THIRD-PARTY-NOTICES.txt"
+echo "The zip holds the update exe, install.cmd and the notices."
 
 step "macOS"
 for file in "keyseal-helper-$version-macos-universal" "keyseal-token-worker-$version-macos-x86_64"; do
@@ -129,8 +140,8 @@ for file in "keyseal-helper-$version-macos-universal" "keyseal-token-worker-$ver
     || fail "the run's $file isn't in SHA256SUMS-unsigned"
 done
 mac="$draft/keyseal-helper-$version-macos-universal"
-"$src/helper/packaging/macos/compare-bundle.sh" "$mac.zip" "$work/ci-unsigned"
-"$src/helper/packaging/macos/compare-bundle.sh" "$mac.dmg" "$work/ci-unsigned"
+"$src/helper/packaging/macos/compare-bundle.sh" "$mac.zip" "$work/ci-unsigned" "$notices"
+"$src/helper/packaging/macos/compare-bundle.sh" "$mac.dmg" "$work/ci-unsigned" "$notices"
 ditto -x -k "$mac.zip" "$work/unzipped"
 app="$work/unzipped/KeySeal.app"
 signature="$(codesign -dv "$app" 2>&1)"

@@ -91,8 +91,25 @@ distinct pinned keys verify (spec section 13). The release workflow holds
 The release workflow releases only a commit on `main`, and only when its
 `RELEASE_KEYS`, `THRESHOLD` and `CATALOGUE_KEYS` equal those on `main`
 (`helper/packaging/check-release-commit.sh`), so a tag on an unreviewed
-commit can't bring keys of its own. `helper-v*` tags are protected
-(`docs/releasing.md`).
+commit can't bring keys of its own. It also needs the `checks` and `e2e`
+runs for the commit's push to `main` to have passed
+(`scripts/ci/ci-passed.sh`). `helper-v*` tags are protected (`docs/releasing.md`).
+
+## Build provenance
+
+The release run attests every asset of the draft with `actions/attest`: a
+Sigstore-signed statement, recorded in GitHub and Sigstore's public
+transparency log, that the file was built by `.github/workflows/release.yml`
+from the tagged commit. It is made in CI with the workflow's identity, needs
+no maintainer key, and isn't a release signature: helpers trust only the
+signed manifest. It lets anyone tie a downloaded file to the run and commit
+that built it:
+
+```sh
+gh attestation verify keyseal-helper-1.4.0-linux-x64.AppImage --repo somus/keyseal \
+  --signer-workflow somus/keyseal/.github/workflows/release.yml \
+  --source-ref refs/tags/helper-v1.4.0
+```
 
 ## Before signing: reproducibility
 

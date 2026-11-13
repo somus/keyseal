@@ -201,9 +201,23 @@ impl std::fmt::Display for Attempt {
 
 /// Where the flow looks for the job's key, in order: the candidates that
 /// exist, then on Windows and macOS the certificate store. On Windows it
-/// comes first when a plugged-in token's catalogue entry has `cng`.
+/// comes first when a plugged-in token's catalogue entry has `cng`. An
+/// [`OVERRIDE`] that names no file is an error, not a missing driver.
 pub fn attempts() -> Result<Vec<Attempt>, String> {
     let (candidates, prefer_cng) = search()?;
+    if let [
+        Candidate {
+            path,
+            source: Source::Override,
+        },
+    ] = candidates.as_slice()
+        && !path.exists()
+    {
+        return Err(format!(
+            "{OVERRIDE} is set to {}, but there is no file there.",
+            path.display()
+        ));
+    }
     let installed = candidates.into_iter().filter(|c| c.path.exists()).collect();
     Ok(order(
         installed,
@@ -447,17 +461,26 @@ mod tests {
         // SAFETY: no other test reads or writes this variable.
         unsafe { std::env::set_var(OVERRIDE, &module) };
         let list = candidates();
+        let missing = attempts();
         unsafe { std::env::set_var(OVERRIDE, "libdev.so") };
         let relative = candidates();
         unsafe { std::env::remove_var(OVERRIDE) };
         assert_eq!(
             list.unwrap(),
             [Candidate {
-                path: module,
+                path: module.clone(),
                 source: Source::Override
             }]
         );
         assert!(relative.is_err());
+        // A mistyped override names itself rather than ending in no driver.
+        assert_eq!(
+            missing.unwrap_err(),
+            format!(
+                "{OVERRIDE} is set to {}, but there is no file there.",
+                module.display()
+            )
+        );
     }
 
     #[test]

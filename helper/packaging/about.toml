@@ -1,0 +1,42 @@
+# cargo-about's configuration for THIRD-PARTY-NOTICES.txt
+# (third-party-notices.sh). It covers every release target's dependencies,
+# so one file goes in every package. Build and dev dependencies aren't in
+# the binaries.
+targets = [
+  "aarch64-apple-darwin",
+  "x86_64-apple-darwin",
+  "x86_64-pc-windows-msvc",
+  "x86_64-unknown-linux-gnu",
+  "aarch64-unknown-linux-gnu",
+]
+ignore-build-dependencies = true
+ignore-dev-dependencies = true
+
+# Permissive licences only. A dependency under any other licence fails the
+# generation until it is reviewed and accepted for that crate below.
+accepted = [
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "MIT",
+  "MIT-0",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "Zlib",
+  "0BSD",
+  "Unlicense",
+  "CC0-1.0",
+  "BSL-1.0",
+  "Unicode-3.0",
+  "CDLA-Permissive-2.0",
+]
+
+# Weak copyleft, per file: these unmodified crates are linked in through
+# gpui-kit, and their licence text, which says where their source is, goes
+# in the notices. option-ext comes through dirs-sys and dirs, dwrote
+# through zed-font-kit on Windows.
+[option-ext]
+accepted = ["MPL-2.0"]
+
+[dwrote]
+accepted = ["MPL-2.0"]

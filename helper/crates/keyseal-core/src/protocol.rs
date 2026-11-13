@@ -28,6 +28,9 @@ const MAX_RESPONSE_BYTES: u64 = 262_144;
 /// Document download budget and size limits (section 8.4): each document,
 /// and a job's documents together.
 const DOCUMENT_TIMEOUT: Duration = Duration::from_secs(60);
+/// A failure report waits this long: the server only records it, and the
+/// helper waits for it before it exits.
+const REPORT_TIMEOUT: Duration = Duration::from_secs(10);
 pub const MAX_DOCUMENT_BYTES: u64 = 67_108_864;
 pub const MAX_JOB_DOCUMENT_BYTES: u64 = 268_435_456;
 /// A sign job's documents (section 8.2).
@@ -61,12 +64,16 @@ pub fn is_token(value: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
+/// A link that doesn't parse as a URL, or whose job doesn't. The parser's
+/// detail would mean nothing to the signer.
+pub const DAMAGED_LINK: &str = "The KeySeal link is damaged, so the job can't be opened. Go back to the website and start again.";
+
 /// Validates a link as section 3.3 requires, before any network request.
 pub fn parse_link(link: &str, allow_insecure: bool) -> Result<Link, String> {
     if link.len() > MAX_LINK_BYTES {
         return Err("The KeySeal link is longer than 2048 bytes.".into());
     }
-    let url = Url::parse(link).map_err(|e| format!("The KeySeal link isn't a URL: {e}"))?;
+    let url = Url::parse(link).map_err(|_| DAMAGED_LINK)?;
     if url.scheme() != "keyseal" {
         return Err("Not a keyseal:// link.".into());
     }
@@ -90,7 +97,7 @@ pub fn parse_link(link: &str, allow_insecure: bool) -> Result<Link, String> {
     let [job] = jobs.as_slice() else {
         return Err("The KeySeal link must carry exactly one job.".into());
     };
-    let job_url = Url::parse(job).map_err(|e| format!("The job URL isn't a URL: {e}"))?;
+    let job_url = Url::parse(job).map_err(|_| DAMAGED_LINK)?;
     let origin = Origin::of_url(&job_url, allow_insecure)?;
     if !job_url.username().is_empty()
         || job_url.password().is_some()
@@ -544,7 +551,13 @@ impl JobClient {
             message
         };
         let body = json!({ "claimNonce": nonce, "message": message });
-        let Empty {} = self.post("failure", body)?;
+        let sent = self
+            .origin
+            .agent(REPORT_TIMEOUT)
+            .post(format!("{}/failure", self.url))
+            .header(VERSION_HEADER, crate::VERSION)
+            .send_json(body);
+        let Empty {} = self.reply(sent)?;
         Ok(())
     }
 
@@ -739,6 +752,10 @@ mod tests {
             ),
         ] {
             assert!(parse_link(&bad, false).is_err(), "{bad}");
+        }
+        // The parser's detail stays out of the message.
+        for damaged in ["keyseal sign".into(), link("sign", "not a url")] {
+            assert_eq!(parse_link(&damaged, false).unwrap_err(), DAMAGED_LINK);
         }
     }
 

@@ -71,8 +71,9 @@ the unsigned binaries you build in step 2.
      executable and compares the rest (the method is in the script):
 
      ```sh
-     helper/packaging/macos/compare-bundle.sh draft/keyseal-helper-<v>-macos-universal.zip rebuilt
-     helper/packaging/macos/compare-bundle.sh draft/keyseal-helper-<v>-macos-universal.dmg rebuilt
+     helper/packaging/third-party-notices.sh notices.txt   # cargo-about 0.9.3
+     helper/packaging/macos/compare-bundle.sh draft/keyseal-helper-<v>-macos-universal.zip rebuilt notices.txt
+     helper/packaging/macos/compare-bundle.sh draft/keyseal-helper-<v>-macos-universal.dmg rebuilt notices.txt
      ditto -x -k draft/keyseal-helper-<v>-macos-universal.zip unzipped
      spctl -a -vv unzipped/KeySeal.app   # accepted, source=Notarized Developer ID
      spctl -a -vv -t open --context context:primary-signature draft/keyseal-helper-<v>-macos-universal.dmg
@@ -86,15 +87,16 @@ the unsigned binaries you build in step 2.
      codesign -dv unzipped/KeySeal.app 2>&1 | grep Signature=adhoc
      ```
 
-   - Windows: the update exe is the unsigned binary, and the zip holds it
-     and `install.cmd`:
+   - Windows: the update exe is the unsigned binary, and the zip holds it,
+     `install.cmd` and the notices:
 
      ```sh
      cmp draft/keyseal-helper-<v>-windows-x64.exe rebuilt/keyseal-helper-<v>-windows-x64.exe
-     unzip -l draft/keyseal-helper-<v>-windows-x64.zip   # keyseal.exe and install.cmd only
+     unzip -l draft/keyseal-helper-<v>-windows-x64.zip   # keyseal.exe, install.cmd and THIRD-PARTY-NOTICES.txt only
      unzip -p draft/keyseal-helper-<v>-windows-x64.zip keyseal.exe | cmp - rebuilt/keyseal-helper-<v>-windows-x64.exe
      # The Windows checkout gives install.cmd CRLF line endings.
      unzip -p draft/keyseal-helper-<v>-windows-x64.zip install.cmd | tr -d '\r' | cmp - helper/packaging/windows/install.cmd
+     unzip -p draft/keyseal-helper-<v>-windows-x64.zip THIRD-PARTY-NOTICES.txt | cmp - notices.txt
      ```
 
    - Linux: the tarball, deb and AppImage, which is also the update

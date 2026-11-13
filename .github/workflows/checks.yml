@@ -2,13 +2,17 @@ name: checks
 
 on:
   push:
+    branches: [main]
   pull_request:
 
 permissions:
   contents: read
 
+# On main each commit has a group of its own, so no run there is cancelled
+# or dropped from the queue: a release needs a passing run for the commit it
+# publishes (scripts/ci/ci-passed.sh).
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
   cancel-in-progress: true
 
 jobs:
@@ -22,16 +26,10 @@ jobs:
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.bun/install/cache
-          key: bun-${{ runner.os }}-${{ hashFiles('bun.lock', 'catalogue/bun.lock') }}
+          key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
           restore-keys: bun-${{ runner.os }}-
       - run: bun install --frozen-lockfile
-      # The catalogue tools are a standalone package outside the root
-      # workspaces, and the root test run includes their tests.
-      - run: bun install --frozen-lockfile
-        working-directory: catalogue
       - run: bun run check:types
-      - run: bun run check:types
-        working-directory: catalogue
       - run: bun run lint
       - run: bun run format:check
       - run: bun run test

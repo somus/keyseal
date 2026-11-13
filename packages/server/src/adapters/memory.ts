@@ -51,6 +51,9 @@ export function createMemoryAdapter(options: {
       return bytes ? bytes.slice() : null;
     },
     jobs,
+    async listBlobs() {
+      return [...blobs.keys()];
+    },
     onCompleted: options.onCompleted,
     ...(options.onFailed ? { onFailed: options.onFailed } : {}),
     async putBlob(key, bytes) {

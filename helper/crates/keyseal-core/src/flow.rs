@@ -37,11 +37,13 @@ use crate::protocol::{
 };
 #[cfg(any(windows, target_os = "macos"))]
 use crate::store::Store;
-use crate::token::{self, TokenBackend, TokenCertificate, TokenError};
+use crate::token::{self, LoginError, PinWarning, TokenBackend, TokenCertificate, TokenError};
 use crate::trust::TrustStore;
 
 const CANCELLED: &str = "Signing cancelled.";
 const ENROLMENT_CANCELLED: &str = "Enrolment cancelled.";
+/// The error for a panic in the job; the front end logs the panic itself.
+pub const INTERNAL_ERROR: &str = "KeySeal stopped because of a problem in KeySeal itself. Start again from the website. If it happens again, contact your support team.";
 
 impl From<TokenError> for String {
     fn from(error: TokenError) -> Self {
@@ -128,7 +130,11 @@ pub struct PinPrompt<'a> {
     pub digests: Option<Vec<String>>,
     /// The PIN is entered on the token's PIN pad; return any string.
     pub pin_pad: bool,
-    pub pin_warning: Option<&'static str>,
+    /// What the token's flags say about the attempts left; never
+    /// [`PinWarning::Locked`], which fails the job instead.
+    pub pin_warning: Option<PinWarning>,
+    /// The PIN entered last was wrong; the prompt asks again.
+    pub wrong_pin: bool,
 }
 
 pub struct DigestConfirm<'a> {
@@ -171,6 +177,11 @@ pub trait Ui {
     fn choose_certificate(&mut self, job: &JobView, subjects: &[String]) -> Option<usize>;
     /// The PIN, or `None` if the user cancels.
     fn prompt_pin(&mut self, prompt: &PinPrompt) -> Option<Zeroizing<String>>;
+    /// Whether a wrong PIN is asked for again. Headless runs have one PIN,
+    /// and trying it again would only use up the token's attempts.
+    fn retries_pin(&self) -> bool {
+        true
+    }
     /// The second prompt of the login-first path: an explicit yes to sign
     /// every document.
     fn confirm_digest(&mut self, confirm: &DigestConfirm) -> bool;
@@ -208,9 +219,10 @@ type BeforeStore<'a> = &'a mut dyn FnMut() -> Result<(), Failure>;
 /// Opens where the key is, for a job that asks for `KeyUsage`.
 type Open<'a> = &'a dyn Fn(KeyUsage, BeforeStore) -> Result<Backend, Failure>;
 
-/// Runs the job in `link`. Any failure is reported to the server once the
-/// job is claimed, shown through `ui` unless the user cancelled, and
-/// returned.
+/// Runs the job in `link`. Any failure is shown through `ui` unless the
+/// user cancelled, reported to the server once the job is claimed, and
+/// returned. The report goes while the error shows; this returns once it
+/// is sent or has timed out.
 pub fn run(link: &str, ui: &mut dyn Ui, env: &Environment) -> Result<Outcome, Failure> {
     run_with(link, ui, env, &|usage, before_store| {
         open_backend(usage, before_store, &mut |_, _| {})
@@ -223,20 +235,26 @@ fn run_with(
     env: &Environment,
     open: Open,
 ) -> Result<Outcome, Failure> {
-    let result = run_link(link, ui, env, open);
+    let mut report = None;
+    let result = run_link(link, ui, env, open, &mut report);
     if let Err(failure) = &result
         && !failure.cancelled
     {
         ui.show_error(&failure.message);
     }
+    if let Some(report) = report {
+        let _ = report.join();
+    }
     result
 }
 
+/// Runs the job; a failure after the claim starts its report in `report`.
 fn run_link(
     link: &str,
     ui: &mut dyn Ui,
     env: &Environment,
     open: Open,
+    report: &mut Option<std::thread::JoinHandle<()>>,
 ) -> Result<Outcome, Failure> {
     let link = protocol::parse_link(link, env.allow_insecure)?;
     let origin = &link.origin;
@@ -299,14 +317,23 @@ fn run_link(
             "The link asked for a {:?} job, but {origin} sent a {:?} job.",
             link.kind, job.kind
         )))
-    } else if job.kind == Kind::Sign {
-        sign(&client, &job, &view, ui, open)
     } else {
-        enrol(&client, &job, &view, ui, open)
+        // A panic still fails the claimed job, so the server hears of it.
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            if job.kind == Kind::Sign {
+                sign(&client, &job, &view, ui, open)
+            } else {
+                enrol(&client, &job, &view, ui, open)
+            }
+        }))
+        .unwrap_or_else(|_| Err(INTERNAL_ERROR.into()))
     };
     if let Err(failure) = &result {
         // Best effort: the helper shows the reason itself regardless.
-        let _ = client.report_failure(&job.claim_nonce, &failure.message);
+        let (nonce, message) = (job.claim_nonce.clone(), failure.message.clone());
+        *report = Some(std::thread::spawn(move || {
+            let _ = client.report_failure(&nonce, &message);
+        }));
     }
     result
 }
@@ -328,17 +355,7 @@ fn sign(
     let mut certificates = signing_certificates(token, job, false)?;
     let login_first = match &backend {
         Backend::Pkcs11(_) if certificates.is_empty() => {
-            let prompt = PinPrompt {
-                job: view,
-                certificate: None,
-                digests: None,
-                pin_pad: token.pin_pad(),
-                pin_warning: token.pin_warning(),
-            };
-            let pin = ui
-                .prompt_pin(&prompt)
-                .ok_or_else(|| Failure::cancelled(CANCELLED))?;
-            token.login(pin)?;
+            log_in(ui, token, view, None, None, CANCELLED)?;
             certificates = signing_certificates(token, job, true)?;
             true
         }
@@ -355,17 +372,7 @@ fn sign(
     let subject = token::subject(&certificate.der);
     match &backend {
         Backend::Pkcs11(_) if !login_first => {
-            let prompt = PinPrompt {
-                job: view,
-                certificate: Some(subject),
-                digests: Some(digests),
-                pin_pad: token.pin_pad(),
-                pin_warning: token.pin_warning(),
-            };
-            let pin = ui
-                .prompt_pin(&prompt)
-                .ok_or_else(|| Failure::cancelled(CANCELLED))?;
-            token.login(pin)?;
+            log_in(ui, token, view, Some(subject), Some(digests), CANCELLED)?;
         }
         // The login-first path, and the certificate store before the
         // system's or vendor's PIN dialog.
@@ -421,17 +428,7 @@ fn enrol(
     let token = backend.token();
     let certificate = match &backend {
         Backend::Pkcs11(_) => {
-            let prompt = PinPrompt {
-                job: view,
-                certificate: None,
-                digests: None,
-                pin_pad: token.pin_pad(),
-                pin_warning: token.pin_warning(),
-            };
-            let pin = ui
-                .prompt_pin(&prompt)
-                .ok_or_else(|| Failure::cancelled(ENROLMENT_CANCELLED))?;
-            token.login(pin)?;
+            log_in(ui, token, view, None, None, ENROLMENT_CANCELLED)?;
             choose(
                 ui,
                 view,
@@ -454,6 +451,44 @@ fn enrol(
     show_step(ui, view, Step::CheckingCertificate, ENROLMENT_CANCELLED)?;
     client.enrol(&job.claim_nonce, &certificate.der, &chain)?;
     Ok(Outcome::Enrolled)
+}
+
+/// Asks for the PIN and logs in. A wrong PIN is asked for again, in the
+/// same session, until the signer enters the right one or cancels; the
+/// token counts the attempts. The token's flags are read before each
+/// prompt, and a locked PIN fails the job without one.
+fn log_in(
+    ui: &mut dyn Ui,
+    token: &dyn TokenBackend,
+    job: &JobView,
+    certificate: Option<String>,
+    digests: Option<Vec<String>>,
+    cancelled: &str,
+) -> Result<(), Failure> {
+    let mut prompt = PinPrompt {
+        job,
+        certificate,
+        digests,
+        pin_pad: token.pin_pad(),
+        pin_warning: None,
+        wrong_pin: false,
+    };
+    loop {
+        prompt.pin_warning = token.pin_warning();
+        if prompt.pin_warning == Some(PinWarning::Locked) {
+            return Err(token::PIN_LOCKED.into());
+        }
+        let pin = ui
+            .prompt_pin(&prompt)
+            .ok_or_else(|| Failure::cancelled(cancelled))?;
+        match token.login(pin) {
+            Ok(()) => return Ok(()),
+            Err(LoginError::WrongPin) if ui.retries_pin() => prompt.wrong_pin = true,
+            Err(LoginError::WrongPin) => return Err(token::WRONG_PIN.into()),
+            Err(LoginError::Locked) => return Err(token::PIN_LOCKED.into()),
+            Err(LoginError::Other(error)) => return Err(error.into()),
+        }
+    }
 }
 
 /// Shows `step` of the claimed job in `view`; a failure saying `cancelled`
@@ -494,7 +529,7 @@ impl Backend {
 
 /// The error of a certificate store attempt that finds no signing
 /// certificate on a token.
-const NO_STORE_CERTIFICATE: &str =
+pub(crate) const NO_STORE_CERTIFICATE: &str =
     "The certificate store holds no signing certificate on a token or smart card.";
 
 /// Opens the first of [`modules::attempts`] that reaches a token; the
@@ -597,8 +632,11 @@ fn key_usage(job: &JobDescription) -> KeyUsage {
 }
 
 /// Certificates the job may use: signing certificates with the key usage
-/// its certificate policy asks for (nonRepudiation without one), and after
-/// login only those with a private key beside them.
+/// its certificate policy asks for (nonRepudiation without one), within
+/// their validity period, and after login only those with a private key
+/// beside them. When every one is outside its validity period, that is the
+/// error, so a token showing only an expired certificate before login
+/// fails without asking for the PIN.
 fn signing_certificates(
     token: &dyn TokenBackend,
     job: &JobDescription,
@@ -607,7 +645,15 @@ fn signing_certificates(
     let usage = key_usage(job);
     let mut found = token.certificates(logged_in)?;
     found.retain(|certificate| token::is_signing_certificate(&certificate.der, usage));
-    Ok(found)
+    let now = x509_parser::time::ASN1Time::now().timestamp();
+    let outside = found
+        .iter()
+        .find_map(|certificate| token::outside_validity(&certificate.der, now));
+    found.retain(|certificate| token::outside_validity(&certificate.der, now).is_none());
+    match outside {
+        Some(reason) if found.is_empty() => Err(reason),
+        _ => Ok(found),
+    }
 }
 
 /// The certificate to use: the expected one if the job names it, else the
@@ -761,6 +807,8 @@ mod tests {
     const NONCE: &str = "Zx8m_Q2aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     const RSA: &[u8] = include_bytes!("../tests/fixtures/rsa-non-repudiation.der");
     const P256: &[u8] = include_bytes!("../tests/fixtures/non-repudiation.der");
+    /// Valid from 1 January 2020 to 1 January 2021.
+    const EXPIRED: &[u8] = include_bytes!("../tests/fixtures/expired.der");
 
     #[derive(Clone, Copy, Debug, PartialEq)]
     enum Stage {
@@ -780,6 +828,15 @@ mod tests {
         pins: Vec<Option<Vec<String>>>,
         /// Each step shown, and whether it came with the claimed job.
         steps: Vec<(Step, bool)>,
+        /// With `cancel_at` [`Stage::Pin`], how many PIN prompts are
+        /// answered before one is cancelled.
+        pins_to_answer: usize,
+        /// The warning and wrong-PIN flag each PIN prompt showed.
+        pin_states: Vec<(Option<PinWarning>, bool)>,
+        /// [`Ui::retries_pin`].
+        retries_pin: bool,
+        /// When the last error showed.
+        error_shown: Option<std::time::Instant>,
     }
 
     impl CancellingUi {
@@ -789,6 +846,10 @@ mod tests {
                 errors: Vec::new(),
                 pins: Vec::new(),
                 steps: Vec::new(),
+                pins_to_answer: 0,
+                pin_states: Vec::new(),
+                retries_pin: true,
+                error_shown: None,
             }
         }
     }
@@ -802,7 +863,12 @@ mod tests {
         }
         fn prompt_pin(&mut self, prompt: &PinPrompt) -> Option<Zeroizing<String>> {
             self.pins.push(prompt.digests.clone());
-            (self.cancel_at != Stage::Pin).then(|| Zeroizing::new("1234".into()))
+            self.pin_states.push((prompt.pin_warning, prompt.wrong_pin));
+            (self.cancel_at != Stage::Pin || self.pins.len() <= self.pins_to_answer)
+                .then(|| Zeroizing::new("1234".into()))
+        }
+        fn retries_pin(&self) -> bool {
+            self.retries_pin
         }
         fn confirm_digest(&mut self, _: &DigestConfirm) -> bool {
             self.cancel_at != Stage::Confirm
@@ -812,6 +878,7 @@ mod tests {
         }
         fn show_error(&mut self, message: &str) {
             self.errors.push(message.to_owned());
+            self.error_shown = Some(std::time::Instant::now());
         }
         fn show_info(&mut self, _: &str) {}
         fn progress(&mut self, progress: Progress) -> bool {
@@ -827,6 +894,13 @@ mod tests {
         logged_in: Cell<bool>,
         /// How many items each `sign` call got, shared with the test.
         signed: Arc<Mutex<Vec<usize>>>,
+        /// What each login answers, in order; then it succeeds.
+        logins: std::cell::RefCell<std::collections::VecDeque<LoginError>>,
+        /// How many logins were made, shared with the test.
+        attempts: Arc<Mutex<usize>>,
+        /// The token's flags after as many logins as the index; none after
+        /// the last.
+        warnings: Vec<Option<PinWarning>>,
     }
 
     impl FakeToken {
@@ -836,6 +910,9 @@ mod tests {
                 private,
                 logged_in: Cell::new(false),
                 signed: Arc::default(),
+                logins: Default::default(),
+                attempts: Arc::default(),
+                warnings: Vec::new(),
             }
         }
     }
@@ -844,8 +921,9 @@ mod tests {
         fn pin_pad(&self) -> bool {
             false
         }
-        fn pin_warning(&self) -> Option<&'static str> {
-            None
+        fn pin_warning(&self) -> Option<PinWarning> {
+            let attempts = *self.attempts.lock().unwrap();
+            self.warnings.get(attempts).copied().flatten()
         }
         fn certificates(&self, _: bool) -> Result<Vec<TokenCertificate>, TokenError> {
             let visible = if self.logged_in.get() {
@@ -862,7 +940,11 @@ mod tests {
                 })
                 .collect())
         }
-        fn login(&self, _: Zeroizing<String>) -> Result<(), TokenError> {
+        fn login(&self, _: Zeroizing<String>) -> Result<(), LoginError> {
+            *self.attempts.lock().unwrap() += 1;
+            if let Some(error) = self.logins.borrow_mut().pop_front() {
+                return Err(error);
+            }
             self.logged_in.set(true);
             Ok(())
         }
@@ -936,7 +1018,11 @@ mod tests {
         Digest,
         /// It has a byte after the end of its `/ByteRange`.
         ByteRange,
+        /// The job's failure report takes [`SLOW_REPORT`] to answer.
+        SlowReport,
     }
+
+    const SLOW_REPORT: Duration = Duration::from_secs(2);
 
     struct Served {
         origin: String,
@@ -1040,6 +1126,12 @@ mod tests {
                             .to_string()
                             .into_bytes(),
                         )
+                    }
+                    None if request.ends_with("/failure")
+                        && matches!(fault, Some((_, Fault::SlowReport))) =>
+                    {
+                        std::thread::sleep(SLOW_REPORT);
+                        (200, b"{}".to_vec())
                     }
                     None if request.ends_with("/signature") => {
                         let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
@@ -1541,6 +1633,22 @@ mod tests {
         private: Vec<&'static [u8]>,
         name: &str,
     ) -> (Result<Outcome, Failure>, CancellingUi, Vec<usize>) {
+        run_token(
+            origin,
+            FakeToken::new(public, private),
+            CancellingUi::new(Stage::Enrol),
+            name,
+        )
+    }
+
+    /// Runs a sign link against `origin` with `token` and `ui`, as
+    /// [`run_sign`] does.
+    fn run_token(
+        origin: &str,
+        token: FakeToken,
+        mut ui: CancellingUi,
+        name: &str,
+    ) -> (Result<Outcome, Failure>, CancellingUi, Vec<usize>) {
         let config_dir =
             std::env::temp_dir().join(format!("keyseal-{name}-{}", std::process::id()));
         let env = Environment {
@@ -1551,8 +1659,6 @@ mod tests {
             format!("{origin}/api/keyseal/v1/jobs/{TOKEN}").as_bytes(),
         )
         .collect();
-        let mut ui = CancellingUi::new(Stage::Enrol);
-        let token = FakeToken::new(public, private);
         let signed = token.signed.clone();
         let token = std::cell::RefCell::new(Some(token));
         let open = |_: KeyUsage, _: BeforeStore| {
@@ -1622,6 +1728,206 @@ mod tests {
                 1
             );
             assert!(!requests.iter().any(|r| r.ends_with("/signature")));
+        }
+    }
+
+    fn failures(served: &Served) -> usize {
+        let requests = served.requests.lock().unwrap();
+        requests.iter().filter(|r| r.ends_with("/failure")).count()
+    }
+
+    /// A token that answers its logins with `refusals`, then accepts the
+    /// PIN; its flags after each login are `warnings`.
+    fn refusing_token(
+        public: Vec<&'static [u8]>,
+        private: Vec<&'static [u8]>,
+        refusals: impl IntoIterator<Item = LoginError>,
+        warnings: Vec<Option<PinWarning>>,
+    ) -> (FakeToken, Arc<Mutex<usize>>) {
+        let mut token = FakeToken::new(public, private);
+        token.logins.borrow_mut().extend(refusals);
+        token.warnings = warnings;
+        let attempts = token.attempts.clone();
+        (token, attempts)
+    }
+
+    /// A wrong PIN asks again in the same session, with the token's flags
+    /// read afresh: the right one then signs every document once, and
+    /// nothing is reported as failed.
+    #[test]
+    fn asks_again_after_a_wrong_pin() {
+        for (public, private) in [(vec![RSA], vec![]), (vec![], vec![RSA])] {
+            let served = serve_documents("sign", serde_json::Value::Null, 3, None);
+            let (token, attempts) = refusing_token(
+                public,
+                private,
+                [LoginError::WrongPin, LoginError::WrongPin],
+                vec![None, Some(PinWarning::CountLow), Some(PinWarning::FinalTry)],
+            );
+            let (result, ui, signed) = run_token(
+                &served.origin,
+                token,
+                CancellingUi::new(Stage::Enrol),
+                "wrong-pin",
+            );
+            assert_eq!(result.unwrap(), Outcome::Signed);
+            assert_eq!(
+                ui.pin_states,
+                [
+                    (None, false),
+                    (Some(PinWarning::CountLow), true),
+                    (Some(PinWarning::FinalTry), true),
+                ]
+            );
+            // The digests stay on every prompt of the one-view path.
+            assert!(ui.pins.windows(2).all(|pins| pins[0] == pins[1]));
+            assert_eq!(*attempts.lock().unwrap(), 3);
+            assert_eq!(signed, [3]);
+            assert_eq!(*served.signatures.lock().unwrap(), [3]);
+            assert!(ui.errors.is_empty(), "{:?}", ui.errors);
+            assert_eq!(failures(&served), 0);
+        }
+    }
+
+    /// A PIN the flags say is locked, before the first prompt or after a
+    /// wrong PIN, or one the login says is locked, fails the job with the
+    /// locked error, never asks again and is reported once.
+    #[test]
+    fn a_locked_pin_fails_the_job() {
+        for (refusals, warnings, prompts) in [
+            (vec![], vec![Some(PinWarning::Locked)], 0),
+            (vec![LoginError::Locked], vec![], 1),
+            (
+                vec![LoginError::WrongPin],
+                vec![Some(PinWarning::FinalTry), Some(PinWarning::Locked)],
+                1,
+            ),
+        ] {
+            let served = serve_documents("sign", serde_json::Value::Null, 1, None);
+            let (token, attempts) = refusing_token(vec![RSA], vec![], refusals, warnings);
+            let (result, ui, signed) = run_token(
+                &served.origin,
+                token,
+                CancellingUi::new(Stage::Enrol),
+                "locked-pin",
+            );
+            let failure = result.unwrap_err();
+            assert!(!failure.cancelled);
+            assert_eq!(failure.message, token::PIN_LOCKED);
+            assert_eq!(ui.pins.len(), prompts);
+            assert_eq!(*attempts.lock().unwrap(), prompts);
+            assert!(signed.is_empty());
+            assert_eq!(ui.errors, [token::PIN_LOCKED]);
+            assert_eq!(failures(&served), 1);
+        }
+    }
+
+    /// Cancelling the prompt after a wrong PIN reports one cancellation.
+    #[test]
+    fn cancelling_after_a_wrong_pin_reports_one_failure() {
+        let served = serve_documents("sign", serde_json::Value::Null, 1, None);
+        let (token, attempts) = refusing_token(vec![RSA], vec![], [LoginError::WrongPin], vec![]);
+        let mut ui = CancellingUi::new(Stage::Pin);
+        ui.pins_to_answer = 1;
+        let (result, ui, signed) = run_token(&served.origin, token, ui, "cancel-retry");
+        let failure = result.unwrap_err();
+        assert!(failure.cancelled, "{}", failure.message);
+        assert_eq!(failure.message, CANCELLED);
+        assert_eq!(ui.pins.len(), 2);
+        assert_eq!(*attempts.lock().unwrap(), 1);
+        assert!(ui.errors.is_empty(), "{:?}", ui.errors);
+        assert!(signed.is_empty());
+        assert_eq!(failures(&served), 1);
+    }
+
+    /// Headless runs try their one PIN once: a wrong PIN fails the job.
+    #[test]
+    fn a_wrong_pin_is_not_retried_headless() {
+        let served = serve_documents("sign", serde_json::Value::Null, 1, None);
+        let (token, attempts) = refusing_token(vec![RSA], vec![], [LoginError::WrongPin], vec![]);
+        let mut ui = CancellingUi::new(Stage::Enrol);
+        ui.retries_pin = false;
+        let (result, ui, signed) = run_token(&served.origin, token, ui, "headless-pin");
+        let failure = result.unwrap_err();
+        assert!(!failure.cancelled);
+        assert_eq!(failure.message, token::WRONG_PIN);
+        assert_eq!(ui.pins.len(), 1);
+        assert_eq!(*attempts.lock().unwrap(), 1);
+        assert!(signed.is_empty());
+        assert_eq!(failures(&served), 1);
+    }
+
+    /// The error shows without waiting for the failure report, and the run
+    /// ends only once the report has been answered.
+    #[test]
+    fn shows_the_error_before_the_report_is_answered() {
+        let served = serve_documents(
+            "sign",
+            serde_json::Value::Null,
+            1,
+            Some((0, Fault::SlowReport)),
+        );
+        let start = std::time::Instant::now();
+        let (result, ui, _) = run_token(
+            &served.origin,
+            FakeToken::new(vec![], vec![]),
+            CancellingUi::new(Stage::Enrol),
+            "slow-report",
+        );
+        assert!(!result.unwrap_err().cancelled);
+        assert_eq!(ui.errors.len(), 1);
+        assert!(ui.error_shown.unwrap() - start < SLOW_REPORT);
+        assert!(start.elapsed() >= SLOW_REPORT);
+        assert_eq!(failures(&served), 1);
+    }
+
+    /// A panic after the claim fails the job like any error: shown, and
+    /// reported once.
+    #[test]
+    fn a_panic_in_the_job_is_shown_and_reported() {
+        let served = serve_documents("sign", serde_json::Value::Null, 1, None);
+        let config_dir = std::env::temp_dir().join(format!("keyseal-panic-{}", std::process::id()));
+        let env = Environment {
+            allow_insecure: true,
+            config_dir: config_dir.clone(),
+        };
+        let link: String = url::form_urlencoded::byte_serialize(
+            format!("{}/api/keyseal/v1/jobs/{TOKEN}", served.origin).as_bytes(),
+        )
+        .collect();
+        let mut ui = CancellingUi::new(Stage::Enrol);
+        let open = |_: KeyUsage, _: BeforeStore| -> Result<Backend, Failure> { panic!("broken") };
+        let result = run_with(&format!("keyseal://sign?job={link}"), &mut ui, &env, &open);
+        let _ = std::fs::remove_dir_all(&config_dir);
+        assert_eq!(result.unwrap_err().message, INTERNAL_ERROR);
+        assert_eq!(ui.errors, [INTERNAL_ERROR]);
+        assert_eq!(failures(&served), 1);
+    }
+
+    /// An expired certificate is never offered. Beside a valid one it is
+    /// left out; alone it fails the job with its expiry date, before any
+    /// PIN when the token shows it before login, and after the one PIN of
+    /// the login-first path otherwise.
+    #[test]
+    fn expired_certificates_are_not_offered() {
+        let served = serve_documents("sign", serde_json::Value::Null, 1, None);
+        let (result, ui, signed) = run_sign(&served.origin, vec![EXPIRED, RSA], vec![], "mixed");
+        assert_eq!(result.unwrap(), Outcome::Signed);
+        assert_eq!(signed, [1]);
+        assert!(ui.errors.is_empty(), "{:?}", ui.errors);
+
+        let expired = token::outside_validity(EXPIRED, i64::MAX).unwrap();
+        for (public, private, prompts) in [(vec![EXPIRED], vec![], 0), (vec![], vec![EXPIRED], 1)] {
+            let served = serve_documents("sign", serde_json::Value::Null, 1, None);
+            let (result, ui, signed) = run_sign(&served.origin, public, private, "expired");
+            let failure = result.unwrap_err();
+            assert!(!failure.cancelled);
+            assert_eq!(failure.message, expired);
+            assert!(failure.message.contains("expired on 1 January 2021"));
+            assert_eq!(ui.pins.len(), prompts);
+            assert_eq!(ui.errors, std::slice::from_ref(&expired));
+            assert!(signed.is_empty());
+            assert_eq!(failures(&served), 1);
         }
     }
 }

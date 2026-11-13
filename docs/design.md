@@ -21,7 +21,7 @@ Out of scope: government-style portals. KeySeal does not coexist with emSigner f
 | Signing service | `service/` | pyHanko behind FastAPI, shipped as a Docker image. Prepares PDFs, builds the CMS around the token's signature, validates and timestamps. |
 | Driver catalogue | `catalogue/` | Signed list of token drivers by USB id and platform, updated separately from the helper. |
 | Reference server | `examples/reference-server/` | Minimal integrator backend wiring `@keyseal/server` to the service. The end-to-end test drives it. |
-| Spec | `spec/` | Protocol specification, OpenAPI and the decisions it settled. |
+| Spec | `spec/` | Protocol specification and OpenAPI. |
 
 The helper never talks to the signing service; only the integrator backend does, so service credentials and document handling stay on the server side.
 
@@ -35,7 +35,7 @@ A branded, origin-locked helper build is a parameterised build option, published
 
 1. The integrator backend creates a job and the page opens a `keyseal://` link carrying the job URL and its one-time token.
 2. The helper `GET`s the job. The server marks it claimed and returns a claim nonce, the job description and optional constraints: `expectedCertificateSha256` pins one certificate, and `certificatePolicy` asks for policy OIDs, issuing CAs or a subject organization where no certificate can be pinned yet.
-3. The helper filters the token's certificates by those constraints and `POST`s the chosen one. The server enforces the same constraints on what it receives.
+3. The helper filters the token's certificates by those constraints, leaving out any outside its validity period, and `POST`s the chosen one. The server enforces the same constraints on what it receives.
 4. The server prepares every PDF of the job through the service and returns each one's DER SignedAttributes, with one `digestAlgorithm` and `signatureAlgorithm` for all of them.
 5. The helper validates every SignedAttributes (contentType, messageDigest, signing-certificate-v2), downloads every prepared PDF and checks that its last `/ByteRange` hashes to its messageDigest, shows the origin, title, signer, documents and certificate, asks for the PIN once, signs every document in the same token session and `POST`s the signatures with the claim nonce.
 6. The server verifies every signature, finishes every PDF through the service and only then calls the adapter's `onCompleted` with all of them.
@@ -57,7 +57,7 @@ Enrol, capturing a certificate without signing, is a single round: `GET` the job
 
 ### Algorithms
 
-RSA PKCS#1 v1.5, RSA-PSS, and ECDSA on P-256, P-384, brainpoolP256r1 and brainpoolP384r1. RSA-PSS uses MGF1 with the message digest and a salt as long as the digest. P-256 and brainpoolP256r1 sign SHA-256, P-384 and brainpoolP384r1 sign SHA-384; ECDSA signatures travel as DER `ECDSA-Sig-Value`.
+RSA PKCS#1 v1.5, RSA-PSS, and ECDSA on P-256, P-384, brainpoolP256r1 and brainpoolP384r1. RSA-PSS uses MGF1 with the message digest and a salt as long as the digest. P-256 and brainpoolP256r1 sign SHA-256, P-384 and brainpoolP384r1 sign SHA-384; ECDSA signatures travel as DER `ECDSA-Sig-Value`. Round 1 names the signature scheme as well as the digest, because an RSA key alone doesn't tell the helper whether the server will embed PKCS#1 v1.5 or PSS.
 
 ## Trust model
 
@@ -97,7 +97,7 @@ On macOS the keychain holds a copy of each plugged-in token's certificates and k
 
 Intel-only macOS drivers run in a separate x86_64 worker process that speaks JSON over pipes, shipped inside the universal app.
 
-PIN handling: the retry warning is shown where the driver exposes it, the PIN is never retried automatically and asked once per job however many documents it has, it stays in zeroising buffers from the window to the login, and tokens with a PIN pad use the protected authentication path. A key marked `CKA_ALWAYS_AUTHENTICATE` needs a context-specific login before every signature: the signer still approves the batch and enters the PIN once, and the helper keeps the PIN in its zeroising buffer until the job's signatures are done, re-authenticating the key before each one. On a PIN pad the PIN never reaches the helper, so the reader asks for it once per document, and the helper says so before signing.
+PIN handling: the token's flags are read before each PIN prompt, to warn when one more wrong PIN locks the token or a wrong PIN was entered before. The PIN is never retried automatically and asked once per job however many documents it has; a wrong one is asked for again in the same window and token session until the signer gets it right or cancels, with no limit beyond the token's own, and a headless run tries its one PIN once. A locked PIN is never asked for: the job fails with a window saying the token's own software or its issuer unlocks it. The PIN stays in zeroising buffers from the window to the login, and tokens with a PIN pad use the protected authentication path. A key marked `CKA_ALWAYS_AUTHENTICATE` needs a context-specific login before every signature: the signer still approves the batch and enters the PIN once, and the helper keeps the PIN in its zeroising buffer until the job's signatures are done, re-authenticating the key before each one. On a PIN pad the PIN never reaches the helper, so the reader asks for it once per document, and the helper says so before signing.
 
 ### What you see is what you sign
 

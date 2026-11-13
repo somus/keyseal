@@ -12,6 +12,8 @@ TRUST = Path(__file__).resolve().parent / "trust"
 DEFAULT_TSA_URL = "http://timestamp.digicert.com"
 MIN_TOKEN_CHARS = 32
 MIN_DISTINCT_CHARS = 10
+DEFAULT_LOG_LEVEL = "INFO"
+LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
 
 
 class WeakTokenError(ValueError):
@@ -19,6 +21,10 @@ class WeakTokenError(ValueError):
 
 
 class TrustRootsError(ValueError):
+    pass
+
+
+class LogLevelError(ValueError):
     pass
 
 
@@ -74,9 +80,17 @@ class Settings:
     #: None turns timestamping off.
     tsa_url: str | None
     validation: ValidationSettings
+    #: The level the service's own log records come out at.
+    log_level: str = DEFAULT_LOG_LEVEL
 
     @classmethod
     def from_env(cls) -> Settings:
+        log_level = os.environ.get("SIGNING_LOG_LEVEL", DEFAULT_LOG_LEVEL).upper()
+        if log_level not in LOG_LEVELS:
+            raise LogLevelError(
+                f"SIGNING_LOG_LEVEL {os.environ['SIGNING_LOG_LEVEL']} is not one of"
+                f" {', '.join(LOG_LEVELS)}"
+            )
         roots_dir = os.environ.get("SIGNING_TRUST_ROOTS_DIR")
         extra_roots_dir = os.environ.get("SIGNING_EXTRA_TRUST_ROOTS_DIR")
         tsa_url = os.environ.get("SIGNING_TSA_URL", DEFAULT_TSA_URL)
@@ -88,4 +102,5 @@ class Settings:
                 os.environ.get("SIGNING_ALLOW_FETCHING") == "true",
                 Path(extra_roots_dir) if extra_roots_dir else None,
             ),
+            log_level=log_level,
         )

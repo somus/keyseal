@@ -80,7 +80,7 @@ Open http://127.0.0.1:8787/ in a browser, choose a PDF and select Create signing
 
 ```sh
 docker compose exec -T service /app/.venv/bin/python -c '
-import sys
+import io, sys
 from pyhanko.pdf_utils import generic
 from pyhanko.pdf_utils.writer import PdfFileWriter
 w = PdfFileWriter()
@@ -89,7 +89,9 @@ w.insert_page(generic.DictionaryObject({
     generic.NameObject("/MediaBox"): generic.ArrayObject([generic.NumberObject(n) for n in (0, 0, 595, 842)]),
     generic.NameObject("/Resources"): generic.DictionaryObject(),
 }))
-w.write(sys.stdout.buffer)
+out = io.BytesIO()
+w.write(out)
+sys.stdout.buffer.write(out.getvalue())
 ' >sample.pdf
 ```
 

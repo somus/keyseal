@@ -4063,6 +4063,7 @@ dependencies = [
  "cryptoki-sys",
  "dirs 7.0.0",
  "ed25519-dalek",
+ "flate2",
  "hex",
  "nusb",
  "objc2 0.6.5",

@@ -18,6 +18,8 @@ dirs = "7.0.0"
 # The Windows icon resource, see keyseal-helper/build.rs.
 embed-resource = "3.0.12"
 ed25519-dalek = "3.0.0"
+# Compresses test answers the way a server may; ureq decodes them with it.
+flate2 = "1.1.11"
 futures = "0.3.34"
 # GPUI Kit 0.9.0, which pins the GPUI snapshot gpui-pre =0.3.11.
 gpui-kit = "=0.9.0"

@@ -105,18 +105,20 @@ The helper asks whether to trust `127.0.0.1:8787`, flagged as insecure, then sho
 
 ### Without a browser
 
-The same job runs from the terminal alone, with the helper headless. The reference server's `POST /jobs` takes the PDF as base64 and returns the link, and `KEYSEAL_HEADLESS_TRUST_ORIGIN` lets a headless helper accept this origin on first contact:
+The same job runs from the terminal alone, with the helper headless. A headless helper can't choose between certificates, so the job names one with `expectedCertificateSha256`, the SHA-256 of the certificate, as [docs/integrating.md](integrating.md#3-create-jobs) recommends for every sign job. The reference server's `POST /jobs` takes the PDF as base64 and returns the link, and `KEYSEAL_HEADLESS_TRUST_ORIGIN` lets a headless helper accept this origin on first contact:
 
 ```sh
-job="$(jq -n --arg pdf "$(base64 -w0 sample.pdf)" \
-  '{documents: [{pdf: $pdf, signatureDetails: {reason: "Trying KeySeal"}}], title: "Quickstart", signer: "Test Signer"}' |
+sha="$(openssl dgst -sha256 -r quickstart/token/rsa.der | cut -d' ' -f1)"
+job="$(jq -n --arg pdf "$(base64 -w0 sample.pdf)" --arg sha "$sha" \
+  '{documents: [{pdf: $pdf, signatureDetails: {reason: "Trying KeySeal"}}],
+    title: "Quickstart", signer: "Test Signer", expectedCertificateSha256: $sha}' |
   curl -fsS -H 'Content-Type: application/json' --data @- http://127.0.0.1:8787/jobs)"
 KEYSEAL_HEADLESS=1 KEYSEAL_PIN=1234 KEYSEAL_HEADLESS_TRUST_ORIGIN=http://127.0.0.1:8787 \
   ../../helper/target/debug/keyseal run "$(jq -r .link <<<"$job")"
 curl -fsS "http://127.0.0.1:8787/jobs/$(jq -r .id <<<"$job")/status"
 ```
 
-The headless helper picks the first certificate the job accepts. Add `expectedCertificateSha256` to the job to pin one, as [docs/integrating.md](integrating.md#3-create-jobs) recommends; `openssl dgst -sha256 quickstart/token/rsa.der` gives the RSA certificate's.
+The helper prints the job and `Signed`, and the status is `completed` with the signed PDF's path in `outputs`.
 
 ## 5. Check the signed PDF
 

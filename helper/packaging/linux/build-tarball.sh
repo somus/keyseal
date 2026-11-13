@@ -4,6 +4,8 @@
 #
 #   helper/packaging/linux/build-tarball.sh <linux binary> <out dir>
 #
+# KEYSEAL_NOTICES names the third-party notices to put beside the binary
+# (../third-party-notices.sh makes them).
 # Entries get fixed owners and SOURCE_DATE_EPOCH mtimes, so the tarball is
 # as reproducible as the binary. Needs GNU tar.
 set -euo pipefail
@@ -28,6 +30,7 @@ work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 mkdir "$work/$name"
 install -m 0755 "$binary" "$work/$name/keyseal"
+install -m 0644 "${KEYSEAL_NOTICES:?}" "$work/$name/THIRD-PARTY-NOTICES.txt"
 mkdir -p "$out"
 tar --sort=name --mtime="@$SOURCE_DATE_EPOCH" --owner=0 --group=0 --numeric-owner \
   -C "$work" -cf - "$name" | gzip -9n >"$out/$name.tar.gz"

@@ -1,6 +1,6 @@
 # KeySeal protocol v1
 
-Status: draft. This document is normative except where a section or paragraph is marked informative. The machine-readable companion is [openapi.yaml](openapi.yaml); the schema names used here (`Manifest`, `JobDescription`, `DocumentEntry`, `CertificateSubmission`, `PreparedSignature`, `EnrolResult`, `SignatureSubmission`, `FailureReport`, `Empty`, `Error`, `UpgradeRequired`) are the names of its component schemas. Where the two disagree, this document wins and the disagreement is a bug.
+Status: version 1, the version the released helper and the `@keyseal` packages implement. It changes only by adding optional members (section 7.1); any other change needs a new protocol version with its own path segment. This document is normative except where a section or paragraph is marked informative. The machine-readable companion is [openapi.yaml](openapi.yaml); the schema names used here (`Manifest`, `JobDescription`, `DocumentEntry`, `CertificateSubmission`, `PreparedSignature`, `EnrolResult`, `SignatureSubmission`, `FailureReport`, `Empty`, `Error`, `UpgradeRequired`) are the names of its component schemas. Where the two disagree, this document wins and the disagreement is a bug.
 
 ## 1. Conventions and terminology
 
@@ -165,7 +165,7 @@ Branding (name, icon, accent colour) MAY appear in the helper's windows for a jo
 
 This document defines protocol version 1. It appears as `"protocol": 1` in the manifest and as the `v1` path segment of the job URL. A helper that does not support the version in a job URL MUST refuse the link.
 
-Within version 1, new OPTIONAL members MAY be added to requests and responses. Receivers MUST ignore members they do not know. A change that alters or removes the meaning of an existing member, or adds a required one, needs a new protocol version and a new path segment.
+Within version 1, new OPTIONAL members MAY be added to requests and responses. Receivers MUST ignore members they do not know, on requests and responses alike, so the schemas in [openapi.yaml](openapi.yaml) do not set `additionalProperties: false`. A change that alters or removes the meaning of an existing member, or adds a required one, needs a new protocol version and a new path segment.
 
 ### 7.2 `X-KeySeal-Version`
 
@@ -178,6 +178,8 @@ A server MAY be configured with a minimum helper version. If it is, the server M
 ```json
 { "minVersion": "1.2.0", "message": "Update the signing helper, then try again." }
 ```
+
+The `426` carries no `Upgrade` header, which RFC 9110 otherwise asks for, since no protocol upgrade applies.
 
 The server SHOULD also mark the job `failed` with the same message, so the browser page can show the reason, when the job is `pending`, or when the request is a `POST` whose body carries the job's claim nonce and no other request holds a live settle lease (section 9.3). In every other case the `426` leaves the job unchanged, so a request that has only the token, such as one replayed from a leaked link, cannot end a claimed job.
 

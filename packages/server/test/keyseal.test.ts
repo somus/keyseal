@@ -1398,6 +1398,42 @@ describe("service client", () => {
       "/validate?base=1234&keyUsage=nonRepudiation",
     ]);
   });
+
+  test("createKeySeal takes any object with the calls it makes", async () => {
+    const calls: string[] = [];
+    let client: ServiceClient | undefined;
+    const t = setup({
+      service: {
+        async certificate(input) {
+          calls.push("certificate");
+          return await client!.certificate(input);
+        },
+        async signFinish(input) {
+          calls.push("signFinish");
+          return await client!.signFinish(input);
+        },
+        async signStart(input) {
+          calls.push("signStart");
+          return await client!.signStart(input);
+        },
+      },
+    });
+    client = new ServiceClient({
+      fetch: t.fake.fetch,
+      token: SERVICE_TOKEN,
+      url: "http://signing:8080",
+    });
+    const { token, claimNonce } = await t.preparedJob();
+    const body = { claimNonce, signatures: [GOOD_SIGNATURE] };
+    expect((await t.post(token, "signature", body)).status).toBe(200);
+    expect(t.completed).toHaveLength(1);
+    expect(calls).toEqual([
+      "certificate",
+      "signStart",
+      "certificate",
+      "signFinish",
+    ]);
+  });
 });
 
 describe("status", () => {
@@ -2250,10 +2286,16 @@ describe("routing and manifest", () => {
       "/api keyseal",
       "/api%20keyseal",
       "/café",
+      "/.",
+      "/..",
+      "/api/../keyseal",
+      "/api/./keyseal",
+      "/api/..",
     ]) {
       expect(() => setup({ basePath })).toThrow(TypeError);
     }
     expect(() => setup({ basePath: "/api/keyseal_v1.0~x" })).not.toThrow();
+    expect(() => setup({ basePath: "/.well/..known/..." })).not.toThrow();
     expect(() => setup({ minHelperVersion: "1.2" })).toThrow(TypeError);
     expect(() =>
       setup({ branding: { icon: "https://other.example/icon.png", name: "X" } })
@@ -2369,6 +2411,54 @@ describe("expiry", () => {
     t.adapter.create = create;
     await t.signJob();
     expect(t.adapter.blobs.size).toBe(1);
+  });
+
+  test("sweep expires old jobs and drops their blobs without a new job", async () => {
+    const t = setup();
+    const { token } = await t.preparedJob();
+    const { token: fresh } = await t.signJob();
+    t.advance(14 * 60 * 1000);
+    await t.keyseal.sweep();
+    expect((await t.jobFor(token)).state).toBe("prepared");
+    t.advance(2 * 60 * 1000);
+    await t.keyseal.sweep();
+    expect((await t.jobFor(token)).state).toBe("expired");
+    expect((await t.jobFor(fresh)).state).toBe("expired");
+    expect(t.adapter.blobs.size).toBe(0);
+    expect(t.adapter.jobs.size).toBe(2);
+  });
+
+  test("sweep drops the blobs a failed deletion left on ended jobs", async () => {
+    const t = setup();
+    const done = await t.preparedJob();
+    const deleteBlob = t.adapter.deleteBlob;
+    t.adapter.deleteBlob = async () => {
+      throw new Error("storage is down");
+    };
+    // The job completes, then its state blob can't be deleted.
+    const body = { claimNonce: done.claimNonce, signatures: [GOOD_SIGNATURE] };
+    expect((await t.post(done.token, "signature", body)).status).toBe(500);
+    expect((await t.jobFor(done.token)).state).toBe("completed");
+    // The sweep expires a job, then can't delete its PDF.
+    const { token: old } = await t.signJob();
+    t.advance(16 * 60 * 1000);
+    await expect(t.keyseal.sweep()).rejects.toThrow("storage is down");
+    expect((await t.jobFor(old)).state).toBe("expired");
+    expect(t.adapter.blobs.size).toBe(2);
+    t.adapter.deleteBlob = deleteBlob;
+    const { token: live } = await t.signJob();
+    await t.keyseal.sweep();
+    expect([...t.adapter.blobs.keys()]).toEqual([`${sha256Hex(live)}/pdf/0`]);
+  });
+
+  test("sweep leaves blobs that aren't a job's", async () => {
+    const t = setup();
+    const foreign = ["backup.pdf", "other/file", `${"g".repeat(64)}/pdf/0`];
+    for (const key of foreign) {
+      await t.adapter.putBlob(key, Uint8Array.of(1));
+    }
+    await t.keyseal.sweep();
+    expect([...t.adapter.blobs.keys()]).toEqual(foreign);
   });
 
   test("creating a job expires old ones and drops their blobs", async () => {

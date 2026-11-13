@@ -13,7 +13,9 @@ name: release
 #    threshold, checks every asset against SHA256SUMS, then publishes the
 #    draft as the latest release.
 #
-# Both halves release only a commit on main that pins main's keys.
+# Both halves release only a commit on main that pins main's keys, and the
+# first only one whose checks and e2e runs passed on main. The draft's
+# assets carry build provenance attestations.
 #
 # No release key is ever in CI. Secrets for macOS signing live in the
 # release-macos environment; publishing needs the release environment.
@@ -43,6 +45,9 @@ jobs:
   check:
     if: github.event_name == 'push'
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      actions: read
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
@@ -52,6 +57,10 @@ jobs:
       # A tag on an unreviewed commit could pin keys of its own.
       - name: The tag is on main and pins main's keys
         run: helper/packaging/check-release-commit.sh
+      - name: The checks passed on this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/ci/ci-passed.sh
       # Helpers compare the manifest's version with their own, so the tag
       # must be the version the binaries report.
       - id: version
@@ -76,6 +85,33 @@ jobs:
           ! grep -qF 'pub const CATALOGUE_KEYS: &[[u8; 32]] = &[[0; 32]];' "$catalogue" \
             || { echo "CATALOGUE_KEYS in $catalogue is still the placeholder"; exit 1; }
 
+  # The third-party notices every package ships, made once so all of them
+  # hold the same file. Maintainers make it again before signing
+  # (release.sh).
+  notices:
+    needs: check
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - working-directory: helper
+        run: rustup toolchain install
+      # cargo-about pinned by version and hash.
+      - run: |
+          curl -fsSLo cargo-about.tar.gz \
+            https://github.com/EmbarkStudios/cargo-about/releases/download/0.9.3/cargo-about-0.9.3-x86_64-unknown-linux-musl.tar.gz
+          echo "3ad1e94ea1e63d69d1961f4fb15ccbbe9575d906111f96d2cb4dce6df48f71b4  cargo-about.tar.gz" | sha256sum -c -
+          mkdir "$RUNNER_TEMP/cargo-about"
+          tar -xzf cargo-about.tar.gz -C "$RUNNER_TEMP/cargo-about" --strip-components 1
+          rm cargo-about.tar.gz
+          echo "$RUNNER_TEMP/cargo-about" >>"$GITHUB_PATH"
+      - run: |
+          mkdir notices
+          helper/packaging/third-party-notices.sh notices/THIRD-PARTY-NOTICES.txt
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: third-party-notices
+          path: notices/
+
   build-macos:
     needs: check
     runs-on: macos-15
@@ -95,7 +131,7 @@ jobs:
           path: dist/
 
   build-windows:
-    needs: check
+    needs: [check, notices]
     runs-on: windows-2025
     defaults:
       run:
@@ -112,13 +148,18 @@ jobs:
       # unsigned exe here, gated on the reproducibility check
       # (docs/code-signing-policy.md). The signed exe then replaces it in
       # dist/ before the zip is made, and becomes the update asset.
-      - name: Zip with install.cmd
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: third-party-notices
+          path: notices
+      - name: Zip with install.cmd and the notices
         shell: pwsh
         run: |
           $version = "${{ needs.check.outputs.version }}"
           New-Item -ItemType Directory zip | Out-Null
           Copy-Item "dist/keyseal-helper-$version-windows-x64.exe" zip/keyseal.exe
           Copy-Item helper/packaging/windows/install.cmd zip/
+          Copy-Item notices/THIRD-PARTY-NOTICES.txt zip/
           Compress-Archive -Path zip/* -DestinationPath "dist/keyseal-helper-$version-windows-x64.zip"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -128,7 +169,7 @@ jobs:
   # Built in an Ubuntu 22.04 container, so the binary needs only glibc 2.35
   # and maintainers can reproduce it with the same image.
   build-linux:
-    needs: check
+    needs: [check, notices]
     strategy:
       matrix:
         include:
@@ -175,7 +216,13 @@ jobs:
         run: rustup toolchain install
       - id: build
         run: echo "binary=$(helper/packaging/build-release.sh ${{ matrix.platform }} dist)" >>"$GITHUB_OUTPUT"
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: third-party-notices
+          path: notices
       - name: Tarball, deb and AppImage
+        env:
+          KEYSEAL_NOTICES: notices/THIRD-PARTY-NOTICES.txt
         run: |
           SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)"
           export SOURCE_DATE_EPOCH
@@ -198,7 +245,7 @@ jobs:
           path: dist/
 
   sign-macos:
-    needs: [check, build-macos]
+    needs: [check, notices, build-macos]
     runs-on: macos-15
     environment: release-macos
     env:
@@ -209,6 +256,10 @@ jobs:
         with:
           name: unsigned-macos-universal
           path: unsigned
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: third-party-notices
+          path: notices
       # Without the Developer ID (APPLE_SIGNING_IDENTITY unset) the app and
       # disk image are ad-hoc signed and not notarized: signers approve the
       # app once in System Settings (docs/code-signing-policy.md).
@@ -236,6 +287,7 @@ jobs:
           APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          KEYSEAL_NOTICES: notices/THIRD-PARTY-NOTICES.txt
         run: |
           export APPLE_API_KEY="$RUNNER_TEMP/AuthKey.p8"
           printenv APPLE_API_KEY_P8 >"$APPLE_API_KEY"
@@ -246,6 +298,8 @@ jobs:
           rm -rf signed/KeySeal.app "$APPLE_API_KEY"
       - name: Ad-hoc sign
         if: vars.APPLE_SIGNING_IDENTITY == ''
+        env:
+          KEYSEAL_NOTICES: notices/THIRD-PARTY-NOTICES.txt
         run: |
           version="${{ needs.check.outputs.version }}"
           helper/packaging/macos/build-dmg.sh "unsigned/keyseal-helper-$version-macos-universal" signed \
@@ -261,6 +315,8 @@ jobs:
     runs-on: ubuntu-24.04
     permissions:
       contents: write
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -299,6 +355,12 @@ jobs:
           cp "dist/keyseal_${version}_arm64.deb" dist/keyseal_arm64.deb
           helper/packaging/make-manifest.sh "$version" dist
           cat dist/SHA256SUMS-unsigned dist/SHA256SUMS dist/keyseal-update.json
+      # Build provenance for every asset, checked with gh attestation verify
+      # (docs/releasing.md). The signatures maintainers add later aren't
+      # build outputs and aren't attested.
+      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: dist/*
       - name: Draft release
         env:
           GH_TOKEN: ${{ github.token }}

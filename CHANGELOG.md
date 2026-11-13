@@ -19,6 +19,13 @@ lines under the new version with the release date.
 
 ### [Unreleased][helper-unreleased]
 
+#### Added
+
+- Every release asset has a build provenance attestation, which
+  `gh attestation verify <file> --repo somus/keyseal` checks.
+- Every package includes `THIRD-PARTY-NOTICES.txt`, the
+  licences and notices of the open source crates the helper is built from.
+
 #### Changed
 
 - A wrong PIN on a PKCS#11 token no longer ends the job: the window clears
@@ -177,6 +184,34 @@ lines under the new version with the release date.
 
 ### [Unreleased][service-unreleased]
 
+#### Added
+
+- `SIGNING_LOG_LEVEL` sets the level of the service's own log records,
+  `INFO` by default. Before, uvicorn left them unconfigured, so only
+  warnings and errors appeared, without level or logger name.
+
+#### Changed
+
+- An encrypted PDF is a 422 saying so on `/prepare`, `/sign/start`,
+  `/finalize` and `/retimestamp`, and a PDF certified with no changes allowed
+  is one on `/prepare` and `/sign/start`. `/sign/start` answered 500 for a
+  certified PDF and `/prepare` for an encrypted one, so `@keyseal/server`
+  now fails the job with that message instead of answering 502.
+
+- The system roots trusted beside the configured ones are read from
+  OpenSSL's default CA bundle, the image's ca-certificates (the same set as
+  before), so `SSL_CERT_FILE` and `SSL_CERT_DIR` now change them. oscrypto,
+  unmaintained since 2022 and unable to detect OpenSSL 3.0.10 and later, is
+  no longer a direct dependency; pyHanko still installs it but never imports
+  it here.
+
+#### Security
+
+- `/certificate`, `/finalize` and `/retimestamp` stop after 45 seconds,
+  fetches included, as `/validate` does, and `/finalize` refuses a PDF with
+  more than 50 signatures. Each is a 422, except `/certificate`, which
+  answers 504 so that `@keyseal/server` leaves the job for a retry.
+
 ### [0.3.0][service-0.3.0] - 2026-11-04
 
 #### Added
@@ -266,6 +301,28 @@ lines under the new version with the release date.
 
 ### [Unreleased][server-unreleased]
 
+#### Added
+
+- `keyseal.sweep()` expires old jobs and deletes their blobs, as creating a
+  job does, and deletes the blobs of jobs that ended or are gone, which a
+  failed or interrupted deletion used to leave forever. Call it from a
+  scheduler.
+- The `service` option takes any object with `ServiceClient`'s
+  `certificate`, `signStart` and `signFinish` methods, typed as the new
+  `SigningService`.
+
+#### Changed
+
+- Adapters must implement `listBlobs()`, returning every stored blob key;
+  `sweep()` uses it. The conformance suite checks it.
+- A job is now stored before its PDFs, so a failure storing a PDF leaves a
+  pending job that expires instead of no job.
+
+#### Fixed
+
+- `basePath` refuses `.` and `..` segments. URL parsing resolves them in the
+  helper's requests, so no job URL under such a path could be reached.
+
 ### [0.4.0][server-0.4.0] - 2026-11-04
 
 #### Added
@@ -333,6 +390,12 @@ lines under the new version with the release date.
 ## @keyseal/browser
 
 ### [Unreleased][browser-unreleased]
+
+#### Fixed
+
+- `watchJob` rejects with a `TypeError` for a status without a known
+  `state`, or with a `message` that isn't a string, instead of polling until
+  its timeout.
 
 ### [0.2.0][browser-0.2.0] - 2026-11-05
 

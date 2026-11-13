@@ -102,6 +102,17 @@ async function readLimited(
   return bytes;
 }
 
+/**
+ * The signing service calls `createKeySeal` makes, which `ServiceClient`
+ * implements. Another implementation, such as a proxy or a test double,
+ * throws a `ServiceError` with status 400 or 422 for a refusal, which fails
+ * the job, and any other `ServiceError` for a failure the helper may retry.
+ */
+export type SigningService = Pick<
+  ServiceClient,
+  "certificate" | "signStart" | "signFinish"
+>;
+
 /** Typed calls to the signing service (`service/`), with its bearer token. */
 export class ServiceClient {
   readonly #url: string;

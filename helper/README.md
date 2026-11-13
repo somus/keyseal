@@ -2,7 +2,7 @@
 
 The KeySeal desktop helper, in Rust. It handles `keyseal://sign?job=...` and `keyseal://enrol?job=...` links: it checks the link and the origin, asks the user to trust a new origin, claims the job, reads certificates from the user's PKCS#11 token, validates the SignedAttributes the server asks it to sign, shows the origin, title, signer, documents, certificate and digests, asks for the PIN once and returns a signature for every document of the job, all made in one token session. The protocol is [spec/protocol-v1.md](../spec/protocol-v1.md); section numbers in the code refer to it.
 
-It ships the protocol core, a headless command line, the GPUI Kit windows, the `keyseal://` scheme registration, the driver catalogue, the system certificate store (CNG on Windows, CryptoTokenKit on macOS), the document check and signed updates. The design and security rules are in [docs/design.md](../docs/design.md).
+The design and security rules, including the order in which it looks for a driver, are in [docs/design.md](../docs/design.md); building, testing and running it against a local server are in [docs/development.md](../docs/development.md).
 
 ## Layout
 
@@ -30,13 +30,7 @@ A Cargo workspace with four crates.
 | `install` | `keyseal install` and `uninstall`: the `keyseal://` scheme for this user, without administrator rights (Launch Services on macOS, `HKCU\Software\Classes` on Windows, a desktop entry and `xdg-mime` on Linux) |
 | `macos` | Registers the app bundle with Launch Services, and reads the `keyseal://` link from the launch Apple Event for a headless run |
 
-Certificates are filtered before anyone chooses (8.2): by `expectedCertificateSha256`, then by `certificatePolicy`, whose policy OIDs, issuer CN and subject O `protocol` reads with x509-parser. When the policy leaves none, the job fails with "None of the certificates on this token are accepted by <origin> for this job."
-
-Sign jobs take one of the two paths of 12.1. If the token shows a signing certificate before login, the helper posts it, validates round 1 and shows everything with the digests in the PIN prompt. If it shows none, the PIN comes first, and after round 1 a second prompt shows the certificate and digests and needs an explicit confirm before signing; declining logs out and fails the job.
-
-A sign job carries 1 to 20 documents. Round 1 returns one `toSign` per document; the helper validates each, downloads each document (64 MiB each, 256 MiB together) and checks it against its digest, and any failure stops the job before the PIN or the confirm, with nothing signed. After the one PIN, `TokenBackend::sign` signs every document in the same session and round 2 posts the signatures together.
-
-`crates/keyseal-ui`, the windows, on GPUI Kit (`gpui-kit` 0.8.0, which brings `gpui-component` 0.8.0 and pins the GPUI snapshot `gpui-pre` =0.3.9, zed@93d7456; AccessKit 0.24 is always on in that snapshot). GPUI needs Rust 1.93 or later. `native.rs` holds each platform's look: light or dark as the system is, the accent, type size, radii, heading weight and dialog button order (primary last on macOS, first on a footer band on Windows 11, full width on GNOME), and glass on macOS (a blurred window under a transparent title bar), opaque when the system's Reduce transparency is on, the signer turns it off in Settings or a job's manifest has `translucent: false`. The icons are a few Lucide SVGs in `icons/` (ISC licence alongside), plus KeySeal's own mark for the About section of Settings. `keyseal-helper/build.rs` embeds `packaging/windows/keyseal.ico` in `keyseal.exe` as icon resource 1, which GPUI gives its windows; a cross build from macOS or Linux needs `llvm-rc` on the `PATH` for the icon and builds without it otherwise.
+`crates/keyseal-ui`, the windows, on GPUI Kit; `helper/Cargo.toml` pins its version and the GPUI snapshot it brings. `native.rs` holds each platform's look: light or dark as the system is, the accent, type size, radii, heading weight and dialog button order (primary last on macOS, first on a footer band on Windows 11, full width on GNOME), and glass on macOS (a blurred window under a transparent title bar), opaque when the system's Reduce transparency is on, the signer turns it off in Settings or a job's manifest has `translucent: false`. The icons are a few Lucide SVGs in `icons/` (ISC licence alongside), plus KeySeal's own mark for the About section of Settings. `keyseal-helper/build.rs` embeds `packaging/windows/keyseal.ico` in `keyseal.exe` as icon resource 1, which GPUI gives its windows.
 
 | Window | What it shows |
 | --- | --- |
@@ -47,11 +41,7 @@ A sign job carries 1 to 20 documents. Round 1 returns one `toSign` per document;
 
 The flow runs on a background thread. Each `Ui` prompt sends a request to the main thread, where GPUI runs, and blocks until the user answers. The job window opens at the job's first step, once the origin is trusted, and shows each step until the next prompt; a step only sends its request and reads whether the signer cancelled. Cancel, or closing the job window, closes it at once and answers Cancel to every later prompt and step of the job, while the flow logs out and reports the failure behind it; a cancelled job shows no error. A failed job's error shows at once while its failure report is sent, with a 10 second limit, and the process waits for the report before it exits. When the job is over its windows close and, at most once a day, the driver catalogue is downloaded before the process exits; a failed download is only logged, and nothing is downloaded while the catalogue key in `catalogue.rs` is the placeholder. Links that reach the running app (macOS sends later links to it) start a job once the previous job's windows have closed; the process exits after the last job. All strings are in `src/strings.rs`.
 
-From the system's certificate store the helper never asks for a PIN. A sign job takes the second path's confirmation: after round 1 the helper shows the origin, title, signer, documents, certificate and digests and needs an explicit confirm, then the vendor's PIN dialog appears during `NCryptSignHash`, or on macOS the system's during `SecKeyCreateSignature`. Every document of a job is signed through one key handle, so a provider that keeps the handle authenticated, as smart card providers do, asks once per job; a provider whose policy asks for the PIN on every signature asks once per document, which the helper can't change. The batch path has been type-checked for Windows, not yet run on a Windows token. An enrol job shows the origin, title and signer, with Continue, before the store is read (12.2), then always the certificate choice before anything is sent.
-
-CNG signing has been checked on Windows 11 with a TPM virtual smart card through Edge, Chrome and Firefox, not yet with a vendor DSC token. The unit tests cover the filtering and the signature encoding against a fake store; Windows code type-checks from macOS or Linux with `cargo xwin clippy --target x86_64-pc-windows-msvc --all-targets` ([cargo-xwin](https://github.com/rust-cross/cargo-xwin) supplies the MSVC headers `ring` builds against).
-
-The macOS keychain path is tested two ways. The unit tests import RSA and P-256 identities into a throwaway keychain, treat their software keys as on a token, and check that PKCS#1 v1.5, PSS and ECDSA signatures made through the store verify. The `macos-token` workflow puts a virtual PIV card in the runner (`scripts/ci/virtual-piv.sh`: PivApplet in jCardSim behind vsmartcard's vpcd reader), which macOS's own PIV driver exposes, and checks that the keychain search finds its certificate and counts its key as on a token. Signing with a real token, and the system's PIN dialog, have not been checked yet.
+From the system's certificate store the helper never asks for a PIN itself; [docs/design.md](../docs/design.md#token-access) describes the sign flow there, and [docs/development.md](../docs/development.md#testing-the-system-certificate-stores) how far it has been tested. An enrol job shows the origin, title and signer, with Continue, before the store is read (12.2), then always the certificate choice before anything is sent.
 
 `crates/keyseal-helper`, the `keyseal` binary:
 
@@ -91,28 +81,15 @@ There is no fallback UI. When no GPU can be used (no Metal device on macOS, or t
 
 On Windows `keyseal.exe` is a GUI program, so a browser starting it opens no console window. Run from a terminal, it prints to that terminal, but only a batch script such as `install.cmd` waits for it: at a `cmd` or PowerShell prompt the prompt comes back at once and the exit code isn't set. Where the output or the exit code matters, as for `doctor` or a headless run, use `start /wait keyseal doctor` in `cmd` (then `%ERRORLEVEL%`) or `(Start-Process keyseal -ArgumentList doctor -Wait -NoNewWindow -PassThru).ExitCode` in PowerShell.
 
-A headless run against a local reference server:
-
-```bash
-KEYSEAL_HEADLESS=1 KEYSEAL_PIN=1234 \
-  KEYSEAL_ALLOW_INSECURE_ORIGINS=1 KEYSEAL_HEADLESS_TRUST_ORIGIN=http://127.0.0.1:3000 \
-  KEYSEAL_PKCS11_MODULE=/opt/homebrew/lib/softhsm/libsofthsm2.so \
-  cargo run -p keyseal-helper -- run 'keyseal://sign?job=http%3A%2F%2F127.0.0.1%3A3000%2Fv1%2Fjobs%2F<token>'
-```
+[docs/development.md](../docs/development.md#running-the-helper-against-a-local-server) has a headless run against the reference server.
 
 ## doctor
 
 `keyseal doctor` prints the helper version, OS and architecture, the config directory and trusted origins, the GPU (macOS), whether insecure origins are allowed, every module path (missing or found), then each attempt a job would make and how it went (used, failed to load, can't run here naming its architectures, no token; on Windows also CNG), where the used module runs (in this process, or in the token worker with its path), and the certificates visible before login. It exits non-zero when nothing is installed or every attempt failed for another reason than a missing token. With no token plugged in it says so and exits 0. Settings shows the same report under Tokens and drivers, with Copy diagnostics for the text. `keyseal doctor --forget https://dash.example.org` deletes that origin's trust record.
 
-## Develop and test
+## Tests
 
-```bash
-cargo fmt --check
-cargo clippy --all-targets -- -D warnings
-cargo test
-# End to end against SoftHSM; needs softhsm2-util, pkcs11-tool (OpenSC) and openssl
-KEYSEAL_SOFTHSM_MODULE=/opt/homebrew/lib/softhsm/libsofthsm2.so cargo test -p keyseal-helper --test softhsm
-```
+The commands, including the SoftHSM suite, are in [docs/development.md](../docs/development.md#checks).
 
 `crates/keyseal-ui` tests the strings table, digest grouping and host form, and opens every window headlessly through GPUI's `TestAppContext` to drive it with clicks and keys, the settings window with a sample doctor report. `crates/keyseal-core/tests/http.rs` runs the job client and manifest fetch against a server in the test. The SoftHSM test runs `keyseal run` against a two-round server in the test with RSA-2048 (PKCS#1 v1.5 and PSS, SHA-256 and SHA-384), P-256, P-384, brainpoolP256r1 and brainpoolP384r1 keys, verifies each signature with openssl, and covers the login-first path with a token whose certificate is a private object, a batch of three documents signed after one login on both paths, wrong PINs, tampered SignedAttributes, mismatched algorithms, a batch with one tampered document, enrolment and untrusted origins, a batch on keys with `CKA_ALWAYS_AUTHENTICATE` (RSA and P-256), and a certificate with digitalSignature but not nonRepudiation, used only under `keyUsage: "digitalSignature"`. With `KEYSEAL_SOFTHSM_MODULE` set, `cargo test` also runs the worker against SoftHSM (including an always-authenticate key) and checks in `keyseal-core` that `CKM_RSA_PKCS` over the helper's DigestInfo gives the combined mechanism's signature.
 

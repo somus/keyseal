@@ -433,6 +433,26 @@ export function adapterConformanceChecks(
         await adapter.deleteBlob(key);
       },
     ],
+    [
+      "listBlobs lists every stored key until it is deleted",
+      async (adapter, fail) => {
+        const id = makeJob().id;
+        const keys = [`${id}/pdf/0`, `${id}/state/978307200000/1`];
+        for (const key of keys) {
+          await adapter.putBlob(key, Uint8Array.of(1));
+        }
+        const listed = await adapter.listBlobs();
+        for (const key of keys) {
+          if (!listed.includes(key)) {
+            fail(`listBlobs left out ${key}`);
+          }
+        }
+        await adapter.deleteBlob(keys[0] as string);
+        if ((await adapter.listBlobs()).includes(keys[0] as string)) {
+          fail("listBlobs still lists a deleted key");
+        }
+      },
+    ],
   ];
   return checks.map(([name, check]) => ({
     name,

@@ -5,6 +5,9 @@
 # since a minimal system may not have it.
 #
 #   helper/packaging/linux/build-deb.sh <linux binary> <out dir>
+#
+# KEYSEAL_NOTICES names the third-party notices to install under
+# /usr/share/doc/keyseal (../third-party-notices.sh makes them).
 set -euo pipefail
 
 binary="$1"
@@ -27,6 +30,7 @@ trap 'rm -rf "$root"' EXIT
 install -Dm 0755 "$binary" "$root/usr/bin/keyseal"
 install -Dm 0644 "$here/keyseal.desktop" "$root/usr/share/applications/keyseal.desktop"
 install -Dm 0644 "$here/keyseal.svg" "$root/usr/share/icons/hicolor/scalable/apps/keyseal.svg"
+install -Dm 0644 "${KEYSEAL_NOTICES:?}" "$root/usr/share/doc/keyseal/THIRD-PARTY-NOTICES.txt"
 mkdir -p "$root/DEBIAN"
 cat >"$root/DEBIAN/control" <<CONTROL
 Package: keyseal

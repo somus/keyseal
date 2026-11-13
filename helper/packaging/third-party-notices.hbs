@@ -1,0 +1,20 @@
+KeySeal helper: third-party notices
+
+The KeySeal helper includes the following crates. Their licences and
+notices follow, grouped by licence.
+
+{{#each overview}}
+- {{{name}}}: {{count}}
+{{/each}}
+{{#each licenses}}
+
+================================================================================
+{{{name}}}
+
+Used by:
+{{#each used_by}}
+- {{{crate.name}}} {{{crate.version}}}
+{{/each}}
+
+{{{text}}}
+{{/each}}

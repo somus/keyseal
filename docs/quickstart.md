@@ -1,6 +1,6 @@
 # Quickstart without a token
 
-This page takes you from a clean checkout to a signed PDF without a USB token. Docker Compose runs the signing service and the [reference server](../examples/reference-server/), a SoftHSM software token stands in for the USB token, and a helper built from the checkout signs. It takes about fifteen minutes, most of it building the helper.
+This page takes you from a clean checkout to a signed PDF without a USB token. Docker Compose runs the signing service and the [reference server](../examples/reference-server/), a SoftHSM software token stands in for the USB token, and a helper built from the checkout signs. Building the helper takes the longest, a few minutes the first time.
 
 The test CA, its certificates and the token are for trying KeySeal out only. Anyone can make the same kind of CA, the token's PIN is `1234`, and the service token in the compose file is public. Don't point the quickstart's service at real documents, and don't trust its CA anywhere else.
 
@@ -49,7 +49,9 @@ docker compose up --build --detach
 curl -fsS http://127.0.0.1:8090/health
 ```
 
-[compose.yaml](../examples/reference-server/compose.yaml) builds both images from this checkout, so they match the helper you build next; the [published service image](../service/README.md#docker) may be older than the checkout. The service trusts the test CA through `SIGNING_EXTRA_TRUST_ROOTS_DIR`, beside the bundled CCA India roots, and `/health` counts its roots with the others. It signs without a timestamp, so it works offline; `SIGNING_TSA_URL=http://timestamp.digicert.com docker compose up --build --detach` adds one. Revocation data isn't fetched (`SIGNING_ALLOW_FETCHING` is off), and the test certificates name no CRL or OCSP responder anyway.
+The health check answers `{"ok":true,"trustRoots":2}`: the bundled CCA India root and the test CA. If it fails to connect, give the service a few seconds to start and try again.
+
+[compose.yaml](../examples/reference-server/compose.yaml) builds both images from this checkout, so they match the helper you build next; the [published service image](../service/README.md#docker) may be older than the checkout. The service trusts the test CA through `SIGNING_EXTRA_TRUST_ROOTS_DIR`, beside the bundled CCA India roots. It signs without a timestamp, so it works offline; `SIGNING_TSA_URL=http://timestamp.digicert.com docker compose up --build --detach` adds one. Revocation data isn't fetched (`SIGNING_ALLOW_FETCHING` is off), and the test certificates name no CRL or OCSP responder anyway.
 
 Both containers listen on 127.0.0.1 only. If port 8090 is taken, run `export KEYSEAL_QUICKSTART_SERVICE_PORT=18090` before `docker compose up` and use that port wherever this page says 8090; the service's port is published only so you can check the signed PDF from your computer. The reference server reaches the service at `http://service:8080` with the shared bearer token, and puts `http://127.0.0.1:8787` in its `keyseal://` links, which is where the helper on your computer finds it.
 
@@ -72,11 +74,11 @@ export KEYSEAL_CONFIG_DIR="$PWD/quickstart/helper"
 - `KEYSEAL_ALLOW_INSECURE_ORIGINS=1` lets the helper accept `http://127.0.0.1:8787`. Without it the helper accepts https origins only. Such an origin is never stored as trusted, and every prompt flags it as insecure.
 - `KEYSEAL_CONFIG_DIR` keeps this helper's settings and log in `quickstart/helper`, away from an installed helper's.
 
-A helper the browser starts from a `keyseal://` link gets none of these, so in this quickstart you copy the link from the page and run it from this terminal instead. If you have a released KeySeal installed, the browser may offer to open the link in it: decline, since it refuses the plain-HTTP origin.
+A helper the browser starts from a `keyseal://` link gets none of these, so in this quickstart you copy the link from the page and run it from this terminal instead.
 
 ## 4. Sign a PDF
 
-Open http://127.0.0.1:8787/ in a browser, choose a PDF and select Create signing job. Any PDF works; to make a blank one-page PDF, run:
+Any PDF works. To make a blank one-page PDF, run:
 
 ```sh
 docker compose exec -T service /app/.venv/bin/python -c '
@@ -95,13 +97,15 @@ sys.stdout.buffer.write(out.getvalue())
 ' >sample.pdf
 ```
 
-The page shows the job as pending, with its `keyseal://sign?...` link below. Copy the link and run it through the helper, in single quotes:
+Open http://127.0.0.1:8787/ in a browser, choose the PDF and select Create signing job. The page tries to open the job's link at once, so the browser may ask whether to open `xdg-open` or KeySeal: choose Cancel. A helper started that way wouldn't have the settings above, and a released KeySeal refuses the plain-HTTP origin anyway.
+
+The page shows the job as pending, with its `keyseal://sign?job=...` link below. Copy the link and run it through the helper, in single quotes:
 
 ```sh
-../../helper/target/debug/keyseal run 'keyseal://sign?...'
+../../helper/target/debug/keyseal run 'keyseal://sign?job=...'
 ```
 
-The helper asks whether to trust `127.0.0.1:8787`, flagged as insecure, then shows the document and the certificates on the token. Choose one, such as `keyseal e2e rsa`, and enter the PIN `1234`. The page's status turns to completed and names the signed PDF, such as `out/3f1c...-0.pdf`.
+The helper opens a New site window for `127.0.0.1:8787`, marked as a test site whose connection isn't secure: select Allow. The Sign a document window then lists the certificates on the token that the job accepts. Choose one, such as `keyseal e2e rsa`, select Continue, enter the PIN `1234` and select Sign. The page's state moves from pending through claimed and prepared to completed, and it names the signed PDF, such as `out/6c037b37-...-0.pdf`.
 
 ### Without a browser
 
@@ -118,7 +122,7 @@ KEYSEAL_HEADLESS=1 KEYSEAL_PIN=1234 KEYSEAL_HEADLESS_TRUST_ORIGIN=http://127.0.0
 curl -fsS "http://127.0.0.1:8787/jobs/$(jq -r .id <<<"$job")/status"
 ```
 
-The helper prints the job and `Signed`, and the status is `completed` with the signed PDF's path in `outputs`.
+The helper prints the job, the certificate it used and `Signed. You can return to the page.`, and the status is `completed` with the signed PDF's path in `outputs`. On macOS, use `base64 -i sample.pdf` in place of `base64 -w0 sample.pdf`.
 
 ## 5. Check the signed PDF
 
@@ -130,7 +134,7 @@ curl -fsS -H 'Authorization: Bearer quickstart-only-not-a-secret-0123456789' \
   --data-binary @signed.pdf http://127.0.0.1:8090/validate | jq
 ```
 
-The report's `status` is `valid`, and its one signature is `intact` and `trusted`, signed by `keyseal e2e rsa` or whichever certificate you chose. A PDF viewer shows the signature too, as from an unknown signer, since your system doesn't trust the test CA.
+The report's `status` is `valid`, and its one signature is `intact`, `trusted` and `coversWholeRevision`, with `signerName` `keyseal e2e rsa` or whichever certificate you chose, and `timestamped` false unless you set a TSA. A PDF viewer shows the signature too, as from an unknown signer, since your system doesn't trust the test CA.
 
 ## Clean up
 
@@ -143,11 +147,11 @@ rm -rf quickstart sample.pdf signed.pdf
 
 The quickstart has been run on Linux only. On the other systems, SoftHSM installs as below, the way the project's CI installs it for the helper's tests; the other steps are the same, with that module path for `module` and `KEYSEAL_PKCS11_MODULE`.
 
-- **macOS:** `brew install softhsm opensc openssl@3`, and put Homebrew's OpenSSL first on the `PATH` for the token script, since the system's LibreSSL lacks options it uses: `export PATH="$(brew --prefix openssl@3)/bin:$PATH"`. The module is `$(brew --prefix softhsm)/lib/softhsm/libsofthsm2.so`. Docker Desktop provides Docker and Compose, and the helper needs no extra build dependencies.
+- **macOS:** `brew install softhsm opensc openssl@3`, with Homebrew's OpenSSL first on the `PATH` as CI puts it: `export PATH="$(brew --prefix openssl@3)/bin:$PATH"`. The module is `$(brew --prefix softhsm)/lib/softhsm/libsofthsm2.so`, as in the `SoftHSM (macOS)` step of [.github/workflows/checks.yml](../.github/workflows/checks.yml) and in [development.md](development.md#checks). Docker Desktop provides Docker and Compose.
 - **Windows:** CI installs SoftHSM2 for Windows 2.5.0 with an administrative install of the MSI that Chocolatey's `softhsm.install` downloads, into `C:\SoftHSM2`, and OpenSC with `choco install opensc`; the module is `C:\SoftHSM2\lib\softhsm2-x64.dll`, and `C:\SoftHSM2\bin`, `C:\SoftHSM2\lib` and OpenSC's `tools` directory go on the `PATH`. See the `SoftHSM (Windows)` step in [.github/workflows/checks.yml](../.github/workflows/checks.yml). The token script is a bash script, and hasn't been run on Windows.
 
 ## Next
 
 - [docs/integrating.md](integrating.md) adds token signing to your own application.
 - [examples/reference-server/README.md](../examples/reference-server/README.md) lists the reference server's endpoints, which the quickstart uses.
-- With a real token, run the reference server against the service with the CA your signers' certificates chain to, and use a released helper: it finds the token's driver itself.
+- [helper/README.md](../helper/README.md) lists the helper's environment variables, and how it finds a real token's driver without `KEYSEAL_PKCS11_MODULE`.

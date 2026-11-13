@@ -183,3 +183,30 @@ def test_an_extra_roots_dir_that_cannot_be_listed_refuses_to_start(
         tmp_path.chmod(0o700)
     assert exited.value.code == 1
     assert f"SIGNING_EXTRA_TRUST_ROOTS_DIR {tmp_path} is unreadable" in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("level", "shown"), [(None, True), ("DEBUG", True), ("warning", False)]
+)
+def test_service_records_come_out_at_the_configured_level(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, level: str | None, shown: bool
+) -> None:
+    monkeypatch.setenv("SIGNING_SERVICE_TOKEN", TOKEN)
+    if level is None:
+        monkeypatch.delenv("SIGNING_LOG_LEVEL", raising=False)
+    else:
+        monkeypatch.setenv("SIGNING_LOG_LEVEL", level)
+    create_app()
+    logging.getLogger("keyseal_service.validate").info("Certificate refused: a CA certificate")
+    assert ("Certificate refused: a CA certificate" in caplog.text) is shown
+
+
+def test_an_unknown_log_level_refuses_to_start(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    monkeypatch.setenv("SIGNING_SERVICE_TOKEN", TOKEN)
+    monkeypatch.setenv("SIGNING_LOG_LEVEL", "verbose")
+    with caplog.at_level(logging.CRITICAL), pytest.raises(SystemExit) as exited:
+        create_app()
+    assert exited.value.code == 1
+    assert "Refusing to start: SIGNING_LOG_LEVEL verbose is not" in caplog.text

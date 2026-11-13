@@ -11,15 +11,17 @@ import hashlib
 import hmac
 import io
 import logging
-from collections.abc import Collection
+import ssl
+from collections.abc import AsyncIterator, Collection
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
+from functools import cache
 from pathlib import Path
 from typing import Any, Literal
 
 from asn1crypto import algos, keys, pem, x509
 from cryptography.exceptions import InvalidSignature
-from oscrypto import trust_list
 from pyhanko.pdf_utils import generic
 from pyhanko.pdf_utils.form_tools import enumerate_fields_in
 from pyhanko.pdf_utils.misc import PdfReadError
@@ -108,6 +110,14 @@ def load_trust_roots(directory: Path | None) -> list[x509.Certificate]:
         except Exception:  # noqa: BLE001 - a bad file must not stop the service
             log.warning("trust root unreadable: %s", path.name)
     return roots
+
+
+@cache
+def system_trust_roots() -> tuple[x509.Certificate, ...]:
+    """The platform's trusted roots as OpenSSL finds them by default
+    (`SSL_CERT_FILE`, or the image's ca-certificates bundle), read once."""
+    context = ssl.create_default_context()
+    return tuple(x509.Certificate.load(der) for der in context.get_ca_certs(binary_form=True))
 
 
 def split_trust_roots(
@@ -227,7 +237,7 @@ class ValidationSettings:
         # isn't. The CRLs and OCSP responses a `known` context holds carry
         # over, so a revocation it found still counts if a fetch fails now.
         return ValidationContext(
-            trust_roots=[cert for cert, _, _ in trust_list.get_list()] + self.trust_roots,
+            trust_roots=[*system_trust_roots(), *self.trust_roots],
             other_certs=self.intermediates,
             signature_validator=SIGNATURE_VALIDATOR,
             allow_fetching=self.allow_fetching,
@@ -281,7 +291,20 @@ async def certificate_trusted(
     """Whether a certificate chains to a configured root, isn't a CA's and
     has the key usage `key_usage` asks of a PDF signer (the DSC enrolment
     check), so an encryption certificate on the same token isn't enrolled,
-    and whether its revocation status was checked (`_revocation_checked`)."""
+    and whether its revocation status was checked (`_revocation_checked`).
+
+    A check that runs past VALIDATION_BUDGET_SECONDS, fetches included,
+    raises `ValidationLimitError`."""
+    async with within_budget("The certificate check"):
+        return await _certificate_trusted(cert, chain, settings, key_usage)
+
+
+async def _certificate_trusted(
+    cert: x509.Certificate,
+    chain: list[x509.Certificate],
+    settings: ValidationSettings,
+    key_usage: KeyUsage,
+) -> tuple[bool, bool]:
     if cert.ca:
         log.info("Certificate refused: a CA certificate")
         return False, False
@@ -441,16 +464,32 @@ def _text_fields(reader: PdfFileReader) -> dict[str, str]:
 
 #: Deeper field trees than this count as malformed.
 MAX_FIELD_DEPTH = 64
-#: Signatures and document timestamps one validation checks. Each is checked
-#: against every revision after it, so the work grows with the square.
+#: Signatures and document timestamps one validation checks, or one
+#: finalisation adds revocation data for. Each is checked against every
+#: revision after it, so the work grows with the square.
 MAX_SIGNATURES = 50
-#: Wall-clock time one validation may take, fetches included, under the
-#: 60-second request timeout `@keyseal/server` uses by default.
+#: Wall-clock time one validation, certificate check, finalisation or
+#: retimestamping may take, fetches included, under the 60-second request
+#: timeout `@keyseal/server` uses by default.
 VALIDATION_BUDGET_SECONDS = 45
 
 
 class ValidationLimitError(ValueError):
     pass
+
+
+@asynccontextmanager
+async def within_budget(work: str) -> AsyncIterator[None]:
+    """Stops `work` at its next await once it runs past
+    VALIDATION_BUDGET_SECONDS, raising `ValidationLimitError`. A synchronous
+    step already running (parsing, diff analysis) finishes first."""
+    try:
+        async with asyncio.timeout(VALIDATION_BUDGET_SECONDS):
+            yield
+    except TimeoutError as error:
+        raise ValidationLimitError(
+            f"{work} took longer than {VALIDATION_BUDGET_SECONDS} seconds"
+        ) from error
 
 
 def _field_chain(widget: generic.DictionaryObject) -> list[generic.DictionaryObject]:
@@ -641,13 +680,8 @@ async def validate_pdf_async(
     past VALIDATION_BUDGET_SECONDS, raises `ValidationLimitError`. The budget
     stops the work at its next await, so a synchronous step already running
     (parsing, pyHanko's diff analysis) finishes first."""
-    try:
-        async with asyncio.timeout(VALIDATION_BUDGET_SECONDS):
-            return await _validate_pdf(data, settings, base_length, key_usage)
-    except TimeoutError as error:
-        raise ValidationLimitError(
-            f"Validation took longer than {VALIDATION_BUDGET_SECONDS} seconds"
-        ) from error
+    async with within_budget("Validation"):
+        return await _validate_pdf(data, settings, base_length, key_usage)
 
 
 async def _validate_pdf(

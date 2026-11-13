@@ -233,7 +233,7 @@ fn gather(gpu: Result<Option<String>, String>) -> Facts {
                 let token = backend.token();
                 Ok(Some(Opened {
                     module,
-                    pin_warning: token.pin_warning(),
+                    pin_warning: token.pin_warning().map(token::PinWarning::message),
                     certificates: token
                         .certificates(false)
                         .map(|certificates| {

@@ -56,6 +56,12 @@ export type WatchOptions = JobSource & {
 };
 
 const TERMINAL = new Set<JobState>(["completed", "failed", "expired"]);
+const STATES = new Set<unknown>([
+  "pending",
+  "claimed",
+  "prepared",
+  ...TERMINAL,
+]);
 const JOB_PATH = /^(?:\/[^/]+)*\/v1\/jobs\/[A-Za-z0-9_-]{20,128}$/;
 const INSECURE_HOSTS = new Set(["localhost", "127.0.0.1"]);
 
@@ -143,7 +149,8 @@ export function launchHelper(link: string, options?: LaunchOptions): void {
 /**
  * Follows a job until it reaches a terminal state, then resolves with that status.
  * Rejects with the abort reason on abort, with a `TimeoutError` DOMException after
- * `timeoutMs`, and with whatever `getStatus` throws.
+ * `timeoutMs`, with a TypeError for a status without a known `state`, and with
+ * whatever `getStatus` throws.
  */
 export function watchJob(options: WatchOptions): Promise<JobStatus> {
   const {
@@ -176,9 +183,18 @@ export function watchJob(options: WatchOptions): Promise<JobStatus> {
     };
     const fail = (error: unknown) => finish(() => reject(error));
     const abort = () => fail(signal?.reason);
+    // Its callers turn a throw into a rejection.
     const update = (status: JobStatus) => {
       if (done) {
         return;
+      }
+      if (
+        typeof status !== "object" ||
+        status === null ||
+        !STATES.has(status.state) ||
+        !(status.message === undefined || typeof status.message === "string")
+      ) {
+        throw new TypeError(`Unexpected job status: ${JSON.stringify(status)}`);
       }
       if (status.state !== last?.state || status.message !== last?.message) {
         last = status;

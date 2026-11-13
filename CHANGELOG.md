@@ -19,6 +19,34 @@ lines under the new version with the release date.
 
 ### [Unreleased][helper-unreleased]
 
+#### Added
+
+- On Windows, `keyseal install` adds a KeySeal shortcut to the Start menu
+  that opens the settings, and an entry under Apps (Add or remove programs)
+  that uninstalls. `keyseal uninstall` removes both.
+- On Windows and Linux, opening KeySeal without a link, from the Start
+  menu, the app menu or the file manager, opens the settings. From a
+  terminal it still prints the usage.
+- The Linux desktop entry shows in the app menu, and `keyseal install`
+  writes the packaged entry and its icon.
+- `install.cmd /quiet` installs without waiting for a key and exits with
+  the install's exit code.
+
+#### Fixed
+
+- On Windows, `keyseal uninstall` removes `%LOCALAPPDATA%\keyseal` once the
+  helper has exited, instead of leaving the exe there. Only the helper's
+  own files are deleted, and the folder only when it is then empty.
+- Edge and Chrome on Windows name KeySeal when a site opens a `keyseal://`
+  link, from the exe's new version information, instead of the bare scheme.
+- The deb depends on the libraries the helper loads, so it installs and
+  runs on a clean Ubuntu 22.04, Ubuntu 24.04 or Debian 12.
+- A deb or tarball install no longer downloads the AppImage as its update
+  and asks to copy it over the installed binary. It says once per version
+  that a release is out, to install the way it was installed.
+- A failed daily update check runs again after the next job instead of a
+  day later.
+
 ### [0.3.0][helper-0.3.0] - 2026-11-05
 
 #### Added

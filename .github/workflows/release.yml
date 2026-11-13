@@ -192,6 +192,14 @@ jobs:
           chmod +x appimagetool
           APPIMAGETOOL="$PWD/appimagetool" APPIMAGETOOL_RUNTIME_FILE="$PWD/runtime" \
             helper/packaging/linux/build-appimage.sh "$binary" dist
+      # The deb on a clean Ubuntu 22.04, the oldest release it supports,
+      # from its Depends alone: it must start, and every library the helper
+      # opens at run time must be installed with it.
+      - name: The deb installs and runs on a clean system
+        uses: docker://ubuntu:22.04@sha256:0a9887931b0e38af2e3487ed39e29436b0535c4f3f52e57745baaf79d1898956
+        with:
+          entrypoint: bash
+          args: helper/packaging/linux/check-deb.sh dist
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: unsigned-${{ matrix.platform }}

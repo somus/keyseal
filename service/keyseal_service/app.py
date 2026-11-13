@@ -213,9 +213,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             remote_sign.algorithms(cert)
         except remote_sign.RemoteSignError as error:
             raise HTTPException(400, str(error)) from error
-        trusted, revocation_checked = await _validating(
-            lambda settings: certificate_trusted(cert, chain, settings, body.keyUsage)
-        )
+        try:
+            trusted, revocation_checked = await _validating(
+                lambda settings: certificate_trusted(cert, chain, settings, body.keyUsage)
+            )
+        except ValidationLimitError as error:
+            raise HTTPException(422, str(error)) from error
         return {"revocationChecked": revocation_checked, "trusted": trusted}
 
     @app.post("/sign/start")
@@ -268,7 +271,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             out = await _validating(
                 lambda settings: remote_sign.finalize(pdf, tsa, settings.context())
             )
-        except remote_sign.RemoteSignError as error:
+        except (remote_sign.RemoteSignError, ValidationLimitError) as error:
             raise HTTPException(422, str(error)) from error
         except Exception as error:  # noqa: BLE001 - reported, the PDF stays as it was
             log.exception("Couldn't finalise")
@@ -284,7 +287,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             out = await _validating(
                 lambda settings: remote_sign.retimestamp(pdf, tsa, settings.context())
             )
-        except remote_sign.RemoteSignError as error:
+        except (remote_sign.RemoteSignError, ValidationLimitError) as error:
             raise HTTPException(422, str(error)) from error
         except Exception as error:  # noqa: BLE001 - reported, the PDF stays as it was
             log.exception("Couldn't timestamp")

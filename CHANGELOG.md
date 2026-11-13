@@ -142,6 +142,12 @@ lines under the new version with the release date.
 
 ### [Unreleased][service-unreleased]
 
+#### Added
+
+- `SIGNING_LOG_LEVEL` sets the level of the service's own log records,
+  `INFO` by default. Before, uvicorn left them unconfigured, so only
+  warnings and errors appeared, without level or logger name.
+
 #### Changed
 
 - An encrypted PDF is a 422 saying so on `/prepare`, `/sign/start`,

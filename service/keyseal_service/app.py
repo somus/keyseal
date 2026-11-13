@@ -31,7 +31,7 @@ from .appearance import SignedByStampStyle
 from .fetching import public_fetch_session
 from .prepare import MAX_FIELDS, FieldRequest, PrepareError, prepare_fields
 from .request_guard import RequestGuard
-from .settings import Settings, TrustRootsError, WeakTokenError, check_token
+from .settings import LogLevelError, Settings, TrustRootsError, WeakTokenError, check_token
 from .validate import (
     DEFAULT_KEY_USAGE,
     KeyUsage,
@@ -117,14 +117,27 @@ class PrepareRequest(BaseModel):
     fields: list[PrepareField] = Field(max_length=MAX_FIELDS)
 
 
+def configure_logging(level: str) -> None:
+    """Sends the service's own records to stderr at `level`. uvicorn only
+    configures its own loggers, so without this they reach Python's
+    last-resort handler: warnings and above, without level or logger name."""
+    logger = logging.getLogger("keyseal_service")
+    if not logger.handlers:
+        handler = logging.StreamHandler()
+        handler.setFormatter(logging.Formatter("%(levelname)s: %(name)s: %(message)s"))
+        logger.addHandler(handler)
+    logger.setLevel(level)
+
+
 def create_app(settings: Settings | None = None) -> FastAPI:
     try:
         resolved = settings or Settings.from_env()
+        configure_logging(resolved.log_level)
         check_token(resolved.token)
     except WeakTokenError as error:
         log.critical("Refusing to start: %s. Generate one with `openssl rand -base64 32`.", error)
         raise SystemExit(1) from error
-    except TrustRootsError as error:
+    except (TrustRootsError, LogLevelError) as error:
         log.critical("Refusing to start: %s.", error)
         raise SystemExit(1) from error
 

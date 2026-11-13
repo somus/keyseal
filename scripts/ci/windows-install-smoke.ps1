@@ -69,5 +69,5 @@ foreach ($second in 1..30) {
   if (-not (Test-Path $dir)) { break }
   Start-Sleep 1
 }
-Check (-not (Test-Path $dir)) "$dir is still there: $(Get-ChildItem $dir -Name)"
+if (Test-Path $dir) { throw "$dir is still there: $(Get-ChildItem $dir -Name)" }
 Write-Host 'Installed, checked and uninstalled.'

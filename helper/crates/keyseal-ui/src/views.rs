@@ -415,7 +415,8 @@ fn banner(
         .bg(tint.opacity(0.14))
         .text_sm()
         .child(icon(name).size_4().mt_0p5().flex_none().text_color(tint))
-        .child(div().flex_1().child(text))
+        // min_w_0 lets the text wrap instead of widening the strip.
+        .child(div().flex_1().min_w_0().child(text))
         .test_support()
 }
 

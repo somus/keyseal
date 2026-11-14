@@ -1953,10 +1953,10 @@ mod tests {
         let open = |_: KeyUsage, before_store: BeforeStore| {
             let token = token.borrow_mut().take().expect("one token per job");
             if !in_store {
-                return Ok(Backend::Pkcs11(token));
+                return Ok(Found::Backend(Backend::Pkcs11(token)));
             }
             before_store()?;
-            Ok(Backend::Store(token))
+            Ok(Found::Backend(Backend::Store(token)))
         };
         // Enrol never reaches this step, so nothing is cancelled.
         let mut ui = CancellingUi::new(Stage::Progress(Step::Sending));

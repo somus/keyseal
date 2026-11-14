@@ -57,9 +57,7 @@ function enrolProofMessage(
   certificateSha256: string
 ): Uint8Array {
   return new TextEncoder().encode(
-    ["KeySeal enrol proof v1", jobUrl, claimNonce, certificateSha256].join(
-      "\0"
-    )
+    ["KeySeal enrol proof v1", jobUrl, claimNonce, certificateSha256].join("\0")
   );
 }
 
@@ -189,13 +187,21 @@ export function createHandlers({
       chain,
       claimNonce,
       proof,
-    }: { certificate: string; chain: string[]; claimNonce: string; proof?: string },
+    }: {
+      certificate: string;
+      chain: string[];
+      claimNonce: string;
+      proof?: string;
+    },
     lease: Date,
     now: Date
   ): Promise<Response> {
     // A helper that doesn't send the proof predates it: 426 tells it to update.
     if (job.kind === "enrol" && proof === undefined) {
-      await fail(job, lease, { message: UPGRADE_MESSAGE, reportedBy: "server" });
+      await fail(job, lease, {
+        message: UPGRADE_MESSAGE,
+        reportedBy: "server",
+      });
       return json(
         { message: UPGRADE_MESSAGE, minVersion: enrolMinVersion },
         426
@@ -213,7 +219,11 @@ export function createHandlers({
       return await refuse(job, lease, facts);
     }
     if (job.kind === "enrol") {
-      const message = enrolProofMessage(jobUrl(token), claimNonce, facts.sha256);
+      const message = enrolProofMessage(
+        jobUrl(token),
+        claimNonce,
+        facts.sha256
+      );
       const valid =
         proof !== undefined &&
         inspector.verify(

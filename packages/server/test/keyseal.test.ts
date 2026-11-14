@@ -1253,13 +1253,23 @@ describe("enrol proof", () => {
       ["another key", (url, nonce) => proofFor("p256", url, nonce, CERTS.rsa)],
       [
         "another job URL",
-        (url, nonce) =>
-          proofFor("rsa", `${ORIGIN}/v1/jobs/${"o".repeat(43)}`, nonce, CERTS.rsa),
+        (_url, nonce) =>
+          proofFor(
+            "rsa",
+            `${ORIGIN}/v1/jobs/${"o".repeat(43)}`,
+            nonce,
+            CERTS.rsa
+          ),
       ],
       [
         "another origin",
-        (url, nonce, token) =>
-          proofFor("rsa", `https://evil.example/v1/jobs/${token}`, nonce, CERTS.rsa),
+        (_url, nonce, token) =>
+          proofFor(
+            "rsa",
+            `https://evil.example/v1/jobs/${token}`,
+            nonce,
+            CERTS.rsa
+          ),
       ],
       [
         "another claim nonce",
@@ -1269,10 +1279,7 @@ describe("enrol proof", () => {
         "another certificate",
         (url, nonce) => proofFor("rsa", url, nonce, CERTS.p256),
       ],
-      [
-        "a document signature",
-        () => signWith("rsa", toSignFor("Signature1")),
-      ],
+      ["a document signature", () => signWith("rsa", toSignFor("Signature1"))],
       ["not a signature", () => btoa("proof")],
     ];
     for (const [name, proof] of cases) {
@@ -2082,12 +2089,7 @@ describe("status codes", () => {
       certificate: CERTS.p384,
       chain: [],
       claimNonce: description.claimNonce,
-      proof: proofFor(
-        "p384",
-        enrol.jobUrl,
-        description.claimNonce,
-        CERTS.p384
-      ),
+      proof: proofFor("p384", enrol.jobUrl, description.claimNonce, CERTS.p384),
     });
     expect(refused.status).toBe(422);
     expect(await t.keyseal.status(enrol.id)).toMatchObject({

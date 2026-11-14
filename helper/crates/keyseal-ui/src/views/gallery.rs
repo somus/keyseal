@@ -13,6 +13,8 @@ use keyseal_core::modules;
 #[cfg(feature = "gallery")]
 use keyseal_core::protocol::Kind;
 #[cfg(feature = "gallery")]
+use keyseal_core::token::{CertificateSummary, TokenSummary};
+#[cfg(feature = "gallery")]
 use keyseal_core::trust::TrustStore;
 
 #[cfg(feature = "gallery")]
@@ -42,6 +44,8 @@ pub const GALLERY_VIEWS: &[&str] = &[
     "confirm",
     "choose",
     "choose-many",
+    "choose-token",
+    "pin-token",
     "enrol",
     "busy",
     "progress-connecting",
@@ -138,6 +142,8 @@ pub(crate) fn gallery(view: &str, cx: &mut App) {
     };
     let pin =
         |certificate: Option<&str>, digest: Option<&str>, pin_pad, warning, wrong_pin| Stage::Pin {
+            // pin-token: several tokens were plugged in.
+            token: (view == "pin-token").then(|| "HYP2003".into()),
             certificate: certificate.map(Into::into),
             digests: digest.map(|digest| vec![digest.into()]),
             pin_pad,
@@ -145,6 +151,12 @@ pub(crate) fn gallery(view: &str, cx: &mut App) {
             wrong_pin,
             reply: mpsc::channel().0,
         };
+    let certificate = |issuer: &str, valid_until: &str, serial_end: &str| CertificateSummary {
+        name: "ASHA RAO".into(),
+        issuer: issuer.into(),
+        valid_until: valid_until.into(),
+        serial_end: serial_end.into(),
+    };
     let mut windows = Windows::new(|_| {});
     // pin-details: the signer chose to always see the technical details.
     set_always_show_details(matches!(view, "pin-details" | "pin-batch-details"), cx);
@@ -164,6 +176,7 @@ pub(crate) fn gallery(view: &str, cx: &mut App) {
             Request::Job {
                 job: batch,
                 stage: Stage::Pin {
+                    token: None,
                     certificate: Some(CERTIFICATE.into()),
                     digests: Some(digests),
                     pin_pad: false,
@@ -270,7 +283,7 @@ pub(crate) fn gallery(view: &str, cx: &mut App) {
         }
         // pin-plain: a brand without a logo; pin-opaque: a brand that asks
         // for opaque windows.
-        "pin" | "pin-details" | "pin-plain" | "pin-opaque" => {
+        "pin" | "pin-details" | "pin-plain" | "pin-opaque" | "pin-token" => {
             pin(Some(CERTIFICATE), Some(DIGEST), false, None, false)
         }
         "pin-pad" => pin(Some(CERTIFICATE), Some(DIGEST), true, None, false),
@@ -289,21 +302,56 @@ pub(crate) fn gallery(view: &str, cx: &mut App) {
             digests: vec![DIGEST.into()],
             reply: mpsc::channel().0,
         },
+        // A renewed certificate beside the one it replaces, and one from
+        // another issuer whose name is long.
         "choose" => Stage::Choose {
-            subjects: vec![
-                "ASHA RAO (Verasys Sub CA 2022), signing, valid until 12 March 2027".into(),
-                "ASHA RAO (Verasys Sub CA 2022), encryption, valid until 12 March 2027".into(),
-                "ASHA RAO (eMudhra Sub CA 2023), signing, valid until 2 June 2028".into(),
+            certificates: vec![
+                certificate("Verasys Sub CA 2022", "12 March 2027", "4F A1 9C"),
+                certificate("Verasys Sub CA 2022", "2 February 2027", "0B 7E 31"),
+                certificate(
+                    "e-Mudhra Sub CA for Class 3 Individual 2022",
+                    "2 June 2028",
+                    "9C 02 D4",
+                ),
             ],
             reply: mpsc::channel().0,
         },
         // More certificates than the window holds, under the insecure banner.
         "choose-many" => Stage::Choose {
-            subjects: (1..=8)
+            certificates: (1..=8)
                 .map(|n| {
-                    format!("ASHA RAO (Verasys Sub CA 2022), signing, valid until {n} March 2027")
+                    certificate(
+                        "Verasys Sub CA 2022",
+                        &format!("{n} March 2027"),
+                        &format!("4F A1 {n:02X}"),
+                    )
                 })
                 .collect(),
+            reply: mpsc::channel().0,
+        },
+        // Two tokens that show their certificates before login, one with two
+        // signers on it, and one that shows none.
+        "choose-token" => Stage::ChooseToken {
+            tokens: vec![
+                TokenSummary {
+                    label: "ePass2003".into(),
+                    model: "Feitian ePass2003".into(),
+                    serial: "2A8F0C1B00049813".into(),
+                    names: vec!["ASHA RAO".into()],
+                },
+                TokenSummary {
+                    label: "HYP2003".into(),
+                    model: "HyperSecu HYP2003".into(),
+                    serial: "HS0322771940".into(),
+                    names: vec!["ASHA RAO".into(), "VIKRAM MEHTA".into()],
+                },
+                TokenSummary {
+                    label: "SafeNet eToken 5110".into(),
+                    model: "SafeNet, Inc. eToken 5110 CC".into(),
+                    serial: "02A7D4E1".into(),
+                    names: Vec::new(),
+                },
+            ],
             reply: mpsc::channel().0,
         },
         "enrol" => Stage::Enrol {

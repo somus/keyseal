@@ -518,6 +518,7 @@ mod flow {
     use super::*;
     use keyseal_core::flow::{DigestConfirm, Environment, JobView, PinPrompt, Ui, run};
     use keyseal_core::origin::Origin;
+    use keyseal_core::token::{CertificateSummary, TokenSummary};
     use zeroize::Zeroizing;
 
     /// Accepts the origin, records errors and fails the test on any prompt
@@ -531,8 +532,11 @@ mod flow {
         fn confirm_origin(&mut self, _: &Origin) -> bool {
             true
         }
-        fn choose_certificate(&mut self, _: &JobView, _: &[String]) -> Option<usize> {
+        fn choose_certificate(&mut self, _: &JobView, _: &[CertificateSummary]) -> Option<usize> {
             panic!("no certificate choice expected")
+        }
+        fn choose_token(&mut self, _: &JobView, _: &[TokenSummary]) -> Option<usize> {
+            panic!("no token choice expected")
         }
         fn prompt_pin(&mut self, _: &PinPrompt) -> Option<Zeroizing<String>> {
             panic!("no PIN prompt expected")

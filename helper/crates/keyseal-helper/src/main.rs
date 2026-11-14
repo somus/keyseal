@@ -14,7 +14,7 @@ use keyseal_core::flow::{
 };
 use keyseal_core::origin::{self, Origin};
 use keyseal_core::protocol::{KeyUsage, Kind};
-use keyseal_core::token;
+use keyseal_core::token::{self, CertificateSummary, TokenSummary};
 use keyseal_core::trust::TrustStore;
 use keyseal_core::{doctor, install, update};
 use zeroize::Zeroizing;
@@ -267,17 +267,38 @@ impl Ui for Headless {
         false
     }
 
-    fn choose_certificate(&mut self, job: &JobView, subjects: &[String]) -> Option<usize> {
+    fn choose_certificate(
+        &mut self,
+        job: &JobView,
+        certificates: &[CertificateSummary],
+    ) -> Option<usize> {
         describe(job);
         eprintln!("Several certificates fit this job, and a headless run can't choose one:");
-        for subject in subjects {
-            eprintln!("  {subject}");
+        for certificate in certificates {
+            eprintln!(
+                "  {}, issued by {}, valid until {}, serial ending {}",
+                certificate.name,
+                certificate.issuer,
+                certificate.valid_until,
+                certificate.serial_end
+            );
         }
         None
     }
 
+    fn choose_token(&mut self, _: &JobView, _: &[TokenSummary]) -> Option<usize> {
+        None
+    }
+
+    fn can_choose_token(&self) -> bool {
+        false
+    }
+
     fn prompt_pin(&mut self, prompt: &PinPrompt) -> Option<Zeroizing<String>> {
         describe(prompt.job);
+        if let Some(token) = &prompt.token {
+            eprintln!("Token: {token}");
+        }
         if let Some(certificate) = &prompt.certificate {
             eprintln!("Certificate: {certificate}");
         }
@@ -338,6 +359,7 @@ impl Ui for Headless {
 /// logging in with `KEYSEAL_PIN` when none are visible.
 fn list() -> Result<(), String> {
     let backend = flow::open_backend(KeyUsage::DigitalSignature, &mut || Ok(()), &mut |_, _| {})
+        .and_then(|found| found.open(|_| Ok(0)))
         .map_err(|failure| failure.message)?;
     let token = backend.token();
     let mut certificates = token.certificates(false)?;

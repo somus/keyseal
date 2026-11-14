@@ -17,7 +17,9 @@ use serde::{Deserialize, Serialize};
 use zeroize::{Zeroize, Zeroizing};
 
 use crate::cms::{DigestAlgorithm, SignatureAlgorithm};
-use crate::token::{LoginError, PinWarning, TokenBackend, TokenCertificate, TokenError, err};
+use crate::token::{
+    Driver, LoginError, PinWarning, TokenBackend, TokenCertificate, TokenError, TokenInfo, err,
+};
 
 /// The worker's file name, beside the helper's executable.
 pub const WORKER: &str = "keyseal-token-worker";
@@ -161,11 +163,20 @@ pub fn locate() -> Result<PathBuf, TokenError> {
 /// One line from the helper to the worker.
 #[derive(Serialize, Deserialize)]
 pub enum Request {
-    /// Loads the module and opens a session on its first token, waiting
-    /// up to `wait` for one.
-    Open {
+    /// Loads the module and lists its initialised tokens, waiting up to
+    /// `wait` for one.
+    Tokens {
         module: PathBuf,
         wait: Duration,
+    },
+    /// The certificates the token in `slot` of the loaded module shows
+    /// before login.
+    Shown {
+        slot: u64,
+    },
+    /// Opens a session on the token in `slot` of the loaded module.
+    Open {
+        slot: u64,
     },
     Certificates {
         with_private_key: bool,
@@ -194,6 +205,7 @@ pub enum Request {
 /// The worker's answer to a request, sent as `Result<Reply, String>`.
 #[derive(Serialize, Deserialize)]
 pub enum Reply {
+    Tokens(Vec<TokenInfo>),
     Opened {
         pin_pad: bool,
     },
@@ -234,9 +246,8 @@ pub struct WorkerToken {
 }
 
 impl WorkerToken {
-    /// Starts the worker at `worker` and opens the first token of `module`
-    /// in it, waiting up to `wait` for one.
-    pub fn open(worker: &Path, module: &Path, wait: Duration) -> Result<Self, TokenError> {
+    /// Starts the worker at `worker`.
+    pub fn start(worker: &Path) -> Result<Self, TokenError> {
         let mut child = Command::new(worker)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -249,21 +260,25 @@ impl WorkerToken {
             })?;
         let stdin = child.stdin.take().expect("stdin is piped");
         let stdout = child.stdout.take().expect("stdout is piped");
-        let mut token = Self {
+        Ok(Self {
             child: Some(child),
             stdin,
             stdout: RefCell::new(BufReader::new(stdout)),
             pin_pad: false,
-        };
-        let request = Request::Open {
+        })
+    }
+
+    /// Loads `module` in the worker and lists its initialised tokens,
+    /// waiting up to `wait` for one.
+    pub fn tokens(&self, module: &Path, wait: Duration) -> Result<Vec<TokenInfo>, TokenError> {
+        let request = Request::Tokens {
             module: module.to_owned(),
             wait,
         };
-        let Reply::Opened { pin_pad } = token.call(&request)? else {
-            return Err(TokenError(OUT_OF_TURN.into()));
-        };
-        token.pin_pad = pin_pad;
-        Ok(token)
+        match self.call(&request)? {
+            Reply::Tokens(tokens) => Ok(tokens),
+            _ => Err(TokenError(OUT_OF_TURN.into())),
+        }
     }
 
     fn call(&self, request: &Request) -> Result<Reply, TokenError> {
@@ -299,6 +314,23 @@ impl WorkerToken {
             Reply::Done => Ok(()),
             _ => Err(TokenError(OUT_OF_TURN.into())),
         }
+    }
+}
+
+impl Driver for WorkerToken {
+    fn shown(&self, slot: u64) -> Vec<TokenCertificate> {
+        match self.call(&Request::Shown { slot }) {
+            Ok(Reply::Certificates(certificates)) => certificates,
+            _ => Vec::new(),
+        }
+    }
+
+    fn open(mut self: Box<Self>, slot: u64) -> Result<Box<dyn TokenBackend>, TokenError> {
+        let Reply::Opened { pin_pad } = self.call(&Request::Open { slot })? else {
+            return Err(TokenError(OUT_OF_TURN.into()));
+        };
+        self.pin_pad = pin_pad;
+        Ok(self)
     }
 }
 
@@ -498,22 +530,26 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn refuses_unreadable_out_of_turn_or_oversized_replies() {
+        let listed = r#"echo '{"Ok":{"Tokens":[]}}'"#;
         let opened = r#"echo '{"Ok":{"Opened":{"pin_pad":false}}}'"#;
-        let open = |name: &str, replies: &[&str]| {
-            WorkerToken::open(
-                &fake_worker(name, replies),
-                Path::new("/usr/lib/libfake.so"),
-                Duration::ZERO,
-            )
+        let list = |name: &str, replies: &[&str]| -> Result<WorkerToken, TokenError> {
+            let worker = WorkerToken::start(&fake_worker(name, replies))?;
+            worker.tokens(Path::new("/usr/lib/libfake.so"), Duration::ZERO)?;
+            Ok(worker)
+        };
+        // A token opened after the listing, answering `replies` after that.
+        let open = |name: &str, replies: &[&str]| -> Result<Box<dyn TokenBackend>, TokenError> {
+            let replies = [&[listed, opened][..], replies].concat();
+            Box::new(list(name, &replies)?).open(0)
         };
         let error = |result: Result<WorkerToken, TokenError>| result.err().unwrap().0;
 
         assert!(
-            error(open("garbage", &["echo 'not json'"])).contains("unreadable"),
+            error(list("garbage", &["echo 'not json'"])).contains("unreadable"),
             "garbage"
         );
         assert_eq!(
-            error(open("turn", &[r#"echo '{"Ok":"Done"}'"#])),
+            error(list("turn", &[r#"echo '{"Ok":"Done"}'"#])),
             OUT_OF_TURN
         );
         let flood = format!(
@@ -521,23 +557,27 @@ mod tests {
             MAX_REPLY_BYTES + 1
         );
         assert!(
-            error(open("flood", &[&flood])).contains("too long"),
+            error(list("flood", &[&flood])).contains("too long"),
             "flood"
         );
-        assert!(error(open("silent", &[":"])).contains("stopped"), "silent");
+        assert!(error(list("silent", &[":"])).contains("stopped"), "silent");
         let refusal = format!(
             "echo '{}'",
             serde_json::json!({ "Err": crate::token::NO_TOKEN })
         );
-        assert_eq!(error(open("refusal", &[&refusal])), crate::token::NO_TOKEN);
+        assert_eq!(error(list("refusal", &[&refusal])), crate::token::NO_TOKEN);
 
-        let token = open("later", &[opened, r#"echo '{"Ok":"Done"}'"#]).unwrap();
+        assert_eq!(
+            Box::new(list("open", &[listed, r#"echo '{"Ok":"Done"}'"#]).unwrap())
+                .open(0)
+                .err()
+                .unwrap()
+                .0,
+            OUT_OF_TURN
+        );
+        let token = open("later", &[r#"echo '{"Ok":"Done"}'"#]).unwrap();
         assert_eq!(token.certificates(false).err().unwrap().0, OUT_OF_TURN);
-        let token = open(
-            "signature",
-            &[opened, r#"echo '{"Ok":{"Signatures":[[1]]}}'"#],
-        )
-        .unwrap();
+        let token = open("signature", &[r#"echo '{"Ok":{"Signatures":[[1]]}}'"#]).unwrap();
         assert_eq!(
             token
                 .login(Zeroizing::new("1234".into()))
@@ -549,7 +589,6 @@ mod tests {
         let token = open(
             "refused",
             &[
-                opened,
                 r#"echo '{"Ok":"WrongPin"}'"#,
                 r#"echo '{"Ok":"PinLocked"}'"#,
                 r#"echo '{"Err":"The token refused the PIN"}'"#,

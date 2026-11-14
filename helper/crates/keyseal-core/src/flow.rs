@@ -29,7 +29,7 @@ use crate::document;
 #[cfg(target_os = "macos")]
 use crate::keychain::Keychain;
 use crate::manifest::{self, Branding};
-use crate::modules::{self, Attempt};
+use crate::modules::{self, Attempt, Source};
 use crate::origin::Origin;
 use crate::protocol::{
     self, DocumentEntry, JobClient, JobDescription, KeyUsage, Kind, PreparedSignature,
@@ -37,11 +37,16 @@ use crate::protocol::{
 };
 #[cfg(any(windows, target_os = "macos"))]
 use crate::store::Store;
-use crate::token::{self, LoginError, PinWarning, TokenBackend, TokenCertificate, TokenError};
+use crate::token::{
+    self, CertificateSummary, Driver, LoginError, PinWarning, TokenBackend, TokenCertificate,
+    TokenError, TokenInfo, TokenSummary,
+};
 use crate::trust::TrustStore;
 
 const CANCELLED: &str = "Signing cancelled.";
 const ENROLMENT_CANCELLED: &str = "Enrolment cancelled.";
+/// The error of a run that can't ask which token to use.
+pub const SEVERAL_TOKENS: &str = "More than one token is plugged in, and KeySeal can't ask which one to use without its windows. Unplug the tokens you aren't signing with, then try again.";
 /// The error for a panic in the job; the front end logs the panic itself.
 pub const INTERNAL_ERROR: &str = "KeySeal stopped because of a problem in KeySeal itself. Start again from the website. If it happens again, contact your support team.";
 
@@ -122,6 +127,8 @@ pub struct JobView<'a> {
 
 pub struct PinPrompt<'a> {
     pub job: &'a JobView<'a>,
+    /// The chosen token's label, when more than one was plugged in.
+    pub token: Option<String>,
     /// Subject of the signing certificate, when known before login.
     pub certificate: Option<String>,
     /// Each document's messageDigest as lowercase hex, in the order of
@@ -174,8 +181,20 @@ pub struct Progress<'a> {
 pub trait Ui {
     /// First contact with `origin` (section 5): show the origin only.
     fn confirm_origin(&mut self, origin: &Origin) -> bool;
-    /// Several certificates fit the job; the index of the chosen subject.
-    fn choose_certificate(&mut self, job: &JobView, subjects: &[String]) -> Option<usize>;
+    /// Several certificates fit the job; the index of the chosen one.
+    fn choose_certificate(
+        &mut self,
+        job: &JobView,
+        certificates: &[CertificateSummary],
+    ) -> Option<usize>;
+    /// Several tokens are plugged in and the job doesn't settle which; the
+    /// index of the chosen one.
+    fn choose_token(&mut self, job: &JobView, tokens: &[TokenSummary]) -> Option<usize>;
+    /// Whether [`choose_token`](Self::choose_token) can ask. A headless run
+    /// can't, and fails the job instead.
+    fn can_choose_token(&self) -> bool {
+        true
+    }
     /// The PIN, or `None` if the user cancels.
     fn prompt_pin(&mut self, prompt: &PinPrompt) -> Option<Zeroizing<String>>;
     /// Whether a wrong PIN is asked for again. Headless runs have one PIN,
@@ -216,9 +235,8 @@ pub enum Outcome {
 /// the job.
 type BeforeStore<'a> = &'a mut dyn FnMut() -> Result<(), Failure>;
 
-/// Opens where the job's key is.
-/// Opens where the key is, for a job that asks for `KeyUsage`.
-type Open<'a> = &'a dyn Fn(KeyUsage, BeforeStore) -> Result<Backend, Failure>;
+/// Finds where the key is, for a job that asks for `KeyUsage`.
+type Open<'a> = &'a dyn Fn(KeyUsage, BeforeStore) -> Result<Found, Failure>;
 
 /// Runs the job in `link`. Any failure is shown through `ui` unless the
 /// user cancelled, reported to the server once the job is claimed, and
@@ -347,7 +365,12 @@ fn sign(
     open: Open,
 ) -> Result<Outcome, Failure> {
     show_step(ui, view, Step::OpeningToken, CANCELLED)?;
-    let backend = open(key_usage(job), &mut || Ok(()))?;
+    let mut chosen = None;
+    let backend = open(key_usage(job), &mut || Ok(()))?.open(|tokens| {
+        let index = choose_token(ui, view, job, tokens, CANCELLED)?;
+        chosen = Some(TokenSummary::of(&tokens[index], key_usage(job)).label);
+        Ok(index)
+    })?;
     let token = backend.token();
     // Cancelling once the token is open logs out, as declining the digests
     // does.
@@ -356,7 +379,7 @@ fn sign(
     let mut certificates = signing_certificates(token, job, false)?;
     let login_first = match &backend {
         Backend::Pkcs11(_) if certificates.is_empty() => {
-            log_in(ui, token, view, None, None, CANCELLED)?;
+            log_in(ui, token, view, chosen.clone(), None, None, CANCELLED)?;
             certificates = signing_certificates(token, job, true)?;
             true
         }
@@ -373,7 +396,15 @@ fn sign(
     let subject = token::subject(&certificate.der);
     match &backend {
         Backend::Pkcs11(_) if !login_first => {
-            log_in(ui, token, view, Some(subject), Some(digests), CANCELLED)?;
+            log_in(
+                ui,
+                token,
+                view,
+                chosen,
+                Some(subject),
+                Some(digests),
+                CANCELLED,
+            )?;
         }
         // The login-first path, and the certificate store before the
         // system's or vendor's PIN dialog.
@@ -421,17 +452,23 @@ fn enrol(
     open: Open,
 ) -> Result<Outcome, Failure> {
     show_step(ui, view, Step::OpeningToken, ENROLMENT_CANCELLED)?;
-    let backend = open(key_usage(job), &mut || {
+    let found = open(key_usage(job), &mut || {
         if ui.confirm_enrol(view) {
             Ok(())
         } else {
             Err(Failure::cancelled(ENROLMENT_CANCELLED))
         }
     })?;
+    let mut chosen = None;
+    let backend = found.open(|tokens| {
+        let index = choose_token(ui, view, job, tokens, ENROLMENT_CANCELLED)?;
+        chosen = Some(TokenSummary::of(&tokens[index], key_usage(job)).label);
+        Ok(index)
+    })?;
     let token = backend.token();
     let certificate = match &backend {
         Backend::Pkcs11(_) => {
-            log_in(ui, token, view, None, None, ENROLMENT_CANCELLED)?;
+            log_in(ui, token, view, chosen, None, None, ENROLMENT_CANCELLED)?;
             choose(
                 ui,
                 view,
@@ -494,12 +531,14 @@ fn log_in(
     ui: &mut dyn Ui,
     token: &dyn TokenBackend,
     job: &JobView,
+    token_label: Option<String>,
     certificate: Option<String>,
     digests: Option<Vec<String>>,
     cancelled: &str,
 ) -> Result<(), Failure> {
     let mut prompt = PinPrompt {
         job,
+        token: token_label,
         certificate,
         digests,
         pin_pad: token.pin_pad(),
@@ -565,23 +604,107 @@ impl Backend {
 pub(crate) const NO_STORE_CERTIFICATE: &str =
     "The certificate store holds no signing certificate on a token or smart card.";
 
-/// Opens the first of [`modules::attempts`] that reaches a token; the
-/// certificate store counts only when it holds a certificate with `usage`.
-/// `before_store` runs before the certificate store is read; `seen` hears
-/// how each attempt went.
+/// Where the job's key may be: tokens the PKCS#11 drivers reached, one of
+/// which is then opened, or the certificate store.
+pub enum Found {
+    Tokens(Tokens),
+    Backend(Backend),
+}
+
+/// Tokens the PKCS#11 drivers reached, none opened yet.
+pub struct Tokens {
+    drivers: Vec<Box<dyn Driver>>,
+    tokens: Vec<TokenInfo>,
+    /// The index in `drivers` of each token's driver.
+    driver_of: Vec<usize>,
+}
+
+impl Tokens {
+    /// Adds `driver` and its `tokens`, leaving out a token an earlier driver
+    /// listed: one with the same serial number, which is one token two
+    /// drivers reach.
+    fn add(&mut self, driver: Box<dyn Driver>, tokens: Vec<TokenInfo>) {
+        let earlier: Vec<String> = self
+            .tokens
+            .iter()
+            .map(|token| token.serial.trim().to_owned())
+            .filter(|serial| !serial.is_empty())
+            .collect();
+        let new: Vec<TokenInfo> = tokens
+            .into_iter()
+            .filter(|token| !earlier.iter().any(|serial| serial == token.serial.trim()))
+            .collect();
+        if new.is_empty() {
+            return;
+        }
+        for token in new {
+            self.tokens.push(token);
+            self.driver_of.push(self.drivers.len());
+        }
+        self.drivers.push(driver);
+    }
+}
+
+impl Found {
+    /// The backend: the certificate store, or the token `choose` picks when
+    /// there are several, opened.
+    pub fn open(
+        self,
+        choose: impl FnOnce(&[TokenInfo]) -> Result<usize, Failure>,
+    ) -> Result<Backend, Failure> {
+        let mut found = match self {
+            Self::Tokens(found) => found,
+            Self::Backend(backend) => return Ok(backend),
+        };
+        let index = match found.tokens.len() {
+            1 => 0,
+            _ => {
+                // Read only now: a job with one token talks to it as it did
+                // before there was a choice.
+                for (token, &driver) in found.tokens.iter_mut().zip(&found.driver_of) {
+                    token.certificates = found.drivers[driver].shown(token.slot);
+                }
+                choose(&found.tokens)?
+            }
+        };
+        let slot = found.tokens[index].slot;
+        let driver = found
+            .drivers
+            .into_iter()
+            .nth(found.driver_of[index])
+            .expect("every token has its driver");
+        Ok(Backend::Pkcs11(driver.open(slot)?))
+    }
+}
+
+/// What one attempt reached.
+enum Reached {
+    Tokens(Box<dyn Driver>, Vec<TokenInfo>),
+    /// The certificate store.
+    #[cfg(any(windows, target_os = "macos", test))]
+    Backend(Backend),
+}
+
+/// Finds the tokens [`modules::attempts`] reach, as [`open_first`] says;
+/// the certificate store counts only when it holds a certificate with
+/// `usage`. `before_store` runs before the certificate store is read;
+/// `seen` hears how each attempt went.
 pub fn open_backend(
     usage: KeyUsage,
     before_store: BeforeStore,
     seen: &mut dyn FnMut(&Attempt, Result<(), &str>),
-) -> Result<Backend, Failure> {
+) -> Result<Found, Failure> {
     let open = |attempt: &Attempt, wait| open_attempt(attempt, wait, usage);
     open_first(&modules::attempts()?, &open, before_store, seen)
 }
 
 #[cfg_attr(not(any(windows, target_os = "macos")), allow(unused_variables))]
-fn open_attempt(attempt: &Attempt, wait: Duration, usage: KeyUsage) -> Result<Backend, String> {
+fn open_attempt(attempt: &Attempt, wait: Duration, usage: KeyUsage) -> Result<Reached, String> {
     match attempt {
-        Attempt::Module(candidate) => Ok(Backend::Pkcs11(token::open(&candidate.path, wait)?)),
+        Attempt::Module(candidate) => {
+            let (driver, tokens) = token::tokens(&candidate.path, wait)?;
+            Ok(Reached::Tokens(driver, tokens))
+        }
         #[cfg(any(windows, target_os = "macos"))]
         Attempt::Store => {
             #[cfg(windows)]
@@ -591,7 +714,7 @@ fn open_attempt(attempt: &Attempt, wait: Duration, usage: KeyUsage) -> Result<Ba
             if store.certificates(false)?.is_empty() {
                 return Err(NO_STORE_CERTIFICATE.into());
             }
-            Ok(Backend::Store(Box::new(store)))
+            Ok(Reached::Backend(Backend::Store(Box::new(store))))
         }
         #[cfg(not(any(windows, target_os = "macos")))]
         Attempt::Store => Err(NO_STORE_CERTIFICATE.into()),
@@ -600,40 +723,59 @@ fn open_attempt(attempt: &Attempt, wait: Duration, usage: KeyUsage) -> Result<Ba
 
 /// Tries `attempts` in order and moves on when one fails: a module that
 /// doesn't load or sees no token, or a store without a signing
-/// certificate. Only the driver of a plugged-in token gets
+/// certificate. The drivers of plugged-in tokens are all listed, every
+/// token of each, since the signer may have plugged in several. Any other
+/// attempt that reaches a token ends the search with every token of it:
+/// the configured module because the signer chose that driver, and the
+/// rest because drivers can hang or crash, so they aren't loaded once a
+/// token is found. Only the driver of a plugged-in token gets
 /// [`token::SLOT_WAIT`] for its token to appear; the others are looked at
 /// once. When all fail, the first failure that isn't "nothing there"; else
 /// no token when a module loaded, else no driver.
 fn open_first(
     attempts: &[Attempt],
-    open: &dyn Fn(&Attempt, Duration) -> Result<Backend, String>,
+    open: &dyn Fn(&Attempt, Duration) -> Result<Reached, String>,
     before_store: BeforeStore,
     seen: &mut dyn FnMut(&Attempt, Result<(), &str>),
-) -> Result<Backend, Failure> {
+) -> Result<Found, Failure> {
     let mut failure = None;
     let mut module_found = false;
+    let mut found = Tokens {
+        drivers: Vec::new(),
+        tokens: Vec::new(),
+        driver_of: Vec::new(),
+    };
     for attempt in attempts {
-        if *attempt == Attempt::Store {
+        let source = match attempt {
+            Attempt::Module(candidate) => Some(&candidate.source),
+            Attempt::Store => None,
+        };
+        let plugged_in = matches!(source, Some(Source::UsbMatch(_)));
+        if !plugged_in && !found.tokens.is_empty() {
+            break;
+        }
+        if source.is_none() {
             before_store()?;
         } else {
             module_found = true;
         }
-        let plugged_in = matches!(
-            attempt,
-            Attempt::Module(modules::Candidate {
-                source: modules::Source::UsbMatch(_),
-                ..
-            })
-        );
         let wait = if plugged_in {
             token::SLOT_WAIT
         } else {
             Duration::ZERO
         };
         match open(attempt, wait) {
-            Ok(backend) => {
+            #[cfg(any(windows, target_os = "macos", test))]
+            Ok(Reached::Backend(backend)) => {
                 seen(attempt, Ok(()));
-                return Ok(backend);
+                return Ok(Found::Backend(backend));
+            }
+            Ok(Reached::Tokens(driver, tokens)) => {
+                seen(attempt, Ok(()));
+                found.add(driver, tokens);
+                if !plugged_in {
+                    break;
+                }
             }
             Err(message) => {
                 seen(attempt, Err(&message));
@@ -646,6 +788,9 @@ fn open_first(
             }
         }
     }
+    if !found.tokens.is_empty() {
+        return Ok(Found::Tokens(found));
+    }
     Err(Failure::from(failure.unwrap_or_else(|| {
         if module_found {
             token::NO_TOKEN.into()
@@ -653,6 +798,40 @@ fn open_first(
             format!("{} Install your token's driver.", modules::NO_DRIVER)
         }
     })))
+}
+
+/// The token to use among several: the only one showing the certificate
+/// the job expects, else the signer's choice.
+fn choose_token(
+    ui: &mut dyn Ui,
+    view: &JobView,
+    job: &JobDescription,
+    tokens: &[TokenInfo],
+    cancelled: &str,
+) -> Result<usize, Failure> {
+    if let Some(expected) = &job.expected_certificate_sha256 {
+        let holders: Vec<usize> = (0..tokens.len())
+            .filter(|&index| {
+                tokens[index]
+                    .certificates
+                    .iter()
+                    .any(|certificate| &certificate.sha256 == expected)
+            })
+            .collect();
+        if let [index] = holders[..] {
+            return Ok(index);
+        }
+    }
+    if !ui.can_choose_token() {
+        return Err(SEVERAL_TOKENS.into());
+    }
+    let summaries: Vec<TokenSummary> = tokens
+        .iter()
+        .map(|token| TokenSummary::of(token, key_usage(job)))
+        .collect();
+    ui.choose_token(view, &summaries)
+        .filter(|&index| index < tokens.len())
+        .ok_or_else(|| Failure::cancelled(cancelled))
 }
 
 /// The key usage the job's certificate policy asks for, nonRepudiation
@@ -727,12 +906,12 @@ fn choose(
     if certificates.len() == 1 && !always_ask {
         return Ok(certificates.remove(0));
     }
-    let subjects: Vec<String> = certificates
+    let summaries: Vec<CertificateSummary> = certificates
         .iter()
-        .map(|c| token::subject(&c.der))
+        .map(|c| CertificateSummary::of(&c.der))
         .collect();
     let index = ui
-        .choose_certificate(view, &subjects)
+        .choose_certificate(view, &summaries)
         .filter(|&index| index < certificates.len())
         .ok_or_else(|| Failure::cancelled(CANCELLED))?;
     Ok(certificates.remove(index))
@@ -847,6 +1026,7 @@ mod tests {
     enum Stage {
         Trust,
         Choose,
+        Token,
         Pin,
         Confirm,
         Enrol,
@@ -870,6 +1050,12 @@ mod tests {
         retries_pin: bool,
         /// When the last error showed.
         error_shown: Option<std::time::Instant>,
+        /// The tokens each token choice listed.
+        token_choices: Vec<Vec<TokenSummary>>,
+        /// The token each choice picks.
+        token_answer: usize,
+        /// The token label each PIN prompt showed.
+        pin_tokens: Vec<Option<String>>,
     }
 
     impl CancellingUi {
@@ -883,6 +1069,9 @@ mod tests {
                 pin_states: Vec::new(),
                 retries_pin: true,
                 error_shown: None,
+                token_choices: Vec::new(),
+                token_answer: 0,
+                pin_tokens: Vec::new(),
             }
         }
     }
@@ -891,10 +1080,18 @@ mod tests {
         fn confirm_origin(&mut self, _: &Origin) -> bool {
             self.cancel_at != Stage::Trust
         }
-        fn choose_certificate(&mut self, _: &JobView, _: &[String]) -> Option<usize> {
+        fn choose_certificate(&mut self, _: &JobView, _: &[CertificateSummary]) -> Option<usize> {
             (self.cancel_at != Stage::Choose).then_some(0)
         }
+        fn choose_token(&mut self, _: &JobView, tokens: &[TokenSummary]) -> Option<usize> {
+            self.token_choices.push(tokens.to_vec());
+            (self.cancel_at != Stage::Token).then_some(self.token_answer)
+        }
+        fn can_choose_token(&self) -> bool {
+            self.retries_pin
+        }
         fn prompt_pin(&mut self, prompt: &PinPrompt) -> Option<Zeroizing<String>> {
+            self.pin_tokens.push(prompt.token.clone());
             self.pins.push(prompt.digests.clone());
             self.pin_states.push((prompt.pin_warning, prompt.wrong_pin));
             (self.cancel_at != Stage::Pin || self.pins.len() <= self.pins_to_answer)
@@ -1002,6 +1199,51 @@ mod tests {
             Ok(data.iter().map(|_| vec![1]).collect())
         }
         fn close(&self) {}
+    }
+
+    /// A driver whose tokens are `tokens`, by slot.
+    #[derive(Default)]
+    struct FakeDriver {
+        tokens: Vec<Option<FakeToken>>,
+        /// The slots whose certificates were read, shared with the test.
+        shown: Arc<Mutex<Vec<u64>>>,
+    }
+
+    impl Driver for FakeDriver {
+        fn shown(&self, slot: u64) -> Vec<TokenCertificate> {
+            self.shown.lock().unwrap().push(slot);
+            self.tokens
+                .get(slot as usize)
+                .and_then(Option::as_ref)
+                .and_then(|token| token.certificates(false).ok())
+                .unwrap_or_default()
+        }
+        fn open(mut self: Box<Self>, slot: u64) -> Result<Box<dyn TokenBackend>, TokenError> {
+            let token = self.tokens.get_mut(slot as usize).and_then(Option::take);
+            Ok(Box::new(
+                token.unwrap_or_else(|| FakeToken::new(vec![RSA], vec![])),
+            ))
+        }
+    }
+
+    /// A token in `slot` with the serial number `serial`, showing
+    /// `certificates` before login.
+    fn info(slot: u64, serial: &str, certificates: &[&[u8]]) -> TokenInfo {
+        TokenInfo {
+            slot,
+            label: format!("Token {slot}"),
+            manufacturer: "SoftHSM project".into(),
+            model: "SoftHSM v2".into(),
+            serial: serial.into(),
+            certificates: certificates
+                .iter()
+                .map(|der| TokenCertificate {
+                    der: der.to_vec(),
+                    sha256: token::sha256_hex(der),
+                    id: None,
+                })
+                .collect(),
+        }
     }
 
     /// The prepared PDF of document `index`, whose `/ByteRange` leaves out
@@ -1338,10 +1580,10 @@ mod tests {
             let open = |_: KeyUsage, before_store: BeforeStore| {
                 let token = Box::new(FakeToken::new(public.clone(), private.clone()));
                 if !in_store {
-                    return Ok(Backend::Pkcs11(token));
+                    return Ok(Found::Backend(Backend::Pkcs11(token)));
                 }
                 before_store()?;
-                Ok(Backend::Store(token))
+                Ok(Found::Backend(Backend::Store(token)))
             };
             let failure =
                 run_with(&format!("keyseal://{kind}?job={job}"), &mut ui, &env, &open).unwrap_err();
@@ -1405,10 +1647,10 @@ mod tests {
             .collect();
             let mut ui = CancellingUi::new(Stage::Enrol);
             let open = |_: KeyUsage, _: BeforeStore| {
-                Ok(Backend::Pkcs11(Box::new(FakeToken::new(
+                Ok(Found::Backend(Backend::Pkcs11(Box::new(FakeToken::new(
                     public.clone(),
                     private.clone(),
-                ))))
+                )))))
             };
             let result = run_with(&format!("keyseal://{kind}?job={job}"), &mut ui, &env, &open);
             let _ = std::fs::remove_dir_all(&config_dir);
@@ -1444,8 +1686,11 @@ mod tests {
                 Attempt::Module(candidate) if candidate.path.ends_with("empty") => {
                     Err(token::NO_TOKEN.to_owned())
                 }
-                Attempt::Module(_) => Ok(Backend::Pkcs11(token())),
-                Attempt::Store => Ok(Backend::Store(token())),
+                Attempt::Module(_) => Ok(Reached::Tokens(
+                    Box::new(FakeDriver::default()),
+                    vec![info(0, "", &[])],
+                )),
+                Attempt::Store => Ok(Reached::Backend(Backend::Store(token()))),
             }
         };
         let run = |attempts: &[Attempt], allow_store: bool| {
@@ -1471,7 +1716,7 @@ mod tests {
         };
 
         let (result, seen) = run(&[broken.clone(), empty.clone(), Attempt::Store], true);
-        assert!(matches!(result, Ok(Backend::Store(_))));
+        assert!(matches!(result, Ok(Found::Backend(Backend::Store(_)))));
         assert_eq!(
             seen,
             [
@@ -1486,7 +1731,7 @@ mod tests {
         );
 
         let (result, seen) = run(&[empty.clone(), working, Attempt::Store], true);
-        assert!(matches!(result, Ok(Backend::Pkcs11(_))));
+        assert!(matches!(result, Ok(Found::Tokens(_))));
         let store = Attempt::Store.to_string();
         assert!(
             !seen
@@ -1603,10 +1848,10 @@ mod tests {
         )
         .collect();
         let open = |_: KeyUsage, _: BeforeStore| {
-            Ok(Backend::Pkcs11(Box::new(FakeToken::new(
+            Ok(Found::Backend(Backend::Pkcs11(Box::new(FakeToken::new(
                 vec![RSA, P256],
                 vec![],
-            ))))
+            )))))
         };
         let failure =
             run_with(&format!("keyseal://sign?job={link}"), &mut ui, &env, &open).unwrap_err();
@@ -1819,9 +2064,9 @@ mod tests {
         let signed = token.signed.clone();
         let token = std::cell::RefCell::new(Some(token));
         let open = |_: KeyUsage, _: BeforeStore| {
-            Ok(Backend::Pkcs11(Box::new(
+            Ok(Found::Backend(Backend::Pkcs11(Box::new(
                 token.borrow_mut().take().expect("one token per job"),
-            )))
+            ))))
         };
         let result = run_with(&format!("keyseal://sign?job={link}"), &mut ui, &env, &open);
         let _ = std::fs::remove_dir_all(&config_dir);
@@ -2053,7 +2298,7 @@ mod tests {
         )
         .collect();
         let mut ui = CancellingUi::new(Stage::Enrol);
-        let open = |_: KeyUsage, _: BeforeStore| -> Result<Backend, Failure> { panic!("broken") };
+        let open = |_: KeyUsage, _: BeforeStore| -> Result<Found, Failure> { panic!("broken") };
         let result = run_with(&format!("keyseal://sign?job={link}"), &mut ui, &env, &open);
         let _ = std::fs::remove_dir_all(&config_dir);
         assert_eq!(result.unwrap_err().message, INTERNAL_ERROR);
@@ -2085,6 +2330,212 @@ mod tests {
             assert_eq!(ui.errors, std::slice::from_ref(&expired));
             assert!(signed.is_empty());
             assert_eq!(failures(&served), 1);
+        }
+    }
+
+    /// The drivers of plugged-in tokens are all listed; any other driver
+    /// that reaches a token ends the search, with every token of it, and
+    /// the configured module comes first. A token two drivers reach is
+    /// listed once, through the earlier one.
+    #[test]
+    fn collects_tokens_from_plugged_in_drivers_and_the_first_other() {
+        let module = |name: &str, source| {
+            Attempt::Module(modules::Candidate {
+                path: name.into(),
+                source,
+            })
+        };
+        let opened = std::cell::RefCell::new(Vec::new());
+        let open = |attempt: &Attempt, _: Duration| {
+            opened.borrow_mut().push(attempt.to_string());
+            let serials: &[&str] = match attempt {
+                Attempt::Module(candidate) => match candidate.path.to_str().unwrap() {
+                    "/configured" => &["A"],
+                    "/plugged-in" => &["A", "B"],
+                    "/other-plugged-in" => &[" A ", "", ""],
+                    "/two" => &["C", "D"],
+                    "/three" => &["E"],
+                    _ => &[],
+                },
+                Attempt::Store => &["store"],
+            };
+            if serials.is_empty() {
+                return Err(token::NO_TOKEN.to_owned());
+            }
+            let tokens = (0..serials.len())
+                .map(|slot| info(slot as u64, serials[slot], &[]))
+                .collect();
+            Ok(Reached::Tokens(Box::new(FakeDriver::default()), tokens))
+        };
+        let found = |attempts: &[Attempt]| {
+            opened.borrow_mut().clear();
+            match open_first(attempts, &open, &mut || Ok(()), &mut |_, _| {}) {
+                Ok(Found::Tokens(found)) => {
+                    let serials: Vec<String> =
+                        found.tokens.iter().map(|t| t.serial.clone()).collect();
+                    (serials, found.driver_of, opened.borrow().len())
+                }
+                _ => panic!("no tokens"),
+            }
+        };
+        let plugged_in = |name: &str| module(name, modules::Source::UsbMatch("Token".into()));
+        let known = |name: &str| module(name, modules::Source::Known);
+
+        let (serials, drivers, tried) = found(&[
+            module("/configured", modules::Source::Config),
+            plugged_in("/plugged-in"),
+            known("/two"),
+            Attempt::Store,
+        ]);
+        assert_eq!(serials, ["A"]);
+        assert_eq!(drivers, [0]);
+        assert_eq!(tried, 1);
+
+        let (serials, drivers, tried) = found(&[
+            module("/empty", modules::Source::Config),
+            plugged_in("/plugged-in"),
+            plugged_in("/empty"),
+            plugged_in("/other-plugged-in"),
+            known("/two"),
+            Attempt::Store,
+        ]);
+        assert_eq!(serials, ["A", "B", "", ""]);
+        assert_eq!(drivers, [0, 0, 1, 1]);
+        assert_eq!(tried, 4);
+
+        let (serials, drivers, tried) = found(&[
+            known("/empty"),
+            known("/two"),
+            known("/three"),
+            Attempt::Store,
+        ]);
+        assert_eq!(serials, ["C", "D"]);
+        assert_eq!(drivers, [0, 0]);
+        assert_eq!(tried, 2);
+    }
+
+    /// Among several tokens, the only one showing the expected certificate
+    /// is used without asking; otherwise the signer chooses, and a run that
+    /// can't ask fails with a plain message.
+    #[test]
+    fn chooses_a_token_by_the_expected_certificate_or_asks() {
+        let origin =
+            Origin::of_url(&url::Url::parse("https://dash.example.org").unwrap(), false).unwrap();
+        let view = JobView {
+            origin: &origin,
+            branding: None,
+            kind: Kind::Sign,
+            title: "Lease",
+            signer: "Asha Rao",
+            documents: &[],
+        };
+        let job = |expected: Option<&[u8]>| {
+            serde_json::from_value::<JobDescription>(json!({
+                "kind": "enrol",
+                "title": "Enrolment",
+                "signer": "Asha Rao",
+                "claimNonce": NONCE,
+                "expectedCertificateSha256": expected.map(token::sha256_hex),
+            }))
+            .unwrap()
+        };
+        let tokens = [
+            info(0, "A", &[RSA]),
+            info(1, "B", &[P256, RSA]),
+            info(2, "C", &[]),
+        ];
+        let choose = |expected: Option<&[u8]>, ui: &mut CancellingUi| {
+            choose_token(ui, &view, &job(expected), &tokens, CANCELLED)
+        };
+
+        let mut ui = CancellingUi::new(Stage::Enrol);
+        assert_eq!(choose(Some(P256), &mut ui).unwrap(), 1);
+        assert!(ui.token_choices.is_empty());
+
+        ui.token_answer = 2;
+        for expected in [Some(RSA), Some(EXPIRED), None] {
+            assert_eq!(choose(expected, &mut ui).unwrap(), 2);
+        }
+        assert_eq!(ui.token_choices.len(), 3);
+        let listed = &ui.token_choices[0];
+        assert_eq!(listed[0].label, "Token 0");
+        assert_eq!(listed[0].model, "SoftHSM project SoftHSM v2");
+        assert_eq!(listed[0].serial, "A");
+        assert_eq!(
+            listed[1].names,
+            [
+                "signr test non-repudiation",
+                "signr test RSA non-repudiation"
+            ]
+        );
+        assert!(listed[2].names.is_empty());
+
+        let mut ui = CancellingUi::new(Stage::Token);
+        let failure = choose(None, &mut ui).unwrap_err();
+        assert!(failure.cancelled);
+
+        let mut headless = CancellingUi::new(Stage::Enrol);
+        headless.retries_pin = false;
+        let failure = choose(None, &mut headless).unwrap_err();
+        assert!(!failure.cancelled);
+        assert_eq!(failure.message, SEVERAL_TOKENS);
+        assert_eq!(choose(Some(P256), &mut headless).unwrap(), 1);
+    }
+
+    /// A sign job with two tokens asks which to use before the PIN, signs
+    /// with the chosen one, and names it in the PIN prompt; with one token
+    /// nothing is asked.
+    #[test]
+    fn signs_with_the_token_the_signer_chooses() {
+        for (count, answer) in [(2, 1), (1, 0)] {
+            let served = serve_documents("sign", serde_json::Value::Null, 1, None);
+            let tokens: Vec<FakeToken> = (0..count)
+                .map(|_| FakeToken::new(vec![RSA], vec![]))
+                .collect();
+            let signed: Vec<_> = tokens.iter().map(|token| token.signed.clone()).collect();
+            let shown = Arc::<Mutex<Vec<u64>>>::default();
+            let driver = std::cell::RefCell::new(Some(FakeDriver {
+                tokens: tokens.into_iter().map(Some).collect(),
+                shown: shown.clone(),
+            }));
+            let open = |_: KeyUsage, _: BeforeStore| {
+                Ok(Found::Tokens(Tokens {
+                    drivers: vec![Box::new(driver.borrow_mut().take().unwrap())],
+                    tokens: (0..count).map(|slot| info(slot, "", &[RSA])).collect(),
+                    driver_of: vec![0; count as usize],
+                }))
+            };
+            let config_dir =
+                std::env::temp_dir().join(format!("keyseal-tokens-{}", std::process::id()));
+            let env = Environment {
+                allow_insecure: true,
+                config_dir: config_dir.clone(),
+            };
+            let link: String = url::form_urlencoded::byte_serialize(
+                format!("{}/api/keyseal/v1/jobs/{TOKEN}", served.origin).as_bytes(),
+            )
+            .collect();
+            let mut ui = CancellingUi::new(Stage::Enrol);
+            ui.token_answer = answer;
+            let result = run_with(&format!("keyseal://sign?job={link}"), &mut ui, &env, &open);
+            let _ = std::fs::remove_dir_all(&config_dir);
+            assert_eq!(result.unwrap(), Outcome::Signed);
+            let signed: Vec<Vec<usize>> = signed
+                .iter()
+                .map(|signed| signed.lock().unwrap().clone())
+                .collect();
+            if count == 2 {
+                assert_eq!(ui.token_choices.len(), 1);
+                assert_eq!(signed, [vec![], vec![1]]);
+                assert_eq!(ui.pin_tokens, [Some("Token 1".to_owned())]);
+                assert_eq!(*shown.lock().unwrap(), [0, 1]);
+            } else {
+                assert!(ui.token_choices.is_empty());
+                assert_eq!(signed, [vec![1]]);
+                assert_eq!(ui.pin_tokens, [None]);
+                // One token is opened without being read first.
+                assert!(shown.lock().unwrap().is_empty());
+            }
         }
     }
 }

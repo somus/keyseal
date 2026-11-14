@@ -138,7 +138,8 @@ KeySeal shows who is asking, the document and the name it signs as. The window c
 - **Document** is the document's title, or for several documents, how many there are and each one's title. You sign them all with one PIN.
 - **Signing as** is the name the site gave for the signer.
 - **Show technical details** shows the certificate KeySeal will use and each document's fingerprint, if you or your support team want to check them.
-- If your token holds more than one certificate, KeySeal asks you to choose one first.
+- If more than one token is plugged in, KeySeal first asks which one to use, showing each token's name, model and serial number and the names on its certificates. When the website has said which certificate to use, KeySeal picks the token holding it without asking.
+- If your token holds more than one certificate, KeySeal asks you to choose one first. Under each name it shows who issued the certificate, until when it is valid and the last digits of its serial number, so after a renewal you can pick the new one.
 
 Type your token's PIN in **Token PIN** and click **Sign**. KeySeal signs, sends the signature to the site and closes. Go back to the website, which shows the result.
 

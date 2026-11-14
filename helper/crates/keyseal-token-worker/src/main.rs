@@ -24,7 +24,7 @@ fn main() -> ExitCode {
 
 fn serve() -> io::Result<()> {
     let (mut input, mut output) = protocol_pipes()?;
-    let mut token = None;
+    let (mut module, mut token) = (None, None);
     // Requests are read into this buffer only, zeroised after each one: a
     // login request holds the PIN. Large enough that it never reallocates
     // for a login line.
@@ -38,7 +38,7 @@ fn serve() -> io::Result<()> {
         let close = matches!(request, Ok(Request::Close));
         let reply = match request {
             Ok(Request::Close) => Ok(Reply::Done),
-            Ok(request) => handle(&mut token, request),
+            Ok(request) => handle(&mut module, &mut token, request),
             Err(e) => Err(format!("The token worker couldn't read a request: {e}")),
         };
         let mut json = serde_json::to_vec(&reply)?;
@@ -50,14 +50,37 @@ fn serve() -> io::Result<()> {
     }
 }
 
-fn handle(token: &mut Option<Token>, request: Request) -> Result<Reply, String> {
-    if let Request::Open { module, wait } = request {
-        let opened = Module::load(&module)?.open(wait)?;
-        let reply = Reply::Opened {
-            pin_pad: opened.pin_pad,
-        };
-        *token = Some(opened);
-        return Ok(reply);
+const NO_DRIVER: &str = "No token driver is loaded in the worker.";
+
+fn handle(
+    module: &mut Option<Module>,
+    token: &mut Option<Token>,
+    request: Request,
+) -> Result<Reply, String> {
+    match request {
+        Request::Tokens { module: path, wait } => {
+            let loaded = Module::load(&path)?;
+            let tokens = loaded.tokens(wait)?;
+            *module = Some(loaded);
+            return Ok(Reply::Tokens(tokens));
+        }
+        Request::Shown { slot } => {
+            let shown = module
+                .as_ref()
+                .ok_or(NO_DRIVER)?
+                .open(slot)?
+                .certificates(false)?;
+            return Ok(Reply::Certificates(shown));
+        }
+        Request::Open { slot } => {
+            let opened = module.as_ref().ok_or(NO_DRIVER)?.open(slot)?;
+            let reply = Reply::Opened {
+                pin_pad: opened.pin_pad,
+            };
+            *token = Some(opened);
+            return Ok(reply);
+        }
+        _ => {}
     }
     let token = token.as_ref().ok_or("No token is open in the worker.")?;
     match request {
@@ -87,7 +110,9 @@ fn handle(token: &mut Option<Token>, request: Request) -> Result<Reply, String> 
             token.close();
             Ok(Reply::Done)
         }
-        Request::Open { .. } | Request::Close => unreachable!("handled before"),
+        Request::Tokens { .. } | Request::Shown { .. } | Request::Open { .. } | Request::Close => {
+            unreachable!("handled before")
+        }
     }
 }
 

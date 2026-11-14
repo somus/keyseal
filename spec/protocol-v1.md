@@ -441,6 +441,8 @@ Informative: the helper and the signing service support RSA PKCS#1 v1.5, RSA-PSS
 
 ## 12. Helper UI requirements
 
+When more than one token is plugged in, the helper asks the user which one to use before reading certificates for the job or asking for the PIN, on sign and enrol jobs alike; when the job has `expectedCertificateSha256` (section 8.2) and exactly one of the tokens shows that certificate before login, it uses that token without asking, and a helper that can't ask (headless) fails the job instead.
+
 ### 12.1 Sign jobs
 
 The helper MUST first try to enumerate certificates without logging in to the token, using the PKCS#11 public objects. If at least one candidate certificate is visible, the flow is:

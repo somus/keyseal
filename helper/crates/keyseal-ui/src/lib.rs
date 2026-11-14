@@ -22,7 +22,7 @@ use keyseal_core::doctor::Report;
 use keyseal_core::flow::{DigestConfirm, JobView, PinPrompt, Progress, Step, Ui};
 use keyseal_core::origin::Origin;
 use keyseal_core::protocol::{Kind, plain};
-use keyseal_core::token::PinWarning;
+use keyseal_core::token::{CertificateSummary, PinWarning, TokenSummary};
 use zeroize::Zeroizing;
 
 actions!(keyseal, [OpenSettings]);
@@ -411,6 +411,10 @@ pub(crate) fn group_digest(hex: &str) -> String {
         .join("\n")
 }
 
+#[expect(
+    clippy::large_enum_variant,
+    reason = "requests travel boxed in Event::Ui"
+)]
 pub(crate) enum Request {
     Trust {
         host: String,
@@ -438,6 +442,8 @@ pub(crate) enum Request {
 /// goes back on; dropping it answers Cancel.
 pub(crate) enum Stage {
     Pin {
+        /// The chosen token's label, when several were plugged in.
+        token: Option<String>,
         certificate: Option<String>,
         /// One per document, in order.
         digests: Option<Vec<String>>,
@@ -454,7 +460,11 @@ pub(crate) enum Stage {
         reply: mpsc::Sender<bool>,
     },
     Choose {
-        subjects: Vec<String>,
+        certificates: Vec<CertificateSummary>,
+        reply: mpsc::Sender<Option<usize>>,
+    },
+    ChooseToken {
+        tokens: Vec<TokenSummary>,
         reply: mpsc::Sender<Option<usize>>,
     },
     /// Enrol through the system's certificate store: the job before the
@@ -504,11 +514,42 @@ impl Ui for WindowUi {
         .unwrap_or(false)
     }
 
-    fn choose_certificate(&mut self, job: &JobView, subjects: &[String]) -> Option<usize> {
-        let subjects = subjects.iter().map(|subject| plain(subject)).collect();
+    fn choose_certificate(
+        &mut self,
+        job: &JobView,
+        certificates: &[CertificateSummary],
+    ) -> Option<usize> {
+        let certificates = certificates
+            .iter()
+            .map(|certificate| CertificateSummary {
+                name: plain(&certificate.name),
+                issuer: plain(&certificate.issuer),
+                ..certificate.clone()
+            })
+            .collect();
         self.ask_signer(|reply| Request::Job {
             job: Job::of(job),
-            stage: Stage::Choose { subjects, reply },
+            stage: Stage::Choose {
+                certificates,
+                reply,
+            },
+        })
+        .flatten()
+    }
+
+    fn choose_token(&mut self, job: &JobView, tokens: &[TokenSummary]) -> Option<usize> {
+        let tokens = tokens
+            .iter()
+            .map(|token| TokenSummary {
+                label: plain(&token.label),
+                model: plain(&token.model),
+                serial: plain(&token.serial),
+                names: token.names.iter().map(|name| plain(name)).collect(),
+            })
+            .collect();
+        self.ask_signer(|reply| Request::Job {
+            job: Job::of(job),
+            stage: Stage::ChooseToken { tokens, reply },
         })
         .flatten()
     }
@@ -517,6 +558,7 @@ impl Ui for WindowUi {
         self.ask_signer(|reply| Request::Job {
             job: Job::of(prompt.job),
             stage: Stage::Pin {
+                token: prompt.token.as_deref().map(plain),
                 certificate: prompt.certificate.as_deref().map(plain),
                 digests: prompt.digests.clone(),
                 pin_pad: prompt.pin_pad,

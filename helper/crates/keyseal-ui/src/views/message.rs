@@ -113,7 +113,7 @@ mod tests {
     use gpui_kit::test::TestWindowExt;
     use gpui_kit::{AppContext, TestAppContext};
 
-    use crate::views::testing::{job, log, open_windows, probe, setup, temp_dir};
+    use crate::views::testing::{certificate, job, log, open_windows, probe, setup, temp_dir};
 
     use crate::views::open_settings;
     use crate::{Request, Stage, strings};
@@ -127,7 +127,7 @@ mod tests {
                 Request::Job {
                     job: job(),
                     stage: Stage::Choose {
-                        subjects: vec!["CN=One".into(), "CN=Two".into()],
+                        certificates: vec![certificate("One"), certificate("Two")],
                         reply,
                     },
                 },

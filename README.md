@@ -59,6 +59,8 @@ Signers install the helper from the [latest release](https://github.com/somus/ke
 
 The macOS app isn't notarized yet, so macOS asks once to allow it in System Settings, Privacy & Security, Open Anyway. The Windows exe isn't Authenticode signed either, so SmartScreen warns that it protected your PC; choose More info, then Run anyway. Every download is still listed in the maintainers' signed `SHA256SUMS`.
 
+[docs/signers.md](docs/signers.md) is the guide for signers: installing on each system, getting past those warnings, the token's driver, signing for the first time and what to do when something goes wrong.
+
 ## Code signing policy
 
 What is signed, by whom and with which keys, and how a release is checked before it is signed: [docs/code-signing-policy.md](docs/code-signing-policy.md). Windows builds are unsigned for now; SignPath Foundation declined the project's first application in October 2026, and it will apply again once the helper has a record of use.

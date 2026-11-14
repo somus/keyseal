@@ -133,7 +133,7 @@ fn round_trip(dir: &Path, worker: &Path, module: &Path) {
     let started = WorkerToken::start(worker).unwrap();
     let tokens = started.tokens(module, Duration::ZERO).unwrap();
     assert_eq!(tokens.len(), 1);
-    assert_eq!(tokens[0].certificates.len(), 3);
+    assert_eq!(started.shown(tokens[0].slot).len(), 3);
     let token = Box::new(started).open(tokens[0].slot).unwrap();
     assert!(!token.pin_pad());
     assert_eq!(token.pin_warning(), None);

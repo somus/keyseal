@@ -287,7 +287,9 @@ pub struct TokenInfo {
     pub manufacturer: String,
     pub model: String,
     pub serial: String,
-    /// What the token shows before login.
+    /// What the token shows before login, from [`Driver::shown`]: read only
+    /// to choose among several tokens.
+    #[serde(skip)]
     pub certificates: Vec<TokenCertificate>,
 }
 
@@ -330,6 +332,9 @@ impl TokenSummary {
 
 /// A loaded driver whose tokens were listed, which opens one of them.
 pub trait Driver {
+    /// The certificates the token in `slot` shows before login; none when
+    /// they can't be read, and opening the token says what is wrong.
+    fn shown(&self, slot: u64) -> Vec<TokenCertificate>;
     /// Opens a session on the token in `slot`.
     fn open(self: Box<Self>, slot: u64) -> Result<Box<dyn TokenBackend>, TokenError>;
 }
@@ -385,9 +390,8 @@ impl Module {
         })
     }
 
-    /// Every initialised token, with the certificates it shows before
-    /// login, listing the slots again until `wait` is over ([`SLOT_WAIT`])
-    /// while there is none.
+    /// Every initialised token, listing the slots again until `wait` is
+    /// over ([`SLOT_WAIT`]) while there is none.
     pub fn tokens(&self, wait: Duration) -> Result<Vec<TokenInfo>, TokenError> {
         let deadline = Instant::now() + wait;
         let slots = loop {
@@ -416,12 +420,7 @@ impl Module {
                     manufacturer: info.manufacturer_id().trim().to_owned(),
                     model: info.model().trim().to_owned(),
                     serial: info.serial_number().trim().to_owned(),
-                    // A token whose certificates can't be read is still
-                    // listed; opening it says what is wrong.
-                    certificates: self
-                        .open(slot.id())
-                        .and_then(|token| token.certificates(false))
-                        .unwrap_or_default(),
+                    certificates: Vec::new(),
                 })
             })
             .collect()
@@ -454,6 +453,12 @@ impl Module {
 }
 
 impl Driver for Module {
+    fn shown(&self, slot: u64) -> Vec<TokenCertificate> {
+        Module::open(self, slot)
+            .and_then(|token| token.certificates(false))
+            .unwrap_or_default()
+    }
+
     fn open(self: Box<Self>, slot: u64) -> Result<Box<dyn TokenBackend>, TokenError> {
         Ok(Box::new(Module::open(&self, slot)?))
     }

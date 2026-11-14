@@ -619,13 +619,20 @@ impl Found {
         self,
         choose: impl FnOnce(&[TokenInfo]) -> Result<usize, Failure>,
     ) -> Result<Backend, Failure> {
-        let found = match self {
+        let mut found = match self {
             Self::Tokens(found) => found,
             Self::Backend(backend) => return Ok(backend),
         };
         let index = match found.tokens.len() {
             1 => 0,
-            _ => choose(&found.tokens)?,
+            _ => {
+                // Read only now: a job with one token talks to it as it did
+                // before there was a choice.
+                for (token, &driver) in found.tokens.iter_mut().zip(&found.driver_of) {
+                    token.certificates = found.drivers[driver].shown(token.slot);
+                }
+                choose(&found.tokens)?
+            }
         };
         let slot = found.tokens[index].slot;
         let driver = found
@@ -683,11 +690,12 @@ fn open_attempt(attempt: &Attempt, wait: Duration, usage: KeyUsage) -> Result<Re
 
 /// Tries `attempts` in order and moves on when one fails: a module that
 /// doesn't load or sees no token, or a store without a signing
-/// certificate. The drivers of plugged-in tokens, the override and the
-/// configured module are all listed, every token of each, since the signer
-/// may have plugged in several. Past them, the first attempt that reaches a
-/// token ends the search: other drivers can hang or crash, so they aren't
-/// loaded once a token is found. Only the driver of a plugged-in token gets
+/// certificate. The drivers of plugged-in tokens are all listed, every
+/// token of each, since the signer may have plugged in several. Any other
+/// attempt that reaches a token ends the search with every token of it:
+/// the configured module because the signer chose that driver, and the
+/// rest because drivers can hang or crash, so they aren't loaded once a
+/// token is found. Only the driver of a plugged-in token gets
 /// [`token::SLOT_WAIT`] for its token to appear; the others are looked at
 /// once. When all fail, the first failure that isn't "nothing there"; else
 /// no token when a module loaded, else no driver.
@@ -709,11 +717,8 @@ fn open_first(
             Attempt::Module(candidate) => Some(&candidate.source),
             Attempt::Store => None,
         };
-        let listed = matches!(
-            source,
-            Some(Source::UsbMatch(_) | Source::Override | Source::Config)
-        );
-        if !listed && !found.tokens.is_empty() {
+        let plugged_in = matches!(source, Some(Source::UsbMatch(_)));
+        if !plugged_in && !found.tokens.is_empty() {
             break;
         }
         if source.is_none() {
@@ -721,7 +726,7 @@ fn open_first(
         } else {
             module_found = true;
         }
-        let wait = if matches!(source, Some(Source::UsbMatch(_))) {
+        let wait = if plugged_in {
             token::SLOT_WAIT
         } else {
             Duration::ZERO
@@ -735,6 +740,9 @@ fn open_first(
             Ok(Reached::Tokens(driver, tokens)) => {
                 seen(attempt, Ok(()));
                 found.add(driver, tokens);
+                if !plugged_in {
+                    break;
+                }
             }
             Err(message) => {
                 seen(attempt, Err(&message));
@@ -1155,9 +1163,19 @@ mod tests {
     #[derive(Default)]
     struct FakeDriver {
         tokens: Vec<Option<FakeToken>>,
+        /// The slots whose certificates were read, shared with the test.
+        shown: Arc<Mutex<Vec<u64>>>,
     }
 
     impl Driver for FakeDriver {
+        fn shown(&self, slot: u64) -> Vec<TokenCertificate> {
+            self.shown.lock().unwrap().push(slot);
+            self.tokens
+                .get(slot as usize)
+                .and_then(Option::as_ref)
+                .and_then(|token| token.certificates(false).ok())
+                .unwrap_or_default()
+        }
         fn open(mut self: Box<Self>, slot: u64) -> Result<Box<dyn TokenBackend>, TokenError> {
             let token = self.tokens.get_mut(slot as usize).and_then(Option::take);
             Ok(Box::new(
@@ -2158,10 +2176,10 @@ mod tests {
         }
     }
 
-    /// The drivers of plugged-in tokens, the override and the configured
-    /// module are all listed; past them the first driver that reaches a
-    /// token ends the search, with every token of it. A token two drivers
-    /// reach is listed once, through the earlier one.
+    /// The drivers of plugged-in tokens are all listed; any other driver
+    /// that reaches a token ends the search, with every token of it, and
+    /// the configured module comes first. A token two drivers reach is
+    /// listed once, through the earlier one.
     #[test]
     fn collects_tokens_from_plugged_in_drivers_and_the_first_other() {
         let module = |name: &str, source| {
@@ -2176,8 +2194,8 @@ mod tests {
             let serials: &[&str] = match attempt {
                 Attempt::Module(candidate) => match candidate.path.to_str().unwrap() {
                     "/configured" => &["A"],
-                    "/plugged-in" => &[" A ", "B"],
-                    "/other-plugged-in" => &["", ""],
+                    "/plugged-in" => &["A", "B"],
+                    "/other-plugged-in" => &[" A ", "", ""],
                     "/two" => &["C", "D"],
                     "/three" => &["E"],
                     _ => &[],
@@ -2209,13 +2227,23 @@ mod tests {
         let (serials, drivers, tried) = found(&[
             module("/configured", modules::Source::Config),
             plugged_in("/plugged-in"),
+            known("/two"),
+            Attempt::Store,
+        ]);
+        assert_eq!(serials, ["A"]);
+        assert_eq!(drivers, [0]);
+        assert_eq!(tried, 1);
+
+        let (serials, drivers, tried) = found(&[
+            module("/empty", modules::Source::Config),
+            plugged_in("/plugged-in"),
             plugged_in("/empty"),
             plugged_in("/other-plugged-in"),
             known("/two"),
             Attempt::Store,
         ]);
         assert_eq!(serials, ["A", "B", "", ""]);
-        assert_eq!(drivers, [0, 1, 2, 2]);
+        assert_eq!(drivers, [0, 0, 1, 1]);
         assert_eq!(tried, 4);
 
         let (serials, drivers, tried) = found(&[
@@ -2308,8 +2336,10 @@ mod tests {
                 .map(|_| FakeToken::new(vec![RSA], vec![]))
                 .collect();
             let signed: Vec<_> = tokens.iter().map(|token| token.signed.clone()).collect();
+            let shown = Arc::<Mutex<Vec<u64>>>::default();
             let driver = std::cell::RefCell::new(Some(FakeDriver {
                 tokens: tokens.into_iter().map(Some).collect(),
+                shown: shown.clone(),
             }));
             let open = |_: KeyUsage, _: BeforeStore| {
                 Ok(Found::Tokens(Tokens {
@@ -2341,10 +2371,13 @@ mod tests {
                 assert_eq!(ui.token_choices.len(), 1);
                 assert_eq!(signed, [vec![], vec![1]]);
                 assert_eq!(ui.pin_tokens, [Some("Token 1".to_owned())]);
+                assert_eq!(*shown.lock().unwrap(), [0, 1]);
             } else {
                 assert!(ui.token_choices.is_empty());
                 assert_eq!(signed, [vec![1]]);
                 assert_eq!(ui.pin_tokens, [None]);
+                // One token is opened without being read first.
+                assert!(shown.lock().unwrap().is_empty());
             }
         }
     }

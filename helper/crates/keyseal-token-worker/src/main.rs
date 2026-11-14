@@ -50,6 +50,8 @@ fn serve() -> io::Result<()> {
     }
 }
 
+const NO_DRIVER: &str = "No token driver is loaded in the worker.";
+
 fn handle(
     module: &mut Option<Module>,
     token: &mut Option<Token>,
@@ -62,11 +64,16 @@ fn handle(
             *module = Some(loaded);
             return Ok(Reply::Tokens(tokens));
         }
-        Request::Open { slot } => {
-            let opened = module
+        Request::Shown { slot } => {
+            let shown = module
                 .as_ref()
-                .ok_or("No token driver is loaded in the worker.")?
-                .open(slot)?;
+                .ok_or(NO_DRIVER)?
+                .open(slot)?
+                .certificates(false)?;
+            return Ok(Reply::Certificates(shown));
+        }
+        Request::Open { slot } => {
+            let opened = module.as_ref().ok_or(NO_DRIVER)?.open(slot)?;
             let reply = Reply::Opened {
                 pin_pad: opened.pin_pad,
             };
@@ -103,7 +110,7 @@ fn handle(
             token.close();
             Ok(Reply::Done)
         }
-        Request::Tokens { .. } | Request::Open { .. } | Request::Close => {
+        Request::Tokens { .. } | Request::Shown { .. } | Request::Open { .. } | Request::Close => {
             unreachable!("handled before")
         }
     }

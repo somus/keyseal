@@ -169,6 +169,11 @@ pub enum Request {
         module: PathBuf,
         wait: Duration,
     },
+    /// The certificates the token in `slot` of the loaded module shows
+    /// before login.
+    Shown {
+        slot: u64,
+    },
     /// Opens a session on the token in `slot` of the loaded module.
     Open {
         slot: u64,
@@ -313,6 +318,13 @@ impl WorkerToken {
 }
 
 impl Driver for WorkerToken {
+    fn shown(&self, slot: u64) -> Vec<TokenCertificate> {
+        match self.call(&Request::Shown { slot }) {
+            Ok(Reply::Certificates(certificates)) => certificates,
+            _ => Vec::new(),
+        }
+    }
+
     fn open(mut self: Box<Self>, slot: u64) -> Result<Box<dyn TokenBackend>, TokenError> {
         let Reply::Opened { pin_pad } = self.call(&Request::Open { slot })? else {
             return Err(TokenError(OUT_OF_TURN.into()));

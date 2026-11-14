@@ -37,7 +37,9 @@ use crate::protocol::{
 };
 #[cfg(any(windows, target_os = "macos"))]
 use crate::store::Store;
-use crate::token::{self, LoginError, PinWarning, TokenBackend, TokenCertificate, TokenError};
+use crate::token::{
+    self, CertificateSummary, LoginError, PinWarning, TokenBackend, TokenCertificate, TokenError,
+};
 use crate::trust::TrustStore;
 
 const CANCELLED: &str = "Signing cancelled.";
@@ -173,8 +175,12 @@ pub struct Progress<'a> {
 pub trait Ui {
     /// First contact with `origin` (section 5): show the origin only.
     fn confirm_origin(&mut self, origin: &Origin) -> bool;
-    /// Several certificates fit the job; the index of the chosen subject.
-    fn choose_certificate(&mut self, job: &JobView, subjects: &[String]) -> Option<usize>;
+    /// Several certificates fit the job; the index of the chosen one.
+    fn choose_certificate(
+        &mut self,
+        job: &JobView,
+        certificates: &[CertificateSummary],
+    ) -> Option<usize>;
     /// The PIN, or `None` if the user cancels.
     fn prompt_pin(&mut self, prompt: &PinPrompt) -> Option<Zeroizing<String>>;
     /// Whether a wrong PIN is asked for again. Headless runs have one PIN,
@@ -694,12 +700,12 @@ fn choose(
     if certificates.len() == 1 && !always_ask {
         return Ok(certificates.remove(0));
     }
-    let subjects: Vec<String> = certificates
+    let summaries: Vec<CertificateSummary> = certificates
         .iter()
-        .map(|c| token::subject(&c.der))
+        .map(|c| CertificateSummary::of(&c.der))
         .collect();
     let index = ui
-        .choose_certificate(view, &subjects)
+        .choose_certificate(view, &summaries)
         .filter(|&index| index < certificates.len())
         .ok_or_else(|| Failure::cancelled(CANCELLED))?;
     Ok(certificates.remove(index))
@@ -858,7 +864,7 @@ mod tests {
         fn confirm_origin(&mut self, _: &Origin) -> bool {
             self.cancel_at != Stage::Trust
         }
-        fn choose_certificate(&mut self, _: &JobView, _: &[String]) -> Option<usize> {
+        fn choose_certificate(&mut self, _: &JobView, _: &[CertificateSummary]) -> Option<usize> {
             (self.cancel_at != Stage::Choose).then_some(0)
         }
         fn prompt_pin(&mut self, prompt: &PinPrompt) -> Option<Zeroizing<String>> {

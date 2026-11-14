@@ -52,6 +52,13 @@ strings! {
         "Next, KeySeal looks for your certificate in Windows."
     };
     CHOOSE_NOTE = "Your token holds more than one certificate. Choose the one to use.";
+    // Under the certificate's name. "{issuer}" is the issuer's name and
+    // "{date}" the last day the certificate is valid, as "12 March 2027".
+    CERTIFICATE_ISSUED = "Issued by {issuer}, valid until {date}";
+    // "{serial}" is the serial number's last digits, as "4F A1 9C".
+    CERTIFICATE_SERIAL = "Serial number ending {serial}";
+    // What a screen reader says for the certificate.
+    CERTIFICATE_LABEL = "{name}, issued by {issuer}, valid until {date}, serial ending {serial}";
     WORKING = "Working...";
     // "{host}" is the site's host, as in the heading.
     STEP_CONNECTING = "Connecting to {host}...";

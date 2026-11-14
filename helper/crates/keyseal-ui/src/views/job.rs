@@ -15,6 +15,7 @@ use gpui_kit::{
 };
 use keyseal_core::flow::Step;
 use keyseal_core::protocol::Kind;
+use keyseal_core::token::CertificateSummary;
 use zeroize::Zeroizing;
 
 use super::widgets::{
@@ -58,6 +59,15 @@ fn wrong_pin_line(cx: &App) -> impl IntoElement {
         .text_color(cx.theme().danger)
         .child(strings::PIN_WRONG)
         .test_support()
+}
+
+/// `text` with the certificate's `{name}`, `{issuer}`, `{date}` and
+/// `{serial}`.
+fn describe(text: &str, certificate: &CertificateSummary) -> String {
+    text.replace("{name}", &certificate.name)
+        .replace("{issuer}", &certificate.issuer)
+        .replace("{date}", &certificate.valid_until)
+        .replace("{serial}", &certificate.serial_end)
 }
 
 /// The list of a batch's documents takes the height the window has left,
@@ -376,7 +386,7 @@ impl JobWindow {
             }
             Stage::Confirm { .. } => body.child(note(strings::CONFIRM_NOTE, cx)),
             Stage::Enrol { .. } => body.child(note(strings::ENROL_STORE_NOTE, cx)),
-            Stage::Choose { subjects, .. } => body
+            Stage::Choose { certificates, .. } => body
                 .child(
                     div()
                         .id("choose")
@@ -386,19 +396,41 @@ impl JobWindow {
                         .test_support(),
                 )
                 .child(group(
-                    subjects.iter().enumerate().map(|(index, subject)| {
+                    certificates.iter().enumerate().map(|(index, certificate)| {
                         h_flex()
                             .gap_3()
                             .px_3()
                             .py_2p5()
                             .child(
                                 Radio::new(("certificate", index))
-                                    .label(subject.clone())
+                                    .flex_1()
+                                    .min_w_0()
+                                    .label(certificate.name.clone())
+                                    .accessibility_label(describe(
+                                        strings::CERTIFICATE_LABEL,
+                                        certificate,
+                                    ))
                                     .checked(index == self.selected)
                                     .on_click(cx.listener(move |this, _: &bool, _, cx| {
                                         this.selected = index;
                                         cx.notify();
-                                    })),
+                                    }))
+                                    // What tells a renewed certificate from
+                                    // the one it replaces.
+                                    .child(
+                                        v_flex()
+                                            .gap_0p5()
+                                            .text_xs()
+                                            .text_color(cx.theme().muted_foreground)
+                                            .child(describe(
+                                                strings::CERTIFICATE_ISSUED,
+                                                certificate,
+                                            ))
+                                            .child(describe(
+                                                strings::CERTIFICATE_SERIAL,
+                                                certificate,
+                                            )),
+                                    ),
                             )
                             .into_any_element()
                     }),
@@ -631,14 +663,15 @@ impl Render for JobWindow {
 mod tests {
     use std::sync::mpsc;
 
-    use gpui_kit::test::TestWindowExt;
+    use gpui_kit::test::{TestQueryExt, TestWindowExt};
     use gpui_kit::{AppContext, TestAppContext};
 
     use keyseal_core::flow::Step;
     use keyseal_core::preferences::Preferences;
+    use keyseal_core::token::CertificateSummary;
 
     use crate::views::testing::{
-        DIGEST, job, log, open_windows, pass_input_delay, probe, setup, temp_dir,
+        DIGEST, certificate, job, log, open_windows, pass_input_delay, probe, setup, temp_dir,
     };
 
     use crate::views::open_settings;
@@ -654,7 +687,9 @@ mod tests {
                 Request::Job {
                     job: job(),
                     stage: Stage::Choose {
-                        subjects: (1..=12).map(|n| format!("CN=Signer {n}")).collect(),
+                        certificates: (1..=12)
+                            .map(|n| certificate(&format!("Signer {n}")))
+                            .collect(),
                         reply: mpsc::channel().0,
                     },
                 },
@@ -672,6 +707,48 @@ mod tests {
             );
         })
         .unwrap();
+    }
+
+    /// A renewed certificate and the one it replaces share a name and an
+    /// issuer; each row says which is which, to the eye and to a screen
+    /// reader, and the row clicked is the one chosen.
+    #[gpui_kit::test]
+    fn certificate_rows_tell_a_renewed_certificate_apart(cx: &mut TestAppContext) {
+        let mut windows = setup(cx);
+        let renewed = CertificateSummary {
+            valid_until: "2 June 2028".into(),
+            serial_end: "0B 7E 31".into(),
+            ..certificate("ASHA RAO")
+        };
+        let (reply, answer) = mpsc::channel();
+        cx.update(|cx| {
+            windows.handle(
+                Request::Job {
+                    job: job(),
+                    stage: Stage::Choose {
+                        certificates: vec![certificate("ASHA RAO"), renewed],
+                        reply,
+                    },
+                },
+                cx,
+            )
+        });
+        let handle = *open_windows(cx).last().unwrap();
+        pass_input_delay(cx);
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.find_by_label(
+                "ASHA RAO, issued by Verasys Sub CA 2022, valid until 12 March 2027, serial ending 4F A1 9C",
+            );
+            window.find_by_label(
+                "ASHA RAO, issued by Verasys Sub CA 2022, valid until 2 June 2028, serial ending 0B 7E 31",
+            );
+            window.click(("certificate", 1), cx);
+            window.render_frame(cx);
+            window.click("submit", cx);
+        })
+        .unwrap();
+        assert_eq!(answer.recv(), Ok(Some(1)));
     }
 
     /// On a PIN pad, a batch says the pad may ask once per document.
@@ -801,7 +878,7 @@ mod tests {
                 Request::Job {
                     job: job(),
                     stage: Stage::Choose {
-                        subjects: vec!["CN=One".into(), "CN=Two".into()],
+                        certificates: vec![certificate("One"), certificate("Two")],
                         reply,
                     },
                 },

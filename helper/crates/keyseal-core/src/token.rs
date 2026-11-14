@@ -192,6 +192,48 @@ pub fn subject(der: &[u8]) -> String {
         .unwrap_or_else(|_| "unreadable certificate".into())
 }
 
+/// A certificate as the chooser lists it, so that a renewed certificate
+/// can be told from the one it replaces.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CertificateSummary {
+    /// The subject's common name, or the whole subject without a single one.
+    pub name: String,
+    /// The issuer's common name, or the whole issuer without a single one.
+    pub issuer: String,
+    /// The last day of the validity period, as "12 March 2027".
+    pub valid_until: String,
+    /// The serial number's last three bytes in uppercase hex, as "4F A1 9C".
+    pub serial_end: String,
+}
+
+impl CertificateSummary {
+    pub fn of(der: &[u8]) -> Self {
+        let Ok((_, certificate)) = x509_parser::parse_x509_certificate(der) else {
+            return Self {
+                name: subject(der),
+                issuer: String::new(),
+                valid_until: String::new(),
+                serial_end: String::new(),
+            };
+        };
+        let name = |name: &x509_parser::x509::X509Name| {
+            crate::protocol::only(name.iter_common_name()).unwrap_or_else(|| name.to_string())
+        };
+        let until = certificate.validity().not_after.to_datetime();
+        let serial = certificate.raw_serial();
+        Self {
+            name: name(certificate.subject()),
+            issuer: name(certificate.issuer()),
+            valid_until: format!("{} {} {}", until.day(), until.month(), until.year()),
+            serial_end: serial[serial.len().saturating_sub(3)..]
+                .iter()
+                .map(|byte| format!("{byte:02X}"))
+                .collect::<Vec<_>>()
+                .join(" "),
+        }
+    }
+}
+
 /// What the sign and enrol flow needs from where the job's key lives: a
 /// PKCS#11 token, whose driver runs in this process or in the token worker,
 /// or the system's certificate store (CNG on Windows, CryptoTokenKit on
@@ -842,6 +884,30 @@ mod tests {
         let (mechanism, input) = pkcs1(false, b"abc", DigestAlgorithm::Sha384);
         assert_eq!(mechanism.mechanism_type(), M::SHA384_RSA_PKCS);
         assert_eq!(input, b"abc");
+    }
+
+    #[test]
+    fn summarises_certificates_for_the_chooser() {
+        assert_eq!(
+            CertificateSummary::of(SIGNER),
+            CertificateSummary {
+                name: "Test Signer chain".into(),
+                issuer: "KeySeal Chain Sub CA".into(),
+                valid_until: "1 January 2036".into(),
+                serial_end: "0B 05 43".into(),
+            }
+        );
+        // Names in BMPString read as text.
+        let bmp = CertificateSummary::of(include_bytes!("../tests/fixtures/bmp-names.der"));
+        assert_eq!(bmp.name, "KeySeal BMP CA");
+        assert_eq!(bmp.issuer, "KeySeal BMP CA");
+        let other = CertificateSummary::of(OTHER);
+        assert_eq!(other.valid_until, "28 September 2126");
+        assert_eq!(other.serial_end, "48 C1 46");
+        assert_eq!(
+            CertificateSummary::of(b"not a certificate").name,
+            "unreadable certificate"
+        );
     }
 
     // chain-*.der: a P-256 root, a sub CA it issued, a signer the sub CA

@@ -15,7 +15,7 @@ use gpui_kit::{
 };
 use keyseal_core::flow::Step;
 use keyseal_core::protocol::Kind;
-use keyseal_core::token::CertificateSummary;
+use keyseal_core::token::{CertificateSummary, TokenSummary};
 use zeroize::Zeroizing;
 
 use super::widgets::{
@@ -68,6 +68,14 @@ fn describe(text: &str, certificate: &CertificateSummary) -> String {
         .replace("{issuer}", &certificate.issuer)
         .replace("{date}", &certificate.valid_until)
         .replace("{serial}", &certificate.serial_end)
+}
+
+/// `text` with the token's `{label}`, `{model}`, `{serial}` and `{names}`.
+fn describe_token(text: &str, token: &TokenSummary) -> String {
+    text.replace("{label}", &token.label)
+        .replace("{model}", &token.model)
+        .replace("{serial}", &token.serial)
+        .replace("{names}", &token.names.join(", "))
 }
 
 /// The list of a batch's documents takes the height the window has left,
@@ -255,7 +263,7 @@ impl JobWindow {
             Stage::Confirm { reply, .. } | Stage::Enrol { reply } => {
                 let _ = reply.send(true);
             }
-            Stage::Choose { reply, .. } => {
+            Stage::Choose { reply, .. } | Stage::ChooseToken { reply, .. } => {
                 let _ = reply.send(Some(self.selected));
             }
             Stage::Busy | Stage::Progress(_) => {}
@@ -318,6 +326,7 @@ impl JobWindow {
         match &self.stage {
             Stage::Pin {
                 pin_pad,
+                token,
                 warning,
                 wrong_pin,
                 digests,
@@ -353,19 +362,21 @@ impl JobWindow {
                         )
                         .when(*wrong_pin, |this| this.child(wrong_pin_line(cx)))
                     } else {
+                        // Names the token when several were plugged in.
+                        let label = match token {
+                            Some(token) => strings::PIN_FOR_TOKEN.replace("{token}", token).into(),
+                            None => SharedString::from(strings::PIN),
+                        };
                         this.child(
                             v_flex()
                                 .gap_1p5()
-                                .child(div().text_sm().font_medium().child(strings::PIN))
+                                .child(div().text_sm().font_medium().child(label.clone()))
                                 .child(
-                                    Input::new(&self.pin)
-                                        .id("pin")
-                                        .aria_label(strings::PIN)
-                                        .prefix(
-                                            icon("lock-keyhole")
-                                                .size_4()
-                                                .text_color(cx.theme().muted_foreground),
-                                        ),
+                                    Input::new(&self.pin).id("pin").aria_label(label).prefix(
+                                        icon("lock-keyhole")
+                                            .size_4()
+                                            .text_color(cx.theme().muted_foreground),
+                                    ),
                                 )
                                 .when(*wrong_pin, |this| this.child(wrong_pin_line(cx))),
                         )
@@ -436,6 +447,55 @@ impl JobWindow {
                     }),
                     cx,
                 )),
+            Stage::ChooseToken { tokens, .. } => body
+                .child(
+                    div()
+                        .id("choose-token")
+                        .role(Role::Note)
+                        .aria_label(strings::CHOOSE_TOKEN_NOTE)
+                        .child(note(strings::CHOOSE_TOKEN_NOTE, cx))
+                        .test_support(),
+                )
+                .child(group(
+                    tokens.iter().enumerate().map(|(index, token)| {
+                        let label = if token.names.is_empty() {
+                            describe_token(strings::TOKEN_LABEL, token)
+                        } else {
+                            describe_token(strings::TOKEN_LABEL_HOLDS, token)
+                        };
+                        h_flex()
+                            .gap_3()
+                            .px_3()
+                            .py_2p5()
+                            .child(
+                                Radio::new(("token", index))
+                                    .flex_1()
+                                    .min_w_0()
+                                    .label(token.label.clone())
+                                    .accessibility_label(label)
+                                    .checked(index == self.selected)
+                                    .on_click(cx.listener(move |this, _: &bool, _, cx| {
+                                        this.selected = index;
+                                        cx.notify();
+                                    }))
+                                    .child(
+                                        v_flex()
+                                            .gap_0p5()
+                                            .text_xs()
+                                            .text_color(cx.theme().muted_foreground)
+                                            .child(describe_token(strings::TOKEN_MODEL, token))
+                                            .when(!token.names.is_empty(), |this| {
+                                                this.child(describe_token(
+                                                    strings::TOKEN_HOLDS,
+                                                    token,
+                                                ))
+                                            }),
+                                    ),
+                            )
+                            .into_any_element()
+                    }),
+                    cx,
+                )),
             Stage::Busy => body.child(progress_line(strings::WORKING.into(), cx)),
             Stage::Progress(step) => body.child(progress_line(self.step_text(*step), cx)),
         }
@@ -467,9 +527,11 @@ impl Render for JobWindow {
                 Some(digests.clone()),
                 strings::CONFIRM,
             ),
-            Stage::Choose { .. } | Stage::Enrol { .. } | Stage::Busy | Stage::Progress(_) => {
-                (None, None, strings::CONTINUE)
-            }
+            Stage::Choose { .. }
+            | Stage::ChooseToken { .. }
+            | Stage::Enrol { .. }
+            | Stage::Busy
+            | Stage::Progress(_) => (None, None, strings::CONTINUE),
         };
         let busy = matches!(self.stage, Stage::Busy | Stage::Progress(_));
         let brand = self.job.brand.as_ref();
@@ -539,8 +601,8 @@ impl Render for JobWindow {
         });
         // The PIN field and the notes stay in view below the job, which
         // scrolls when the details of a batch outgrow the window. A list of
-        // certificates scrolls with the job.
-        let pinned = !matches!(self.stage, Stage::Choose { .. });
+        // certificates or tokens scrolls with the job.
+        let pinned = !matches!(self.stage, Stage::Choose { .. } | Stage::ChooseToken { .. });
 
         window_frame(&self.focus, CONTEXT, window, cx)
             .on_action(cx.listener(Self::on_submit))
@@ -599,7 +661,7 @@ impl Render for JobWindow {
                                 v_flex()
                                     // Gives a batch's list the height left above
                                     // what is pinned. Above a list of certificates
-                                    // it keeps its height and the job scrolls.
+                                    // or tokens it keeps its height and the job scrolls.
                                     .map(|this| {
                                         if pinned {
                                             this.min_h(px(0.))
@@ -767,6 +829,7 @@ mod tests {
                             certificate: Some("CN=A. Signer".into()),
                             digests: Some(digests),
                             pin_pad: true,
+                            token: None,
                             warning: None,
                             wrong_pin: false,
                             reply: mpsc::channel().0,
@@ -797,6 +860,7 @@ mod tests {
                         certificate: Some("CN=A. Signer".into()),
                         digests: Some(vec![DIGEST.into()]),
                         pin_pad: false,
+                        token: None,
                         warning: Some("One PIN attempt is left before the token locks."),
                         wrong_pin: false,
                         reply,
@@ -905,6 +969,7 @@ mod tests {
                         certificate: None,
                         digests: None,
                         pin_pad: false,
+                        token: None,
                         warning: None,
                         wrong_pin: false,
                         reply,
@@ -933,6 +998,7 @@ mod tests {
                 certificate: Some("CN=A. Signer".into()),
                 digests: Some(vec![DIGEST.into()]),
                 pin_pad: false,
+                token: None,
                 warning,
                 wrong_pin,
                 reply,
@@ -1052,6 +1118,7 @@ mod tests {
                         certificate: Some("CN=A. Signer".into()),
                         digests: Some(vec![DIGEST.into()]),
                         pin_pad: false,
+                        token: None,
                         warning: None,
                         wrong_pin: false,
                         reply,
@@ -1098,6 +1165,7 @@ mod tests {
                         certificate: Some("CN=A. Signer".into()),
                         digests: Some(digests.clone()),
                         pin_pad: false,
+                        token: None,
                         warning: None,
                         wrong_pin: false,
                         reply,
@@ -1146,6 +1214,7 @@ mod tests {
                         certificate: None,
                         digests: None,
                         pin_pad: false,
+                        token: None,
                         warning: None,
                         wrong_pin: false,
                         reply,
@@ -1218,6 +1287,7 @@ mod tests {
                         certificate: Some("CN=A. Signer".into()),
                         digests: Some(vec![DIGEST.into()]),
                         pin_pad: false,
+                        token: None,
                         warning: None,
                         wrong_pin: false,
                         reply,
@@ -1253,6 +1323,7 @@ mod tests {
                 certificate: None,
                 digests: None,
                 pin_pad: false,
+                token: None,
                 warning: None,
                 wrong_pin: false,
                 reply,

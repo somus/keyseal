@@ -22,7 +22,7 @@ use keyseal_core::doctor::Report;
 use keyseal_core::flow::{DigestConfirm, JobView, PinPrompt, Progress, Step, Ui};
 use keyseal_core::origin::Origin;
 use keyseal_core::protocol::{Kind, plain};
-use keyseal_core::token::{CertificateSummary, PinWarning};
+use keyseal_core::token::{CertificateSummary, PinWarning, TokenSummary};
 use zeroize::Zeroizing;
 
 actions!(keyseal, [OpenSettings]);
@@ -438,6 +438,8 @@ pub(crate) enum Request {
 /// goes back on; dropping it answers Cancel.
 pub(crate) enum Stage {
     Pin {
+        /// The chosen token's label, when several were plugged in.
+        token: Option<String>,
         certificate: Option<String>,
         /// One per document, in order.
         digests: Option<Vec<String>>,
@@ -455,6 +457,10 @@ pub(crate) enum Stage {
     },
     Choose {
         certificates: Vec<CertificateSummary>,
+        reply: mpsc::Sender<Option<usize>>,
+    },
+    ChooseToken {
+        tokens: Vec<TokenSummary>,
         reply: mpsc::Sender<Option<usize>>,
     },
     /// Enrol through the system's certificate store: the job before the
@@ -527,10 +533,28 @@ impl Ui for WindowUi {
         .flatten()
     }
 
+    fn choose_token(&mut self, job: &JobView, tokens: &[TokenSummary]) -> Option<usize> {
+        let tokens = tokens
+            .iter()
+            .map(|token| TokenSummary {
+                label: plain(&token.label),
+                model: plain(&token.model),
+                serial: plain(&token.serial),
+                names: token.names.iter().map(|name| plain(name)).collect(),
+            })
+            .collect();
+        self.ask_signer(|reply| Request::Job {
+            job: Job::of(job),
+            stage: Stage::ChooseToken { tokens, reply },
+        })
+        .flatten()
+    }
+
     fn prompt_pin(&mut self, prompt: &PinPrompt) -> Option<Zeroizing<String>> {
         self.ask_signer(|reply| Request::Job {
             job: Job::of(prompt.job),
             stage: Stage::Pin {
+                token: prompt.token.as_deref().map(plain),
                 certificate: prompt.certificate.as_deref().map(plain),
                 digests: prompt.digests.clone(),
                 pin_pad: prompt.pin_pad,

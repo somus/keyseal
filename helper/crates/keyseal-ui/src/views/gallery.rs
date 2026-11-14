@@ -13,7 +13,7 @@ use keyseal_core::modules;
 #[cfg(feature = "gallery")]
 use keyseal_core::protocol::Kind;
 #[cfg(feature = "gallery")]
-use keyseal_core::token::CertificateSummary;
+use keyseal_core::token::{CertificateSummary, TokenSummary};
 #[cfg(feature = "gallery")]
 use keyseal_core::trust::TrustStore;
 
@@ -44,6 +44,8 @@ pub const GALLERY_VIEWS: &[&str] = &[
     "confirm",
     "choose",
     "choose-many",
+    "choose-token",
+    "pin-token",
     "enrol",
     "busy",
     "progress-connecting",
@@ -140,6 +142,8 @@ pub(crate) fn gallery(view: &str, cx: &mut App) {
     };
     let pin =
         |certificate: Option<&str>, digest: Option<&str>, pin_pad, warning, wrong_pin| Stage::Pin {
+            // pin-token: several tokens were plugged in.
+            token: (view == "pin-token").then(|| "HYP2003".into()),
             certificate: certificate.map(Into::into),
             digests: digest.map(|digest| vec![digest.into()]),
             pin_pad,
@@ -172,6 +176,7 @@ pub(crate) fn gallery(view: &str, cx: &mut App) {
             Request::Job {
                 job: batch,
                 stage: Stage::Pin {
+                    token: None,
                     certificate: Some(CERTIFICATE.into()),
                     digests: Some(digests),
                     pin_pad: false,
@@ -278,7 +283,7 @@ pub(crate) fn gallery(view: &str, cx: &mut App) {
         }
         // pin-plain: a brand without a logo; pin-opaque: a brand that asks
         // for opaque windows.
-        "pin" | "pin-details" | "pin-plain" | "pin-opaque" => {
+        "pin" | "pin-details" | "pin-plain" | "pin-opaque" | "pin-token" => {
             pin(Some(CERTIFICATE), Some(DIGEST), false, None, false)
         }
         "pin-pad" => pin(Some(CERTIFICATE), Some(DIGEST), true, None, false),
@@ -322,6 +327,31 @@ pub(crate) fn gallery(view: &str, cx: &mut App) {
                     )
                 })
                 .collect(),
+            reply: mpsc::channel().0,
+        },
+        // Two tokens that show their certificates before login, one with two
+        // signers on it, and one that shows none.
+        "choose-token" => Stage::ChooseToken {
+            tokens: vec![
+                TokenSummary {
+                    label: "ePass2003".into(),
+                    model: "Feitian ePass2003".into(),
+                    serial: "2A8F0C1B00049813".into(),
+                    names: vec!["ASHA RAO".into()],
+                },
+                TokenSummary {
+                    label: "HYP2003".into(),
+                    model: "HyperSecu HYP2003".into(),
+                    serial: "HS0322771940".into(),
+                    names: vec!["ASHA RAO".into(), "VIKRAM MEHTA".into()],
+                },
+                TokenSummary {
+                    label: "SafeNet eToken 5110".into(),
+                    model: "SafeNet, Inc. eToken 5110 CC".into(),
+                    serial: "02A7D4E1".into(),
+                    names: Vec::new(),
+                },
+            ],
             reply: mpsc::channel().0,
         },
         "enrol" => Stage::Enrol {

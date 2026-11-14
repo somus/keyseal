@@ -216,7 +216,9 @@ fn gather(gpu: Result<Option<String>, String>) -> Facts {
             &mut |attempt, outcome| {
                 tried.push((attempt.clone(), outcome.map_err(str::to_owned)));
             },
-        );
+        )
+        // The first token, as a job with one plugged in would use.
+        .and_then(|found| found.open(|_| Ok(0)));
         opened = match backend {
             Ok(backend) => {
                 let used = tried.iter().find(|(_, outcome)| outcome.is_ok());

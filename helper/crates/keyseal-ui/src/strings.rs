@@ -59,6 +59,16 @@ strings! {
     CERTIFICATE_SERIAL = "Serial number ending {serial}";
     // What a screen reader says for the certificate.
     CERTIFICATE_LABEL = "{name}, issued by {issuer}, valid until {date}, serial ending {serial}";
+    CHOOSE_TOKEN_NOTE = "More than one token is plugged in. Which one do you want to use?";
+    // Under the token's label. "{model}" is its manufacturer and model.
+    TOKEN_MODEL = "{model}, serial number {serial}";
+    // "{names}" are the names on its certificates, separated by commas.
+    TOKEN_HOLDS = "Holds: {names}";
+    // What a screen reader says for the token, without and with names.
+    TOKEN_LABEL = "{label}, {model}, serial number {serial}";
+    TOKEN_LABEL_HOLDS = "{label}, {model}, serial number {serial}, holds {names}";
+    // Above the PIN field when several tokens were plugged in.
+    PIN_FOR_TOKEN = "PIN for {token}";
     WORKING = "Working...";
     // "{host}" is the site's host, as in the heading.
     STEP_CONNECTING = "Connecting to {host}...";

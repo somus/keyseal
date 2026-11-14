@@ -273,19 +273,85 @@ pub trait TokenBackend {
     fn close(&self);
 }
 
-/// How long [`Module::open`] waits for a token to appear, for a driver of a
-/// plugged-in token. The HyperSecu driver finds its token a second or two
+/// How long [`Module::tokens`] waits for a token to appear, for a driver of
+/// a plugged-in token. The HyperSecu driver finds its token a second or two
 /// after initialising, so an empty slot list right away doesn't mean no
 /// token.
 pub const SLOT_WAIT: Duration = Duration::from_secs(5);
 
-/// Opens a session on the first token of the module at `path`, waiting up
+/// A token a driver reaches, read before login.
+#[derive(Serialize, Deserialize)]
+pub struct TokenInfo {
+    pub slot: u64,
+    pub label: String,
+    pub manufacturer: String,
+    pub model: String,
+    pub serial: String,
+    /// What the token shows before login.
+    pub certificates: Vec<TokenCertificate>,
+}
+
+/// A token as the picker lists it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TokenSummary {
+    /// The token's label, or its model without one.
+    pub label: String,
+    /// The manufacturer and the model.
+    pub model: String,
+    pub serial: String,
+    /// The names on the certificates it shows before login that can sign
+    /// with the job's key usage; empty when it shows none.
+    pub names: Vec<String>,
+}
+
+impl TokenSummary {
+    pub fn of(token: &TokenInfo, usage: KeyUsage) -> Self {
+        let model = format!("{} {}", token.manufacturer.trim(), token.model.trim())
+            .trim()
+            .to_owned();
+        let mut names = Vec::new();
+        for certificate in &token.certificates {
+            let name = CertificateSummary::of(&certificate.der).name;
+            if is_signing_certificate(&certificate.der, usage) && !names.contains(&name) {
+                names.push(name);
+            }
+        }
+        Self {
+            label: match token.label.trim() {
+                "" => model.clone(),
+                label => label.to_owned(),
+            },
+            model,
+            serial: token.serial.trim().to_owned(),
+            names,
+        }
+    }
+}
+
+/// A loaded driver whose tokens were listed, which opens one of them.
+pub trait Driver {
+    /// Opens a session on the token in `slot`.
+    fn open(self: Box<Self>, slot: u64) -> Result<Box<dyn TokenBackend>, TokenError>;
+}
+
+/// Loads the module at `path` and lists its initialised tokens, waiting up
 /// to `wait` for one: in this process, or in the token worker for an
 /// Intel-only macOS driver.
-pub fn open(path: &Path, wait: Duration) -> Result<Box<dyn TokenBackend>, TokenError> {
+pub fn tokens(
+    path: &Path,
+    wait: Duration,
+) -> Result<(Box<dyn Driver>, Vec<TokenInfo>), TokenError> {
     match worker::backend_for(path)? {
-        Backend::InProcess => Ok(Box::new(Module::load(path)?.open(wait)?)),
-        Backend::Worker => Ok(Box::new(WorkerToken::open(&worker::locate()?, path, wait)?)),
+        Backend::InProcess => {
+            let module = Module::load(path)?;
+            let tokens = module.tokens(wait)?;
+            Ok((Box::new(module), tokens))
+        }
+        Backend::Worker => {
+            let worker = WorkerToken::start(&worker::locate()?)?;
+            let tokens = worker.tokens(path, wait)?;
+            Ok((Box::new(worker), tokens))
+        }
     }
 }
 
@@ -319,23 +385,51 @@ impl Module {
         })
     }
 
-    /// Opens a session on the first initialised token, listing the slots
-    /// again until `wait` is over ([`SLOT_WAIT`]).
-    pub fn open(&self, wait: Duration) -> Result<Token, TokenError> {
+    /// Every initialised token, with the certificates it shows before
+    /// login, listing the slots again until `wait` is over ([`SLOT_WAIT`])
+    /// while there is none.
+    pub fn tokens(&self, wait: Duration) -> Result<Vec<TokenInfo>, TokenError> {
         let deadline = Instant::now() + wait;
-        let slot = loop {
+        let slots = loop {
             let slots = self
                 .pkcs11
                 .get_slots_with_initialized_token()
                 .map_err(|e| err("Couldn't list tokens", e))?;
-            if let Some(slot) = slots.into_iter().next() {
-                break slot;
+            if !slots.is_empty() {
+                break slots;
             }
             if Instant::now() >= deadline {
                 return Err(TokenError(NO_TOKEN.into()));
             }
             std::thread::sleep(Duration::from_millis(250));
         };
+        slots
+            .into_iter()
+            .map(|slot| {
+                let info = self
+                    .pkcs11
+                    .get_token_info(slot)
+                    .map_err(|e| err("Couldn't read the token", e))?;
+                Ok(TokenInfo {
+                    slot: slot.id(),
+                    label: info.label().trim().to_owned(),
+                    manufacturer: info.manufacturer_id().trim().to_owned(),
+                    model: info.model().trim().to_owned(),
+                    serial: info.serial_number().trim().to_owned(),
+                    // A token whose certificates can't be read is still
+                    // listed; opening it says what is wrong.
+                    certificates: self
+                        .open(slot.id())
+                        .and_then(|token| token.certificates(false))
+                        .unwrap_or_default(),
+                })
+            })
+            .collect()
+    }
+
+    /// Opens a session on the token in `slot`.
+    pub fn open(&self, slot: u64) -> Result<Token, TokenError> {
+        let slot = Slot::try_from(slot).map_err(|e| err("Couldn't open the token", e))?;
         let info = self
             .pkcs11
             .get_token_info(slot)
@@ -356,6 +450,12 @@ impl Module {
             c_sign: self.c_sign,
             pin: RefCell::new(None),
         })
+    }
+}
+
+impl Driver for Module {
+    fn open(self: Box<Self>, slot: u64) -> Result<Box<dyn TokenBackend>, TokenError> {
+        Ok(Box::new(Module::open(&self, slot)?))
     }
 }
 
@@ -828,10 +928,9 @@ mod tests {
             std::fs::remove_dir_all(&dir).unwrap();
             return;
         }
-        let token = Module::load(Path::new(&module))
-            .unwrap()
-            .open(Duration::ZERO)
-            .unwrap();
+        let module = Module::load(Path::new(&module)).unwrap();
+        let slot = module.tokens(Duration::ZERO).unwrap()[0].slot;
+        let token = module.open(slot).unwrap();
         assert!(token.mechanisms.contains(&MechanismType::SHA384_RSA_PKCS));
         token.login(Zeroizing::new(PIN.into())).unwrap();
         let key = token

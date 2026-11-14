@@ -18,6 +18,7 @@ use crate::cms::{DigestAlgorithm, SignatureAlgorithm};
 use crate::origin::Origin;
 
 pub const VERSION_HEADER: &str = "X-KeySeal-Version";
+const ENROL_PROOF_LABEL: &str = "KeySeal enrol proof v1";
 const MAX_LINK_BYTES: usize = 2048;
 /// Job endpoint requests wait this long. Round 1 and the server's finish
 /// call the signing service, which the server waits up to 60 seconds for
@@ -500,14 +501,34 @@ impl JobClient {
         })
     }
 
-    /// The single enrol round (8.6).
+    /// What an enrol job's proof signs (8.6): a fixed label, the job URL,
+    /// the claim nonce and the certificate's SHA-256 as lowercase hex, each
+    /// ended by a zero byte but the last. It starts with `K`, never DER
+    /// SignedAttributes' 0x31, so a proof and a document signature can't
+    /// stand in for each other.
+    pub fn enrol_proof_message(&self, nonce: &str, certificate_sha256: &str) -> Vec<u8> {
+        [
+            ENROL_PROOF_LABEL,
+            self.url.as_str(),
+            nonce,
+            certificate_sha256,
+        ]
+        .join("\0")
+        .into_bytes()
+    }
+
+    /// The single enrol round (8.6), with the proof signed over
+    /// [`Self::enrol_proof_message`].
     pub fn enrol(
         &self,
         nonce: &str,
         certificate: &[u8],
         chain: &[Vec<u8>],
+        proof: &[u8],
     ) -> Result<(), ProtocolError> {
-        let Empty {} = self.post("certificate", certificate_body(nonce, certificate, chain))?;
+        let mut body = certificate_body(nonce, certificate, chain);
+        body["proof"] = STANDARD.encode(proof).into();
+        let Empty {} = self.post("certificate", body)?;
         Ok(())
     }
 

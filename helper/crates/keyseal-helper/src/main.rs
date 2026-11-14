@@ -286,7 +286,9 @@ impl Ui for Headless {
             (None, Kind::Sign) => {
                 eprintln!("The document digests will be shown for confirmation before signing.")
             }
-            (None, Kind::Enrol) => eprintln!("Enrol the certificate on this token."),
+            (None, Kind::Enrol) => eprintln!(
+                "Enrol the certificate on this token, proving its key is here. No document is signed."
+            ),
         }
         if let Some(warning) = prompt.pin_warning {
             eprintln!("{}", warning.message());
@@ -317,7 +319,9 @@ impl Ui for Headless {
 
     fn confirm_enrol(&mut self, job: &JobView) -> bool {
         describe(job);
-        eprintln!("Enrolling a certificate from the system certificate store (headless).");
+        eprintln!(
+            "Enrolling a certificate from the system certificate store, proving its key is there (headless)."
+        );
         true
     }
 

@@ -5,7 +5,8 @@
 //! and signs a batch of three documents after one login on both. It
 //! refuses tampered SignedAttributes before the PIN, wrong pairings of key
 //! and algorithm, documents that don't hash to the digest, a batch with one
-//! such document, and untrusted origins, and enrols a certificate. A
+//! such document, and untrusted origins, and enrols a certificate with a
+//! proof of its key. A
 //! second test signs with keys that need the PIN for each signature and
 //! with brainpool keys, and applies the job's key usage.
 //! Runs when `KEYSEAL_SOFTHSM_MODULE` names libsofthsm2, and needs
@@ -158,6 +159,8 @@ struct Posted {
     /// Each document's `toSign`, in order.
     to_sign: Vec<Vec<u8>>,
     signatures: Option<Vec<Vec<u8>>>,
+    /// An enrol job's proof, and the job URL it was posted to.
+    proof: Option<(Vec<u8>, String)>,
     failure: Option<String>,
     /// The `Authorization` and `X-KeySeal-Claim` of the last document download.
     document: Option<(Option<String>, Option<String>)>,
@@ -280,6 +283,8 @@ fn serve(listener: TcpListener, job: Job) -> Posted {
                         .collect();
                     if job.kind == "enrol" {
                         posted.certificate = Some(certificate);
+                        posted.proof =
+                            Some((base64(&body["proof"]), format!("{origin}{job_path}")));
                         (200, json!({}))
                     } else {
                         posted.to_sign = (0..job.documents)
@@ -847,7 +852,9 @@ fn runs_jobs_on_softhsm() {
             .contains("The link asked for a Sign job")
     );
 
-    // Enrol logs in and posts the expected certificate with its issuer as chain.
+    // Enrol logs in and posts the expected certificate with its issuer as
+    // chain, and its key's proof over the job URL, claim nonce and
+    // certificate.
     let enrol = Job {
         link_kind: "enrol",
         kind: "enrol",
@@ -859,6 +866,12 @@ fn runs_jobs_on_softhsm() {
     assert!(String::from_utf8_lossy(&output.stdout).contains("Certificate enrolled"));
     assert_eq!(posted.certificate.as_deref(), Some(&p256[..]));
     assert_eq!(posted.chain, [setup.read("ca.der")]);
+    let (proof, job_url) = posted.proof.unwrap();
+    let message = format!(
+        "KeySeal enrol proof v1\0{job_url}\0{NONCE}\0{}",
+        hex::encode(Sha256::digest(&p256))
+    );
+    setup.verify("p256", "sha256", "ecdsa", message.as_bytes(), &proof);
 
     // An untrusted origin gets no request at all.
     let (output, posted) = setup.run_job(

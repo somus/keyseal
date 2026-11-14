@@ -1,6 +1,6 @@
 # KeySeal protocol v1
 
-Status: version 1, the version the released helper and the `@keyseal` packages implement. It changes only by adding optional members (section 7.1); any other change needs a new protocol version with its own path segment. This document is normative except where a section or paragraph is marked informative. The machine-readable companion is [openapi.yaml](openapi.yaml); the schema names used here (`Manifest`, `JobDescription`, `DocumentEntry`, `CertificateSubmission`, `PreparedSignature`, `EnrolResult`, `SignatureSubmission`, `FailureReport`, `Empty`, `Error`, `UpgradeRequired`) are the names of its component schemas. Where the two disagree, this document wins and the disagreement is a bug.
+Status: version 1, the version the released helper and the `@keyseal` packages implement; the enrol proof of section 8.6 needs helper 0.5.0 or later. It changes only by adding optional members (section 7.1); any other change needs a new protocol version with its own path segment. This document is normative except where a section or paragraph is marked informative. The machine-readable companion is [openapi.yaml](openapi.yaml); the schema names used here (`Manifest`, `JobDescription`, `DocumentEntry`, `CertificateSubmission`, `PreparedSignature`, `EnrolResult`, `SignatureSubmission`, `FailureReport`, `Empty`, `Error`, `UpgradeRequired`) are the names of its component schemas. Where the two disagree, this document wins and the disagreement is a bug.
 
 ## 1. Conventions and terminology
 
@@ -207,7 +207,7 @@ The server evaluates a request in this order and answers with the first status t
 7. `claimNonce` does not match, the job is not in the state the request needs, or another request holds a live settle lease: `409`.
 8. The request is processed.
 
-A `426` changes the job only as section 7.3 allows. To find the claim nonce the server reads the body; a body it cannot read or parse leaves the job unchanged.
+A `426` changes the job only as section 7.3 allows. To find the claim nonce the server reads the body; a body it cannot read or parse leaves the job unchanged. An enrol submission without the proof a server requires gets its `426` at step 8 (section 8.6).
 
 ### 8.2 Claim: `GET <job URL>`
 
@@ -304,9 +304,19 @@ The server MUST verify every signature over its document's `toSign` with the rou
 
 ### 8.6 Enrol: `POST <job URL>/certificate`
 
-Enrol is a single round. The request is a `CertificateSubmission` as in section 8.3. The job MUST be `claimed`. The server MUST apply the certificate checks of section 8.3: it refuses with `422`, failing the job, a certificate that does not parse as X.509, is not valid at the time of the request, has a key not supported by section 11, does not match the expected SHA-256, does not satisfy the job's certificate policy, does not have the job's key usage, or does not chain to a root the signing service trusts. It MAY refuse other certificates by its own policy. On acceptance it moves the job to `completed`, hands the certificate and chain to the integrator, and returns `200` with `EnrolResult` (`{}`). What the integrator stores is its own policy.
+Enrol is a single round. The request is a `CertificateSubmission` as in section 8.3, with a proof that the helper holds the certificate's private key:
 
-The helper MAY log in to the token to read certificates for an enrol job, after showing what section 12.2 requires.
+```json
+{ "claimNonce": "...", "certificate": "<base64 DER>", "chain": ["<base64 DER>"], "proof": "<base64>" }
+```
+
+`proof` is a signature with the private key of `certificate` over a message the helper builds itself, never bytes from the server: the ASCII bytes `KeySeal enrol proof v1`, a zero byte, the job URL, a zero byte, the claim nonce, a zero byte, and the SHA-256 of the certificate's DER as 64 lowercase hex characters, with nothing before, between or after them. The job URL is the one the helper sends its requests to, serialised as the WHATWG URL Standard does; for a link the server made, that is the link's `job` value unchanged. The key alone fixes the scheme and digest: an RSA key signs with `rsa-pkcs1-v1_5` and `sha256`, an EC key with `ecdsa` and the digest section 11.1 gives its curve. The signature is encoded as section 11.1 says, at most 4096 characters of base64.
+
+`proof` is OPTIONAL in the schema, since within version 1 only optional members are added (section 7.1). A helper that implements this section MUST send it. A server MAY require it, as one of the refusals its own policy allows below; a server that requires it answers a submission without one with `426` and an `UpgradeRequired` body whose `minVersion` is the first helper version that sends the proof, 0.5.0, or the server's configured minimum (section 7.3) if that is higher, and fails the job as section 7.3 allows. It decides on the member's presence, not on `X-KeySeal-Version`.
+
+The job MUST be `claimed`. The server MUST apply the certificate checks of section 8.3: it refuses with `422`, failing the job, a certificate that does not parse as X.509, is not valid at the time of the request, has a key not supported by section 11, does not match the expected SHA-256, does not satisfy the job's certificate policy, does not have the job's key usage, or does not chain to a root the signing service trusts. A server that receives a proof MUST then verify it with the certificate's key, over the message it builds the same way from its own job URL, the request's claim nonce and the posted certificate, and MUST refuse with `422`, failing the job, a proof that does not verify. It MAY refuse other certificates by its own policy. On acceptance it moves the job to `completed`, hands the certificate and chain to the integrator, and returns `200` with `EnrolResult` (`{}`). What the integrator stores is its own policy.
+
+The helper MAY log in to the token to read certificates for an enrol job, after showing what section 12.2 requires. Once the certificate is chosen, the helper signs the proof with its key: on a PKCS#11 token in the session the PIN opened, re-authenticating a key that requires it as section 12.1 says, and from the system's certificate store behind the system's or vendor's PIN dialog. If the key cannot sign the proof, the helper reports a failure (section 8.7) and posts nothing.
 
 ### 8.7 Failure: `POST <job URL>/failure`
 
@@ -331,11 +341,11 @@ After a successful claim, the helper MUST send a failure report whenever it stop
 | `410` | Job is `completed` or `failed`. | `Error` |
 | `413` | Body larger than 262144 bytes. | `Error` |
 | `422` | Body not valid JSON or not matching its schema, or the server refused the certificate or a signature. | `Error` |
-| `426` | Helper version below the server's minimum. | `UpgradeRequired` |
+| `426` | Helper version below the server's minimum, or an enrol submission without the proof the server requires (section 8.6). | `UpgradeRequired` |
 | `429` | Rate limit exceeded. The server MAY send `Retry-After`. | `Error` |
 | `502` | The signing service is unreachable or answered with an error other than `400` or `422`. | `Error` |
 
-A `422` for an invalid body leaves the job unchanged. A `422` that refuses a certificate or a signature moves the job to `failed` with the same message; for a sign job with several documents, one refused document fails the whole job. When the signing service answers a request with `400` or `422`, the server treats it as a refusal: `422`, and the job fails with the service's message. Any other error status from the service, a network error or a timeout is a `502`.
+A `422` for an invalid body leaves the job unchanged. A `422` that refuses a certificate, a signature or an enrol proof moves the job to `failed` with the same message; for a sign job with several documents, one refused document fails the whole job. When the signing service answers a request with `400` or `422`, the server treats it as a refusal: `422`, and the job fails with the service's message. Any other error status from the service, a network error or a timeout is a `502`.
 
 On `502` the server releases its settle lease and leaves the job unchanged. The helper MAY repeat the same request once after a short delay.
 
@@ -353,7 +363,7 @@ Every non-`200` response except `426` carries an `Error` body, `{ "message": "..
 | `claimed` | A helper claimed it with `GET`; a claim nonce exists. |
 | `prepared` | Sign round 1 succeeded; the server holds the SignedAttributes and finishing state of every document. |
 | `completed` | Every signed PDF finished, or certificate enrolled. Terminal. |
-| `failed` | Helper reported failure, the server refused a certificate or signature, or the helper was refused as outdated. Terminal. |
+| `failed` | Helper reported failure, the server refused a certificate, signature or enrol proof, or the helper was refused as outdated. Terminal. |
 | `expired` | TTL passed in a non-terminal state. Terminal. |
 
 ### 9.2 Transitions
@@ -361,11 +371,11 @@ Every non-`200` response except `426` carries an `Error` body, `{ "message": "..
 | From | To | Trigger |
 | --- | --- | --- |
 | `pending` | `claimed` | `GET <job URL>` |
-| `pending`, `claimed`, `prepared` | `failed` | `426` refusal, under the conditions of section 7.3 (SHOULD) |
+| `pending`, `claimed`, `prepared` | `failed` | `426` refusal, under the conditions of section 7.3 (SHOULD), or an enrol submission without a required proof (section 8.6) |
 | `claimed` | `prepared` | Sign round 1 accepted |
 | `claimed` | `completed` | Enrol certificate accepted |
 | `prepared` | `completed` | Sign round 2 accepted |
-| `claimed`, `prepared` | `failed` | Failure report, or certificate or signature refused |
+| `claimed`, `prepared` | `failed` | Failure report, or certificate, signature or enrol proof refused |
 | `pending`, `claimed`, `prepared` | `expired` | 15 minutes since creation |
 
 A job expires 15 minutes after it is created, whatever its state. The server MUST evaluate expiry on every read of the job and answer as for an expired job from that moment on; it MAY record `expired` lazily and MAY sweep expired jobs in the background. A request that acquired the settle lease before expiry MAY finish its transition, so a sweep MUST NOT record `expired` on a job whose settle lease is live.
@@ -415,7 +425,7 @@ After login, the helper MUST sign with the private key that belongs to the poste
 
 Any other key type or curve is unsupported. The server MUST NOT prepare a signature for it, and the helper MUST NOT offer its certificate. The EC curves are named by their OIDs in the certificate's SubjectPublicKeyInfo: P-256 (secp256r1, `1.2.840.10045.3.1.7`), P-384 (secp384r1, `1.3.132.0.34`), brainpoolP256r1 (`1.3.36.3.3.2.8.1.1.7`) and brainpoolP384r1 (`1.3.36.3.3.2.8.1.1.11`), the last two from RFC 5639. P-256 and brainpoolP256r1 require `sha256`, and P-384 and brainpoolP384r1 require `sha384`; the helper MUST refuse any other pairing, and MUST refuse `ecdsa` with an RSA key or an RSA scheme with an EC key.
 
-Each signature is computed over the exact `toSign` bytes of its document: the input to the digest is the DER SignedAttributes with outer tag 0x31.
+Each signature is computed over the exact `toSign` bytes of its document: the input to the digest is the DER SignedAttributes with outer tag 0x31. An enrol proof is computed and encoded the same way over its message (section 8.6).
 
 - **RSA PKCS#1 v1.5**: RSASSA-PKCS1-v1_5 (RFC 8017) with `digestAlgorithm`.
 - **RSA-PSS**: RSASSA-PSS (RFC 8017) with `digestAlgorithm` as the message digest, MGF1 with the same digest, salt length equal to the digest length (32 for sha256, 48 for sha384), and trailer field 1.
@@ -462,7 +472,7 @@ When the helper falls back to the system's certificate store (CNG on Windows, Cr
 
 ### 12.2 Enrol jobs
 
-Before asking for a PIN or reading certificates, the helper MUST show the origin, the `title` and the `signer`.
+Before asking for a PIN or reading certificates, the helper MUST show the origin, the `title` and the `signer`. Before its PIN prompt, or before handing off to the system's or vendor's PIN dialog, it MUST also say that it will prove it holds the certificate's key and that no document is signed (section 8.6).
 
 ### 12.3 PIN handling
 
@@ -526,7 +536,8 @@ The driver catalogue is signed with a separate key and is outside this document.
 - **Substituted attributes.** The helper validates SignedAttributes before the user confirms the digest and before signing (section 10), so a server cannot get a signature over attributes that bind a different certificate, carry no message digest, or smuggle extra attributes.
 - **Cross-origin redirects and private addresses.** The helper refuses cross-origin redirects (section 4.3) and private, loopback and link-local addresses, including after DNS changes (section 4.2), so a trusted origin cannot steer the helper to another host or into the user's network.
 - **Swapped signer.** Someone with an account at a trusted origin could create a job and get another person to open its link. The helper shows `title` and `signer`, and `expectedCertificateSha256` limits the job to one certificate. Integrators SHOULD set `expectedCertificateSha256` on sign jobs. Where no certificate is known yet, as on enrolment or a first signature, `certificatePolicy` narrows the job to certificates of a class, an issuer or an organization; it does not tie the job to one person.
-- **Enrolment without proof of possession.** An enrol job submits a certificate without a signature, and certificates are public: anyone can copy one out of a signed PDF and enrol it. That gains no signature, since a sign job still needs the private key, but an enrolled certificate shows only what the user submitted, not that they hold its key or are its subject. Integrators should not treat enrolment as identity verification.
+- **What enrolment proves.** Certificates are public: anyone can copy one out of a signed PDF. With the proof of section 8.6, a copied certificate no longer enrols, since only the holder of its private key can sign the proof, and a proof is bound to one origin, one job, one claim and one certificate, so it cannot be replayed to another job or site. The proof shows that whoever ran the helper holds the key at that moment; it does not show who they are, and someone lured into opening another account's enrol link still enrols their own certificate in that account. The helper shows the origin, `title` and `signer` before it asks for the PIN so the user can notice that, and integrators should still check the enrolled certificate against the person rather than treat enrolment as identity verification. A server that does not require the proof accepts an enrolment without one, as before.
+- **Enrol proofs and document signatures.** The helper builds the proof's message itself and the server supplies none of its bytes but the claim nonce, whose syntax is fixed (section 8.2). The message starts with `K` (0x4B), and DER SignedAttributes start with 0x31, so a proof is never a valid document signature, and the helper's SignedAttributes validation (section 10) means a sign job's `toSign` can never obtain a proof.
 - **What WYSIWYS guarantees.** The `messageDigest` alone ties the signature to a specific byte sequence but cannot be checked by eye against a document. With document download (section 8.4), the helper confirms for every document that the signature covers every byte of the PDF it downloaded except the signature value, and that those bytes hash to that document's `messageDigest`. It does not render the PDF, so it does not show the user what the document says. A server that controls the origin can still serve a PDF whose content differs from what the page displayed; the guarantee is that the signed bytes are the downloaded bytes. Later incremental updates appended after signing, and PDF features that display content differently in different viewers, are outside the check.
 - **Batches.** The signer approves the documents of a job together, with one PIN entry, after seeing their number and titles; a server could pad a batch with a document the signer would not have signed alone. The cap of 20 documents keeps the list readable, every document is checked as section 8.4 says, and a server that refuses or cannot finish one document hands the integrator none, so a batch is never completed in part.
 - **Insecure development origins.** `KEYSEAL_ALLOW_INSECURE_ORIGINS=1` allows plain HTTP to loopback only, never persists trust, and is shown in a banner. It MUST NOT be set on a user's machine outside development and CI.

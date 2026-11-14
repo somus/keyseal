@@ -19,6 +19,14 @@ lines under the new version with the release date.
 
 ### [Unreleased][helper-unreleased]
 
+#### Added
+
+- Enrolling a certificate proves the token holds its key: the helper signs a
+  message bound to the site, the job and the certificate, and sends it with
+  the certificate (spec section 8.6). No document is signed. On a token the
+  PIN already entered covers it; from the macOS keychain or Windows, the
+  system's or the token's PIN window now appears during enrolment.
+
 #### Fixed
 
 - Edge and Chrome on Windows name KeySeal, not "keyseal", for a helper that
@@ -344,6 +352,14 @@ lines under the new version with the release date.
 ## @keyseal/server
 
 ### [Unreleased][server-unreleased]
+
+#### Changed
+
+- Enrol jobs require the helper's proof of possession (spec section 8.6) and
+  verify it after the certificate checks. This is breaking for helpers below
+  0.5.0, which don't send it: their enrolments get 426 naming 0.5.0, or
+  `minHelperVersion` if higher, and the job fails. A proof that doesn't
+  verify gets 422 and fails the job.
 
 ### [0.5.0][server-0.5.0] - 2026-11-13
 

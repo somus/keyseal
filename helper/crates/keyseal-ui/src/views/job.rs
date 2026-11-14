@@ -296,6 +296,7 @@ impl JobWindow {
             Step::CheckingCertificate => strings::STEP_CHECKING_CERTIFICATE,
             Step::Downloading if batch => strings::STEP_DOWNLOADING_BATCH,
             Step::Downloading => strings::STEP_DOWNLOADING,
+            Step::Signing if self.job.kind == Kind::Enrol => strings::STEP_PROVING,
             Step::Signing => strings::STEP_SIGNING,
             Step::Sending if batch => strings::STEP_SENDING_BATCH,
             Step::Sending => strings::STEP_SENDING,

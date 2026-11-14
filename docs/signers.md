@@ -148,7 +148,7 @@ A few tokens and cards work differently:
 - When the certificate can only be read after the PIN, KeySeal asks for the PIN first and then shows the document once more for you to **Confirm**.
 - On Windows, some tokens show their maker's own PIN window, and on a Mac the system shows its own PIN window for a card it understands without a driver. KeySeal shows you the document first and asks you to **Confirm**, then the token's window asks for the PIN.
 
-A site may also ask you to set up your certificate before your first signature. KeySeal then says the site **wants to set up your signing certificate**, and your PIN only unlocks the token so KeySeal can find your certificate.
+A site may also ask you to set up your certificate before your first signature. KeySeal then says the site **wants to set up your signing certificate**. Your PIN unlocks the token so KeySeal can find your certificate and prove to the site that you hold its key; no document is signed. Where the token's own PIN window or the system's appears instead, KeySeal shows the site first and asks you to **Continue**, then that window asks for the PIN.
 
 To stop at any point, click **Cancel** or close the window. Nothing is signed, and the site is told you cancelled.
 

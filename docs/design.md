@@ -42,7 +42,7 @@ A branded, origin-locked helper build is a parameterised build option, published
 
 A sign job carries 1 to 20 documents; one document is a list of one. A batch is all or nothing: a document that fails any check stops the job before the PIN, one signature that doesn't verify fails the job before anything is finished, and the integrator never receives part of a batch.
 
-Enrol, capturing a certificate without signing, is a single round: `GET` the job, then `POST` the certificate and chain. What the integrator stores from it is their policy. Enrol has no proof of possession, so it shows which certificate the user submitted, not that they hold its key or are its subject; it is not identity verification.
+Enrol, capturing a certificate without signing a document, is a single round: `GET` the job, then `POST` the certificate, its chain and a proof of possession. The proof is the certificate's key signing a message the helper builds from a fixed label, the job URL, the claim nonce and the certificate's SHA-256, so a certificate copied out of a signed PDF can't be enrolled, and a proof can't be replayed to another job or passed off as a document signature. `@keyseal/server` requires it, answering a helper too old to send it with 426. What the integrator stores from an enrolment is their policy. The proof shows that the person at the helper holds the key, not that they are its subject; enrolment is not identity verification.
 
 ### Job token and lifecycle
 

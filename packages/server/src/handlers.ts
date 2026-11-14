@@ -43,6 +43,25 @@ import {
 import type { Adapter, Job, JobDocument } from "./types.js";
 
 const UPGRADE_MESSAGE = "Update the signing helper, then try again.";
+/** The first helper version that sends an enrol proof (protocol section 8.6). */
+const ENROL_PROOF_HELPER_VERSION = "0.5.0";
+
+/**
+ * Protocol section 8.6: what an enrol proof signs. The helper builds it, and
+ * its first byte is never DER SignedAttributes' 0x31, so it can't stand in for
+ * a document signature.
+ */
+function enrolProofMessage(
+  jobUrl: string,
+  claimNonce: string,
+  certificateSha256: string
+): Uint8Array {
+  return new TextEncoder().encode(
+    ["KeySeal enrol proof v1", jobUrl, claimNonce, certificateSha256].join(
+      "\0"
+    )
+  );
+}
 
 export type Action =
   | "claim"
@@ -73,6 +92,12 @@ export function createHandlers({
   jobUrl,
   transitions,
 }: HandlerContext) {
+  // The minimum a 426 for an enrol job without a proof names.
+  const enrolMinVersion =
+    minVersion &&
+    compareSemver(minVersion, parseSemver(ENROL_PROOF_HELPER_VERSION)!) > 0
+      ? options.minHelperVersion!
+      : ENROL_PROOF_HELPER_VERSION;
   const {
     answerCurrent,
     deleteBlobs,
@@ -158,10 +183,24 @@ export function createHandlers({
 
   async function submitCertificate(
     job: Job,
-    { certificate, chain }: { certificate: string; chain: string[] },
+    token: string,
+    {
+      certificate,
+      chain,
+      claimNonce,
+      proof,
+    }: { certificate: string; chain: string[]; claimNonce: string; proof?: string },
     lease: Date,
     now: Date
   ): Promise<Response> {
+    // A helper that doesn't send the proof predates it: 426 tells it to update.
+    if (job.kind === "enrol" && proof === undefined) {
+      await fail(job, lease, { message: UPGRADE_MESSAGE, reportedBy: "server" });
+      return json(
+        { message: UPGRADE_MESSAGE, minVersion: enrolMinVersion },
+        426
+      );
+    }
     const facts = await acceptCertificate(
       inspector,
       service,
@@ -174,6 +213,23 @@ export function createHandlers({
       return await refuse(job, lease, facts);
     }
     if (job.kind === "enrol") {
+      const message = enrolProofMessage(jobUrl(token), claimNonce, facts.sha256);
+      const valid =
+        proof !== undefined &&
+        inspector.verify(
+          fromBase64(certificate),
+          message,
+          fromBase64(proof),
+          schemeFor(facts.key, "pkcs1"),
+          digestFor(facts.key)
+        );
+      if (!valid) {
+        return await refuse(
+          job,
+          lease,
+          "The proof doesn't match the certificate: was the right token used?"
+        );
+      }
       await adapter.onCompleted(job, { certificate: facts, kind: "enrol" });
       if (
         !(await settle(job, lease, { certificate, chain, state: "completed" }))
@@ -477,7 +533,7 @@ export function createHandlers({
       }
       try {
         return submission.action === "certificate"
-          ? await submitCertificate(job, submission, lease, now)
+          ? await submitCertificate(job, token, submission, lease, now)
           : await submitSignatures(job, submission.signatures, lease);
       } catch (cause) {
         return await serviceFailed(job, lease, cause);

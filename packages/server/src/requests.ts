@@ -43,6 +43,8 @@ type Submission =
       claimNonce: string;
       certificate: string;
       chain: string[];
+      /** An enrol job's proof of possession (protocol section 8.6). */
+      proof?: string;
     }
   | { action: "signature"; claimNonce: string; signatures: string[] }
   | { action: "failure"; claimNonce: string; message: string };
@@ -92,18 +94,25 @@ export async function readSubmission(
   }
   const { claimNonce } = body;
   if (action === "certificate") {
-    const { certificate, chain } = body;
+    const { certificate, chain, proof } = body;
     if (
       isCertificate(certificate) &&
       Array.isArray(chain) &&
       chain.length <= MAX_CHAIN &&
-      chain.every(isCertificate)
+      chain.every(isCertificate) &&
+      (proof === undefined || isSignature(proof))
     ) {
-      return { action, certificate, chain, claimNonce };
+      return {
+        action,
+        certificate,
+        chain,
+        claimNonce,
+        ...(proof === undefined ? {} : { proof }),
+      };
     }
     return error(
       422,
-      "The request needs a certificate and a chain of base64 DER certificates."
+      "The request needs a certificate, a chain of base64 DER certificates and, if any, a base64 proof."
     );
   }
   if (action === "signature") {

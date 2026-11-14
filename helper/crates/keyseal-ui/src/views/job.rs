@@ -743,7 +743,7 @@ mod tests {
             window.find_by_label(
                 "ASHA RAO, issued by Verasys Sub CA 2022, valid until 2 June 2028, serial ending 0B 7E 31",
             );
-            window.click(("certificate", 1), cx);
+            window.click(("certificate", 1usize), cx);
             window.render_frame(cx);
             window.click("submit", cx);
         })

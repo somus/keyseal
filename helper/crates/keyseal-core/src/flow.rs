@@ -640,6 +640,8 @@ impl Found {
 /// What one attempt reached.
 enum Reached {
     Tokens(Box<dyn Driver>, Vec<TokenInfo>),
+    /// The certificate store.
+    #[cfg(any(windows, target_os = "macos", test))]
     Backend(Backend),
 }
 
@@ -725,6 +727,7 @@ fn open_first(
             Duration::ZERO
         };
         match open(attempt, wait) {
+            #[cfg(any(windows, target_os = "macos", test))]
             Ok(Reached::Backend(backend)) => {
                 seen(attempt, Ok(()));
                 return Ok(Found::Backend(backend));

@@ -7,12 +7,12 @@ use gpui_kit::component::scroll::ScrollableElement;
 use gpui_kit::component::{ActiveTheme, v_flex};
 use gpui_kit::{
     Context, FocusHandle, InteractiveElement, IntoElement, ParentElement, Render, Role,
-    ScrollHandle, SharedString, StatefulInteractiveElement, Styled, TestSupportExt, Window, div,
+    SharedString, StatefulInteractiveElement, Styled, TestSupportExt, Window, div,
     prelude::FluentBuilder,
 };
 use keyseal_core::modules;
 
-use super::widgets::{alert, button_bar, icon_tile, window_frame};
+use super::widgets::{ScrollArea, alert, button_bar, icon_tile, window_frame};
 use super::{CONTEXT, Cancel, Submit};
 use crate::{native, strings};
 
@@ -24,7 +24,7 @@ pub(super) struct MessageWindow {
     pub(super) reply: Option<mpsc::Sender<()>>,
     focus: FocusHandle,
     /// Shows a scrollbar while the message is longer than the window.
-    scroll: ScrollHandle,
+    scroll: ScrollArea,
 }
 
 impl MessageWindow {
@@ -43,7 +43,7 @@ impl MessageWindow {
             message: message.into(),
             reply,
             focus,
-            scroll: ScrollHandle::new(),
+            scroll: ScrollArea::default(),
         }
     }
 

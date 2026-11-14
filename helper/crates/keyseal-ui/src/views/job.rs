@@ -11,8 +11,8 @@ use gpui_kit::component::{ActiveTheme, Disableable, Sizable, StyledExt, h_flex, 
 use gpui_kit::{
     AnyElement, App, AppContext, Context, Div, Entity, FocusHandle, Focusable, Global, Hsla, Image,
     ImageFormat, InteractiveElement, IntoElement, ParentElement, Render, RenderImage, Role,
-    ScrollHandle, SharedString, StatefulInteractiveElement, Styled, Subscription, TestSupportExt,
-    Window, div, prelude::FluentBuilder, px, rgb, size,
+    SharedString, StatefulInteractiveElement, Styled, Subscription, TestSupportExt, Window, div,
+    prelude::FluentBuilder, px, rgb, size,
 };
 use keyseal_core::flow::Step;
 use keyseal_core::protocol::Kind;
@@ -20,8 +20,8 @@ use keyseal_core::token::{CertificateSummary, TokenSummary};
 use zeroize::Zeroizing;
 
 use super::widgets::{
-    InputDelay, banner, button_bar, field, group, icon, icon_tile, insecure_banner, logo_tile,
-    note, progress_line, site_heading, window_frame,
+    InputDelay, ScrollArea, banner, button_bar, field, group, icon, icon_tile, insecure_banner,
+    logo_tile, note, progress_line, site_heading, window_frame,
 };
 use super::{CONTEXT, Cancel, Submit};
 use crate::{Job, Stage, group_digest, native, strings};
@@ -99,7 +99,7 @@ const DOCUMENT_LIST_MIN_HEIGHT: f32 = 120.;
 fn document_list(
     titles: &[String],
     digests: Option<&[String]>,
-    scroll: &ScrollHandle,
+    scroll: &ScrollArea,
     cx: &App,
 ) -> AnyElement {
     let palette = native::palette(cx);
@@ -176,8 +176,8 @@ pub(super) struct JobWindow {
     focus: FocusHandle,
     /// The job and a batch's list of documents, which show a scrollbar
     /// while they hold more than fits.
-    scroll: ScrollHandle,
-    documents_scroll: ScrollHandle,
+    scroll: ScrollArea,
+    documents_scroll: ScrollArea,
     delay: InputDelay,
     _subscriptions: Vec<Subscription>,
 }
@@ -212,8 +212,8 @@ impl JobWindow {
             closed,
             log,
             focus: cx.focus_handle(),
-            scroll: ScrollHandle::new(),
-            documents_scroll: ScrollHandle::new(),
+            scroll: ScrollArea::default(),
+            documents_scroll: ScrollArea::default(),
             delay: InputDelay::new(|this: &mut Self| &mut this.delay, window, cx),
             _subscriptions: vec![subscription],
         };

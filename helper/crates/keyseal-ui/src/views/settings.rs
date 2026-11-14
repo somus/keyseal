@@ -8,7 +8,7 @@ use gpui_kit::component::switch::Switch;
 use gpui_kit::component::{ActiveTheme, Disableable, Sizable, h_flex, v_flex};
 use gpui_kit::{
     AnyElement, AnyWindowHandle, App, AppContext, ClipboardItem, Context, FocusHandle, Global,
-    Hsla, InteractiveElement, IntoElement, ParentElement, Render, ScrollHandle, SharedString,
+    Hsla, InteractiveElement, IntoElement, ParentElement, Render, SharedString,
     StatefulInteractiveElement, Styled, Task, TestSupportExt, Window, div, prelude::FluentBuilder,
     rgb, white,
 };
@@ -17,7 +17,7 @@ use keyseal_core::preferences::Preferences;
 use keyseal_core::trust::{Record, TrustStore};
 
 use super::job::set_always_show_details;
-use super::widgets::{field, group, icon, note, secondary, window_frame};
+use super::widgets::{ScrollArea, field, group, icon, note, secondary, window_frame};
 use super::{CONTEXT, Cancel, open};
 use crate::{Probe, native, strings};
 
@@ -124,7 +124,7 @@ struct SettingsWindow {
     _probing: Task<()>,
     focus: FocusHandle,
     /// Shows a scrollbar while the settings are taller than the window.
-    scroll: ScrollHandle,
+    scroll: ScrollArea,
 }
 
 impl SettingsWindow {
@@ -148,7 +148,7 @@ impl SettingsWindow {
             copied: false,
             _probing: Task::ready(()),
             focus,
-            scroll: ScrollHandle::new(),
+            scroll: ScrollArea::default(),
         };
         this.check_tokens(cx);
         this

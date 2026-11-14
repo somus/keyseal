@@ -24,7 +24,8 @@ lines under the new version with the release date.
 - With more than one token plugged in, KeySeal asks which one to use
   before asking for the PIN, and names that token in the PIN prompt. When
   the job names its certificate, the token holding it is used without
-  asking. Before, KeySeal used the first token it found.
+  asking. Before, KeySeal used the first token it found. `keyseal list` and
+  `keyseal doctor` report every token.
 - Enrolling a certificate proves the token holds its key: the helper signs a
   message bound to the site, the job and the certificate, and sends it with
   the certificate (spec section 8.6). No document is signed. On a token the

@@ -70,12 +70,23 @@ fn describe(text: &str, certificate: &CertificateSummary) -> String {
         .replace("{serial}", &certificate.serial_end)
 }
 
-/// `text` with the token's `{label}`, `{model}`, `{serial}` and `{names}`.
+/// `text` with the token's `{model}`, `{serial}` and `{names}`.
 fn describe_token(text: &str, token: &TokenSummary) -> String {
-    text.replace("{label}", &token.label)
-        .replace("{model}", &token.model)
+    text.replace("{model}", &token.model)
         .replace("{serial}", &token.serial)
         .replace("{names}", &token.names.join(", "))
+}
+
+/// The line under a token's label: its model and serial number, or the one
+/// of them it reports. A token without a label is labelled by its model.
+fn token_detail(token: &TokenSummary) -> Option<String> {
+    let model = !token.model.is_empty() && token.model != token.label;
+    match (model, !token.serial.is_empty()) {
+        (true, true) => Some(describe_token(strings::TOKEN_MODEL, token)),
+        (true, false) => Some(token.model.clone()),
+        (false, true) => Some(describe_token(strings::TOKEN_SERIAL, token)),
+        (false, false) => None,
+    }
 }
 
 /// The list of a batch's documents takes the height the window has left,
@@ -459,11 +470,15 @@ impl JobWindow {
                 )
                 .child(group(
                     tokens.iter().enumerate().map(|(index, token)| {
-                        let label = if token.names.is_empty() {
-                            describe_token(strings::TOKEN_LABEL, token)
-                        } else {
-                            describe_token(strings::TOKEN_LABEL_HOLDS, token)
-                        };
+                        let detail = token_detail(token);
+                        let holds = (!token.names.is_empty())
+                            .then(|| describe_token(strings::TOKEN_HOLDS, token));
+                        // Read out as the row reads.
+                        let label = [Some(token.label.clone()), detail.clone(), holds.clone()]
+                            .into_iter()
+                            .flatten()
+                            .collect::<Vec<_>>()
+                            .join(", ");
                         h_flex()
                             .gap_3()
                             .px_3()
@@ -484,13 +499,8 @@ impl JobWindow {
                                             .gap_0p5()
                                             .text_xs()
                                             .text_color(cx.theme().muted_foreground)
-                                            .child(describe_token(strings::TOKEN_MODEL, token))
-                                            .when(!token.names.is_empty(), |this| {
-                                                this.child(describe_token(
-                                                    strings::TOKEN_HOLDS,
-                                                    token,
-                                                ))
-                                            }),
+                                            .children(detail)
+                                            .children(holds),
                                     ),
                             )
                             .into_any_element()
@@ -832,7 +842,19 @@ mod tests {
                 Request::Job {
                     job: job(),
                     stage: Stage::ChooseToken {
-                        tokens: vec![token("Office", &["ASHA RAO"]), token("Home", &[])],
+                        tokens: vec![
+                            token("Office", &["ASHA RAO"]),
+                            token("Home", &[]),
+                            TokenSummary {
+                                serial: String::new(),
+                                ..token("Spare", &[])
+                            },
+                            TokenSummary {
+                                label: "Feitian ePass2003".into(),
+                                serial: "77".into(),
+                                ..token("", &[])
+                            },
+                        ],
                         reply,
                     },
                 },
@@ -848,9 +870,12 @@ mod tests {
                 Some(strings::CHOOSE_TOKEN_NOTE)
             );
             window.find_by_label(
-                "Office, Feitian ePass2003, serial number Office-01, holds ASHA RAO",
+                "Office, Feitian ePass2003, serial number Office-01, Holds: ASHA RAO",
             );
             window.find_by_label("Home, Feitian ePass2003, serial number Home-01");
+            // A token reports what it has: no serial number, or no label.
+            window.find_by_label("Spare, Feitian ePass2003");
+            window.find_by_label("Feitian ePass2003, Serial number 77");
             window.click(("token", 1usize), cx);
             window.render_frame(cx);
             window.click("submit", cx);

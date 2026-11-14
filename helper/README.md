@@ -48,7 +48,7 @@ From the system's certificate store the helper never asks for a PIN itself; [doc
 ```
 keyseal run <keyseal://link>       run a job in the windows, or headless with KEYSEAL_HEADLESS=1
 keyseal settings                 the settings window
-keyseal list                     certificates on the token
+keyseal list                     certificates on each token
 keyseal doctor                   what the helper sees
 keyseal doctor --json            the same report as JSON, which the settings window reads
 keyseal doctor --forget <origin> stop trusting an origin

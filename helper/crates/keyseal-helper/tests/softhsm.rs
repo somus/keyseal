@@ -1110,5 +1110,24 @@ fn picks_a_token_by_the_expected_certificate_on_softhsm() {
     );
     assert!(posted.certificate.is_none());
 
+    // `keyseal list` names each token above its certificates, and doesn't
+    // try KEYSEAL_PIN when it can't tell whose it is.
+    let output = Command::new(env!("CARGO_BIN_EXE_keyseal"))
+        .arg("list")
+        .env("SOFTHSM2_CONF", setup.dir.join(conf))
+        .env("KEYSEAL_PKCS11_MODULE", &setup.module)
+        .env("KEYSEAL_CONFIG_DIR", setup.dir.join("config"))
+        .env("KEYSEAL_PIN", "0000")
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{}", stderr(&output));
+    let listed = String::from_utf8_lossy(&output.stdout);
+    for name in ["first", "second"] {
+        let token = format!("{name} (SoftHSM project SoftHSM v2, serial number ");
+        let certificate = keyseal_core::token::sha256_hex(&setup.read(&format!("{name}.der")));
+        let at = listed.find(&token).unwrap_or_else(|| panic!("{listed}"));
+        assert!(listed[at..].contains(&certificate), "{listed}");
+    }
+
     let _ = std::fs::remove_dir_all(&setup.dir);
 }

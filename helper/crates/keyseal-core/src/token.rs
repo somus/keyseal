@@ -330,6 +330,22 @@ impl TokenSummary {
     }
 }
 
+/// One line for `keyseal list` and `keyseal doctor`: the label, then the
+/// model and serial number the token reports.
+impl std::fmt::Display for TokenSummary {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str(&self.label)?;
+        let model =
+            (!self.model.is_empty() && self.model != self.label).then(|| self.model.clone());
+        let serial = (!self.serial.is_empty()).then(|| format!("serial number {}", self.serial));
+        match (model, serial) {
+            (Some(model), Some(serial)) => write!(f, " ({model}, {serial})"),
+            (Some(detail), None) | (None, Some(detail)) => write!(f, " ({detail})"),
+            (None, None) => Ok(()),
+        }
+    }
+}
+
 /// A loaded driver whose tokens were listed, which opens one of them.
 pub trait Driver {
     /// The certificates the token in `slot` shows before login; none when
@@ -988,6 +1004,33 @@ mod tests {
         let (mechanism, input) = pkcs1(false, b"abc", DigestAlgorithm::Sha384);
         assert_eq!(mechanism.mechanism_type(), M::SHA384_RSA_PKCS);
         assert_eq!(input, b"abc");
+    }
+
+    #[test]
+    fn names_a_token_by_what_it_reports() {
+        let token = |label: &str, model: &str, serial: &str| {
+            TokenSummary {
+                label: label.into(),
+                model: model.into(),
+                serial: serial.into(),
+                names: Vec::new(),
+            }
+            .to_string()
+        };
+        assert_eq!(
+            token("Office", "Feitian ePass2003", "01"),
+            "Office (Feitian ePass2003, serial number 01)"
+        );
+        assert_eq!(
+            token("Office", "Feitian ePass2003", ""),
+            "Office (Feitian ePass2003)"
+        );
+        // A token without a label is labelled by its model.
+        assert_eq!(
+            token("Feitian ePass2003", "Feitian ePass2003", "01"),
+            "Feitian ePass2003 (serial number 01)"
+        );
+        assert_eq!(token("Office", "", ""), "Office");
     }
 
     #[test]

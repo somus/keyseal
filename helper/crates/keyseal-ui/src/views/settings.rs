@@ -3,7 +3,6 @@
 use std::path::PathBuf;
 
 use gpui_kit::component::button::{Button, ButtonVariants};
-use gpui_kit::component::scroll::ScrollableElement;
 use gpui_kit::component::switch::Switch;
 use gpui_kit::component::{ActiveTheme, Disableable, Sizable, h_flex, v_flex};
 use gpui_kit::{
@@ -17,7 +16,7 @@ use keyseal_core::preferences::Preferences;
 use keyseal_core::trust::{Record, TrustStore};
 
 use super::job::set_always_show_details;
-use super::widgets::{ScrollArea, field, group, icon, note, secondary, window_frame};
+use super::widgets::{ScrollArea, field, group, icon, note, scrolling, secondary, window_frame};
 use super::{CONTEXT, Cancel, open};
 use crate::{Probe, native, strings};
 
@@ -540,58 +539,58 @@ impl Render for SettingsWindow {
         window_frame(&self.focus, CONTEXT, window, cx)
             .on_action(cx.listener(|_, _: &Cancel, window, _| window.remove_window()))
             .child(
-                v_flex()
-                    .id("settings")
-                    .flex_1()
-                    .overflow_y_scroll()
-                    .track_scroll(&self.scroll)
-                    .px_5()
-                    .pt_4()
-                    .pb_5()
-                    .gap_2()
-                    .child(section(strings::TRUSTED_SITES, cx))
-                    .child(group(sites, cx))
-                    .child(div().h_3())
-                    .child(section(strings::TOKENS, cx))
-                    .child(group(tokens, cx))
-                    .child(div().h_3())
-                    .child(section(strings::SIGNING, cx))
-                    .child(group([signing], cx))
-                    .when(native::glass_platform(), |this| {
-                        let appearance = self.switch(
-                            "translucent-windows",
-                            "layers",
-                            strings::TRANSLUCENT_WINDOWS,
-                            strings::TRANSLUCENT_NOTE,
-                            self.preferences.translucent_windows,
-                            Self::set_translucent_windows,
-                            cx,
-                        );
-                        this.child(div().h_3())
-                            .child(section(strings::APPEARANCE, cx))
-                            .child(group([appearance], cx))
-                    })
-                    .child(div().h_3())
-                    .child(section(strings::ABOUT, cx))
-                    .child(group(
-                        [
-                            about(cx),
-                            field(
-                                "config-directory",
-                                "folder",
-                                strings::CONFIG_DIRECTORY,
-                                self.config_dir.display().to_string(),
-                                None,
+                scrolling(
+                    v_flex()
+                        .id("settings")
+                        .flex_1()
+                        .overflow_y_scroll()
+                        .track_scroll(&self.scroll)
+                        .px_5()
+                        .pt_4()
+                        .pb_5()
+                        .gap_2()
+                        .child(section(strings::TRUSTED_SITES, cx))
+                        .child(group(sites, cx))
+                        .child(div().h_3())
+                        .child(section(strings::TOKENS, cx))
+                        .child(group(tokens, cx))
+                        .child(div().h_3())
+                        .child(section(strings::SIGNING, cx))
+                        .child(group([signing], cx))
+                        .when(native::glass_platform(), |this| {
+                            let appearance = self.switch(
+                                "translucent-windows",
+                                "layers",
+                                strings::TRANSLUCENT_WINDOWS,
+                                strings::TRANSLUCENT_NOTE,
+                                self.preferences.translucent_windows,
+                                Self::set_translucent_windows,
                                 cx,
-                            ),
-                        ],
-                        cx,
-                    )),
+                            );
+                            this.child(div().h_3())
+                                .child(section(strings::APPEARANCE, cx))
+                                .child(group([appearance], cx))
+                        })
+                        .child(div().h_3())
+                        .child(section(strings::ABOUT, cx))
+                        .child(group(
+                            [
+                                about(cx),
+                                field(
+                                    "config-directory",
+                                    "folder",
+                                    strings::CONFIG_DIRECTORY,
+                                    self.config_dir.display().to_string(),
+                                    None,
+                                    cx,
+                                ),
+                            ],
+                            cx,
+                        )),
+                    &self.scroll,
+                )
+                .flex_1(),
             )
-            // Drawn here rather than in the padded column, where it would
-            // count toward the column's height and make it scroll by its
-            // padding.
-            .vertical_scrollbar(&self.scroll)
     }
 }
 

@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use gpui_kit::component::button::Button;
-use gpui_kit::component::scroll::ScrollbarHandle;
+use gpui_kit::component::scroll::{ScrollableElement, ScrollbarHandle};
 use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::{ActiveTheme, Icon, Sizable, h_flex, v_flex};
 use gpui_kit::{
@@ -409,4 +409,18 @@ impl ScrollbarHandle for ScrollArea {
         }
         size
     }
+}
+
+/// `area`, which scrolls with `scroll`, under its scrollbar. The scrollbar is
+/// drawn in a wrapper the size of the area. Inside the area it would scroll
+/// away with the content and count toward its height, and around more than
+/// the area, such as the buttons below it, it would be measured against that
+/// and stay hidden while less than their height is out of view.
+#[track_caller]
+pub(super) fn scrolling(area: impl IntoElement, scroll: &ScrollArea) -> Div {
+    v_flex()
+        .relative()
+        .min_h(px(0.))
+        .child(area)
+        .vertical_scrollbar(scroll)
 }

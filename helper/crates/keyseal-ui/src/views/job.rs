@@ -6,7 +6,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::radio::Radio;
-use gpui_kit::component::scroll::ScrollableElement;
 use gpui_kit::component::{ActiveTheme, Disableable, Sizable, StyledExt, h_flex, v_flex};
 use gpui_kit::{
     AnyElement, App, AppContext, Context, Div, Entity, FocusHandle, Focusable, Global, Hsla, Image,
@@ -21,7 +20,7 @@ use zeroize::Zeroizing;
 
 use super::widgets::{
     InputDelay, ScrollArea, banner, button_bar, field, group, icon, icon_tile, insecure_banner,
-    logo_tile, note, progress_line, site_heading, window_frame,
+    logo_tile, note, progress_line, scrolling, site_heading, window_frame,
 };
 use super::{CONTEXT, Cancel, Submit};
 use crate::{Job, Stage, group_digest, native, strings};
@@ -104,10 +103,10 @@ fn document_list(
 ) -> AnyElement {
     let palette = native::palette(cx);
     let separator = native::color(palette.separator);
-    v_flex()
+    let list = v_flex()
         .id("documents")
-        .mt_1()
-        .min_h(px(DOCUMENT_LIST_MIN_HEIGHT))
+        // A short list still fills the least height the group takes.
+        .flex_grow(1.)
         .overflow_y_scroll()
         .track_scroll(scroll)
         .rounded(cx.theme().radius_lg)
@@ -153,8 +152,10 @@ fn document_list(
                         }),
                 )
                 .test_support()
-        }))
-        .vertical_scrollbar(scroll)
+        }));
+    scrolling(list, scroll)
+        .mt_1()
+        .min_h(px(DOCUMENT_LIST_MIN_HEIGHT))
         .into_any_element()
 }
 
@@ -639,7 +640,7 @@ impl Render for JobWindow {
                 v_flex()
                     .flex_1()
                     .min_h(px(0.))
-                    .child(
+                    .child(scrolling(
                         v_flex()
                             .id("job")
                             .min_h(px(0.))
@@ -725,14 +726,11 @@ impl Render for JobWindow {
                                     }),
                             )
                             .when(!pinned, |this| this.child(self.stage_body(cx))),
-                    )
+                        &self.scroll,
+                    ))
                     .when(pinned, |this| {
                         this.child(self.stage_body(cx).flex_shrink_0().px_5().pb_3())
-                    })
-                    // Drawn here rather than in the padded job, where it would
-                    // count toward the job's height and make it scroll by its
-                    // padding.
-                    .vertical_scrollbar(&self.scroll),
+                    }),
             )
             .child(button_bar(
                 Some(
@@ -756,7 +754,7 @@ mod tests {
     use std::sync::mpsc;
 
     use gpui_kit::test::{TestQueryExt, TestWindowExt};
-    use gpui_kit::{AppContext, ScrollDelta, TestAppContext, point, px};
+    use gpui_kit::{AppContext, ScrollDelta, TestAppContext, VisualTestContext, point, px};
 
     use keyseal_core::flow::Step;
     use keyseal_core::preferences::Preferences;
@@ -826,6 +824,45 @@ mod tests {
             assert_eq!(window.find("signer").bounds(), before);
         })
         .unwrap();
+    }
+
+    /// The job's scrollbar stops above the PIN field pinned below the job, so
+    /// it is measured against the job alone.
+    #[gpui_kit::test]
+    fn the_scrollbar_stops_above_the_pin_field(cx: &mut TestAppContext) {
+        let mut windows = setup(cx);
+        cx.update(|cx| {
+            windows.handle(
+                Request::Job {
+                    job: job(),
+                    stage: Stage::Pin {
+                        certificate: None,
+                        digests: None,
+                        pin_pad: false,
+                        token: None,
+                        warning: None,
+                        wrong_pin: false,
+                        reply: mpsc::channel().0,
+                    },
+                },
+                cx,
+            )
+        });
+        let handle = *open_windows(cx).last().unwrap();
+        let pin = cx
+            .update_window(handle, |_, window, cx| {
+                window.render_frame(cx);
+                window.find("pin").bounds().top()
+            })
+            .unwrap();
+        let scrollbar = VisualTestContext::from_window(handle, cx)
+            .debug_bounds("scrollbar-overlay")
+            .unwrap();
+        assert!(
+            scrollbar.bottom() <= pin,
+            "the scrollbar ends at {:?}, below the PIN field's {pin:?}",
+            scrollbar.bottom()
+        );
     }
 
     /// A renewed certificate and the one it replaces share a name and an

@@ -133,3 +133,14 @@ def test_a_probe_waits_only_so_long(monkeypatch: pytest.MonkeyPatch) -> None:
     ready, took = asyncio.run(probe())
     assert ready is False
     assert took < 1
+
+
+def test_a_silent_first_authority_leaves_time_for_the_next(
+    pki: Pki, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(timestamping, "READY_WAIT_SECONDS", 0.5)
+    monkeypatch.setattr(timestamping, "READY_TSA_TIMEOUT_SECONDS", 0.1)
+    authorities = TimestampAuthorities(
+        [("https://silent.example", Silent()), ("https://up.example", Counting(pki))]
+    )
+    assert asyncio.run(authorities.ready()) is True

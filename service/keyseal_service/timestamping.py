@@ -37,6 +37,9 @@ COOL_DOWN_SECONDS = 60
 READY_FRESH_SECONDS = 60
 #: How long a readiness probe waits for a check; the check itself carries on.
 READY_WAIT_SECONDS = 10
+#: How long the check waits for one authority, so a dead first one still
+#: leaves time for the next within READY_WAIT_SECONDS.
+READY_TSA_TIMEOUT_SECONDS = 4
 
 
 class TimestampUnavailableError(Exception):
@@ -85,9 +88,11 @@ class TimestampAuthorities:
         message_digest: bytes,
         md_algorithm: str,
         preferred: TimeStamper | None = None,
+        timeout: float | None = None,
     ) -> tuple[TimeStamper, cms.ContentInfo]:
         """The first token for `message_digest` and the authority that gave it,
-        asking `preferred` first."""
+        asking `preferred` first and waiting `timeout` for each, by default
+        TSA_TIMEOUT_SECONDS."""
         order = self._order()
         order.sort(key=lambda entry: entry[1] is not preferred)
         deadline = time.monotonic() + TIMESTAMP_BUDGET_SECONDS
@@ -98,7 +103,7 @@ class TimestampAuthorities:
             if remaining <= 0:
                 break
             try:
-                async with asyncio.timeout(min(TSA_TIMEOUT_SECONDS, remaining)):
+                async with asyncio.timeout(min(timeout or TSA_TIMEOUT_SECONDS, remaining)):
                     token = await stamper.async_timestamp(message_digest, md_algorithm)
                 stamped = _stamps(token, message_digest, md_algorithm)
             except Exception as error:  # noqa: BLE001 - any failure moves on to the next
@@ -139,7 +144,9 @@ class TimestampAuthorities:
 
     async def _check_once(self) -> bool:
         try:
-            await self.timestamp(dummy_digest("sha256"), "sha256")
+            await self.timestamp(
+                dummy_digest("sha256"), "sha256", timeout=READY_TSA_TIMEOUT_SECONDS
+            )
         except (TimestampUnavailableError, RemoteSignError):
             return False
         return True

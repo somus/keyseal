@@ -24,6 +24,8 @@ docker run -p 127.0.0.1:8090:8080 \
 
 It trusts the CCA India roots by default; for another PKI, set `SIGNING_TRUST_ROOTS_DIR` to a directory of its roots and intermediates, or `SIGNING_EXTRA_TRUST_ROOTS_DIR` to trust it alongside them. [service/README.md](../service/README.md) covers its routes, environment, timestamp authority and plugins (extra stamp styles and routes in a derived image).
 
+To monitor it, `GET /health` says the process is up, and `GET /ready` whether it can sign right now, which needs a timestamp authority to answer: a 503 there means signing fails until one does, while validation still works. Neither needs the token. Alert on `/ready` or show your users that signing is unavailable, but don't take the service out of rotation on it ([service/README.md](../service/README.md)).
+
 ## 2. Serve the job endpoint
 
 Install `@keyseal/server` and create one instance for your app:

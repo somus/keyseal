@@ -2,11 +2,12 @@
 
 A pyHanko service behind FastAPI. It prepares PDFs with empty signature fields, returns the DER SignedAttributes a token signs, embeds the returned signature with a timestamp, validates signed PDFs and adds long-term validation data. The signer's key never reaches it; only the integrator backend talks to it, over a private network.
 
-Every route except `GET /health`, plugin routes included, needs `Authorization: Bearer $SIGNING_SERVICE_TOKEN`. The token is checked before any of the body is read, and a missing or wrong one is a 401.
+Every route except `GET /health` and `GET /ready`, plugin routes included, needs `Authorization: Bearer $SIGNING_SERVICE_TOKEN`. The token is checked before any of the body is read, and a missing or wrong one is a 401.
 
 | Route | Does |
 |---|---|
 | `GET /health` | Liveness and the number of trust roots loaded |
+| `GET /ready` | Whether the service can sign right now (below): 200 with `{"ready": true, "checks": {"tsa": "ok"}}`, or `"off"` with timestamps turned off; 503 with `{"ready": false, "checks": {"tsa": "unreachable"}}` |
 | `POST /validate?base=<bytes>&keyUsage=<usage>` | Validation report for a PDF body; `base` adds what changed since the copy the signer was given, and `keyUsage` is the key usage a `trusted` signer's certificate asserts (below). Each signature's `timestampValid` is whether its signature timestamp is intact and matches the signature, `null` without one; a signature with an invalid timestamp makes the report `invalid` |
 | `POST /certificate` | Whether a certificate chains to a configured root and may sign (`trusted`), and whether its revocation status was checked (`revocationChecked`); optional `keyUsage` (below) |
 | `POST /prepare` | Adds empty signature fields as one incremental update |
@@ -56,6 +57,8 @@ The service refuses to start, logging which rule failed and exiting 1, when the 
 | `TZ` | container's (UTC) | Time zone of the date in the built-in stamp, for example `Asia/Kolkata`; a zone name, since pyHanko refuses POSIX zones such as `IST-5:30` |
 
 Each timestamp, on `/sign/finish`, `/finalize` and `/retimestamp`, asks the timestamp authorities in turn and takes the first token that stamps the digest it asked for. An authority that can't be reached, takes more than 10 seconds, answers with an HTTP error, a rejection or something unreadable, or stamps another digest counts as failed, and the next one is asked; one timestamp asks for at most 20 seconds in all, which keeps `/finalize` and `/retimestamp`, which ask twice, inside their 45 and `/sign/finish` inside the 60 `@keyseal/server` waits. An authority that failed is asked after the others for the next minute, so a dead first one costs its timeout once, not on every request. A failure followed by an answer is logged as a warning and every one failing as an error, naming the hosts. When none answered, the route answers 503, which `@keyseal/server` treats as an outage, leaving the job for the helper to retry; when the only tokens it got stamp another digest, it is a 422 that fails the job. A second authority is opt-in: list one only if its tokens are trusted wherever the PDFs are validated.
+
+`GET /ready` says whether a timestamp authority answered lately. A timestamp the service got for a request in the last minute answers it, and so does one that couldn't be had from any authority; otherwise it asks the list for a timestamp, giving each authority 4 seconds, and that answer stands for the next minute, so probing every few seconds doesn't load a public TSA. Concurrent probes share one check, and a probe waits at most 10 seconds, answering 503 if the check hasn't finished by then. The body names no authority or error; the log does. Use it for monitoring and for showing your own "signing is unavailable" message, not as a load balancer's or Kubernetes readiness gate: a TSA outage hits every instance at once, and taking them all out of rotation would stop validation too, which needs no TSA. The image's `HEALTHCHECK` stays on `/health`.
 
 The default TSA is plain HTTP, as DigiCert serves no HTTPS endpoint for it. `/sign/finish` refuses a token whose imprint isn't the digest of the signature, but someone on the network path could still answer with a correctly imprinted token from another TSA. That shows up only at validation, and only where the TSA's trust is checked: `timestampValid` says the timestamp is intact and matches, not who issued it, and a token from any TSA chaining to a system root is trusted. Point `SIGNING_TSA_URL` at an HTTPS TSA to close the gap.
 

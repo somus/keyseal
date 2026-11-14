@@ -41,6 +41,7 @@ pub const GALLERY_VIEWS: &[&str] = &[
     "pin-batch-details",
     "confirm",
     "choose",
+    "choose-many",
     "enrol",
     "busy",
     "progress-connecting",
@@ -121,7 +122,7 @@ pub(crate) fn gallery(view: &str, cx: &mut App) {
     const CERTIFICATE: &str = "ASHA RAO (Verasys Sub CA 2022), valid until 12 March 2027";
     let job = |kind| Job {
         host: "sign.example.org".into(),
-        insecure: false,
+        insecure: view == "choose-many",
         brand: Some(crate::Brand {
             name: "Example Trust".into(),
             icon: (!view.ends_with("-plain"))
@@ -294,6 +295,15 @@ pub(crate) fn gallery(view: &str, cx: &mut App) {
                 "ASHA RAO (Verasys Sub CA 2022), encryption, valid until 12 March 2027".into(),
                 "ASHA RAO (eMudhra Sub CA 2023), signing, valid until 2 June 2028".into(),
             ],
+            reply: mpsc::channel().0,
+        },
+        // More certificates than the window holds, under the insecure banner.
+        "choose-many" => Stage::Choose {
+            subjects: (1..=8)
+                .map(|n| {
+                    format!("ASHA RAO (Verasys Sub CA 2022), signing, valid until {n} March 2027")
+                })
+                .collect(),
             reply: mpsc::channel().0,
         },
         "enrol" => Stage::Enrol {

@@ -28,6 +28,8 @@ lines under the new version with the release date.
   as `keyseal install` does. Apps (Add or remove programs) shows the new
   version instead of the one first installed, and a helper installed before
   0.4.0 gets the Start menu shortcut and the Apps entry.
+- With more certificates on the token than the window holds, the list no
+  longer overlaps the document and signer above it. The window scrolls.
 
 ### [0.4.0][helper-0.4.0] - 2026-11-13
 

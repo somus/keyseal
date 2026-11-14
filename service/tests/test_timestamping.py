@@ -5,20 +5,18 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
-import io
 import logging
 from datetime import UTC, datetime
 from typing import Any
 
 import pytest
-from pyhanko.pdf_utils.reader import PdfFileReader
 from pyhanko.sign import timestamps
 from pyhanko.sign.timestamps.common_utils import TimestampRequestError
 
 from keyseal_service import app as app_module, timestamping
 from keyseal_service.remote_sign import TIMESTAMP_MISMATCH, RemoteSignError
 from keyseal_service.timestamping import TimestampAuthorities, TimestampUnavailableError
-from keyseal_service.validate import ValidationSettings
+from keyseal_service.validate import ValidationSettings, validate_pdf
 
 from .conftest import AUTH, Pki, blank_pdf, client_for, misstamping, sign
 from .test_remote_sign import _start_with, b64, token_sign
@@ -51,9 +49,11 @@ def _stamp(authorities: TimestampAuthorities) -> Any:
 
 
 def _imprint(token: Any) -> bytes:
-    return token["content"]["encap_content_info"]["content"].parsed["message_imprint"][
-        "hashed_message"
-    ].native
+    return (
+        token["content"]["encap_content_info"]["content"]
+        .parsed["message_imprint"]["hashed_message"]
+        .native
+    )
 
 
 def test_the_next_authority_answers_when_one_fails(
@@ -61,7 +61,10 @@ def test_the_next_authority_answers_when_one_fails(
 ) -> None:
     down = Down()
     authorities = TimestampAuthorities(
-        [("http://down.example/tsa", down), ("https://up.example", pki.timestamper(datetime.now(UTC)))]
+        [
+            ("http://down.example/tsa", down),
+            ("https://up.example", pki.timestamper(datetime.now(UTC))),
+        ]
     )
     with caplog.at_level(logging.WARNING):
         token = _stamp(authorities)
@@ -106,7 +109,10 @@ def test_any_failure_moves_on(
 ) -> None:
     monkeypatch.setattr(timestamping, "TSA_TIMEOUT_SECONDS", 0.05)
     authorities = TimestampAuthorities(
-        [("http://first.example", first), ("http://next.example", pki.timestamper(datetime.now(UTC)))]
+        [
+            ("http://first.example", first),
+            ("http://next.example", pki.timestamper(datetime.now(UTC))),
+        ]
     )
     assert _imprint(_stamp(authorities)) == DIGEST
 
@@ -165,7 +171,9 @@ def _with_tsas(pki: Pki, monkeypatch: pytest.MonkeyPatch, *urls: str) -> Any:
     monkeypatch.setattr(
         app_module.timestamps,
         "HTTPTimeStamper",
-        lambda url, **kw: real(url, **kw) if url == REFUSED else pki.timestamper(datetime.now(UTC)),
+        lambda url, **kw: (
+            real(url, **kw) if url.startswith(REFUSED) else pki.timestamper(datetime.now(UTC))
+        ),
     )
     return client_for(ValidationSettings(trust_roots=[pki.ca_asn1]), urls)
 
@@ -188,8 +196,10 @@ def test_sign_finish_falls_back_to_the_next_authority(
     client = _with_tsas(pki, monkeypatch, REFUSED, "https://tsa.invalid")
     finished = _finish(client, pki)
     assert finished.status_code == 200
-    [sig] = PdfFileReader(io.BytesIO(finished.content)).embedded_signatures
-    assert sig.attached_timestamp_data is not None
+    [sig] = validate_pdf(finished.content, ValidationSettings(trust_roots=[pki.ca_asn1]))[
+        "signatures"
+    ]
+    assert sig["timestampValid"] is True
 
 
 def test_a_timestamp_outage_is_a_503_so_the_job_survives(

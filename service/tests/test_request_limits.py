@@ -72,7 +72,9 @@ def request(
         messages.append(message)
 
     app = app_module.create_app(
-        Settings(token=TOKEN, tsa_urls=("https://tsa.example",), validation=ValidationSettings([]))
+        Settings(
+            token=TOKEN, tsa_urls=("https://tsa.example",), validation=ValidationSettings([])
+        )
     )
     scope = {
         "type": "http",

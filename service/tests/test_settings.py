@@ -248,4 +248,7 @@ def test_a_tsa_list_with_anything_but_http_urls_refuses_to_start(
     with caplog.at_level(logging.CRITICAL), pytest.raises(SystemExit) as exited:
         create_app()
     assert exited.value.code == 1
-    assert f"Refusing to start: SIGNING_TSA_URL entry {entry} is not an http or https URL" in caplog.text
+    assert (
+        f"Refusing to start: SIGNING_TSA_URL entry {entry} is not an http or https URL"
+        in caplog.text
+    )

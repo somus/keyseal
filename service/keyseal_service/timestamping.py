@@ -61,8 +61,9 @@ class TimestampAuthorities:
         # Stable: the configured order, with the ones cooling down last.
         return sorted(
             self._stampers,
-            key=lambda entry: now - self._failed_at.get(entry[0], -COOL_DOWN_SECONDS)
-            < COOL_DOWN_SECONDS,
+            key=lambda entry: (
+                now - self._failed_at.get(entry[0], -COOL_DOWN_SECONDS) < COOL_DOWN_SECONDS
+            ),
         )
 
     def stamper(self) -> TimeStamper:

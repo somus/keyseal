@@ -243,6 +243,15 @@ lines under the new version with the release date.
 
 ### [Unreleased][service-unreleased]
 
+#### Added
+
+- `SIGNING_TSA_URL` takes a list of timestamp authorities, separated by
+  commas or whitespace, asked in turn until one answers; one that failed is
+  asked last for a minute. When none answers, `/sign/finish`, `/finalize`
+  and `/retimestamp` answer 503, so `@keyseal/server` leaves the job for a
+  retry. Before, `/sign/finish` answered 500 and the others 422. A value
+  that isn't a list of http or https URLs refuses to start.
+
 ### [0.4.0][service-0.4.0] - 2026-11-13
 
 #### Added

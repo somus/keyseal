@@ -539,7 +539,9 @@ def test_a_pdf_that_cannot_be_signed_is_refused_with_the_reason(
     build, message, _ = UNSIGNABLE[kind]
     pdf = build(pki)
     monkeypatch.setattr(
-        app_module.timestamps, "HTTPTimeStamper", lambda _url, **_: pki.timestamper(datetime.now(UTC))
+        app_module.timestamps,
+        "HTTPTimeStamper",
+        lambda _url, **_: pki.timestamper(datetime.now(UTC)),
     )
     client = TestClient(
         create_app(

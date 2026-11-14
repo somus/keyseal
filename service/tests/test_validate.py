@@ -749,7 +749,9 @@ def _unanswered(stopped: threading.Event) -> Any:
 
 def _with_local_tsa(pki: Pki, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     monkeypatch.setattr(
-        app_module.timestamps, "HTTPTimeStamper", lambda _url, **_: pki.timestamper(datetime.now(UTC))
+        app_module.timestamps,
+        "HTTPTimeStamper",
+        lambda _url, **_: pki.timestamper(datetime.now(UTC)),
     )
     return client_for(settings_with(pki), ("https://tsa.invalid",))
 

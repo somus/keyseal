@@ -56,6 +56,7 @@ fn opens_the_token_the_signer_chooses() {
             "req", "-x509", "-nodes", "-days", "1", "-newkey", "rsa:2048",
         ])
         .args(["-subj", "/CN=ASHA RAO"])
+        .args(["-addext", "basicConstraints=critical,CA:FALSE"])
         .args(["-addext", "keyUsage=critical,nonRepudiation"])
         .args(["-keyout", "key.pem", "-outform", "DER", "-out", "cert.der"]));
     run(Command::new("openssl").current_dir(&dir).args([
@@ -95,7 +96,7 @@ fn opens_the_token_the_signer_chooses() {
         .into_iter()
         .map(|c| c.der)
         .collect();
-    assert_eq!(seen, [certificate.clone()]);
+    assert_eq!(seen, std::slice::from_ref(&certificate));
     if let Err(error) = token.login(Zeroizing::new(PIN.into())) {
         panic!("{error}");
     }

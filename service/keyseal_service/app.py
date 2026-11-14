@@ -1,4 +1,4 @@
-"""HTTP API. Every request but GET /health carries the shared bearer token.
+"""HTTP API. Every request but GET /health and GET /ready carries the shared bearer token.
 
 Run with `uvicorn keyseal_service.app:create_app --factory`. Stamp styles and
 extra routers come from installed packages through entry points:
@@ -21,6 +21,7 @@ from importlib.metadata import entry_points
 from typing import Annotated, Any, Literal, TypeVar
 
 from fastapi import FastAPI, HTTPException, Query, Request, Response
+from fastapi.responses import JSONResponse
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field, StringConstraints
 from pyhanko.sign import timestamps
@@ -216,6 +217,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/health")
     def health() -> dict[str, object]:
         return {"ok": True, "trustRoots": len(validation.trust_roots)}
+
+    @app.get("/ready")
+    async def ready() -> JSONResponse:
+        # Unauthenticated, so it names no authority or error; the log does.
+        if tsa is None:
+            return JSONResponse({"ready": True, "checks": {"tsa": "off"}})
+        if await tsa.ready():
+            return JSONResponse({"ready": True, "checks": {"tsa": "ok"}})
+        return JSONResponse({"ready": False, "checks": {"tsa": "unreachable"}}, status_code=503)
 
     @app.post("/validate")
     async def validate(

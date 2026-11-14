@@ -251,6 +251,10 @@ lines under the new version with the release date.
   and `/retimestamp` answer 503, so `@keyseal/server` leaves the job for a
   retry. Before, `/sign/finish` answered 500 and the others 422. A value
   that isn't a list of http or https URLs refuses to start.
+- `GET /ready` answers 200 when a timestamp authority answered lately, and
+  503 when none did, for monitoring and an integrator's own "signing is
+  unavailable" message. It needs no token, checks at most once a minute and
+  names no authority.
 
 ### [0.4.0][service-0.4.0] - 2026-11-13
 

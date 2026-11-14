@@ -30,7 +30,9 @@ class RequestGuard:
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] == "lifespan" or (
-            scope["type"] == "http" and scope["method"] == "GET" and scope["path"] == "/health"
+            scope["type"] == "http"
+            and scope["method"] == "GET"
+            and scope["path"] in ("/health", "/ready")
         ):
             await self.app(scope, receive, send)
             return

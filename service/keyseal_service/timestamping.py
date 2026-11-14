@@ -17,6 +17,7 @@ from urllib.parse import urlsplit
 
 from asn1crypto import cms
 from pyhanko.sign.timestamps import TimeStamper
+from pyhanko.sign.timestamps.common_utils import dummy_digest
 
 from .remote_sign import TIMESTAMP_MISMATCH, RemoteSignError
 
@@ -31,6 +32,11 @@ TSA_TIMEOUT_SECONDS = 10
 TIMESTAMP_BUDGET_SECONDS = 20
 #: How long an authority that just failed is tried after the others.
 COOL_DOWN_SECONDS = 60
+#: How long a timestamp's outcome, a request's or a readiness check's,
+#: answers `/ready`, so frequent probes don't load a public TSA.
+READY_FRESH_SECONDS = 60
+#: How long a readiness probe waits for a check; the check itself carries on.
+READY_WAIT_SECONDS = 10
 
 
 class TimestampUnavailableError(Exception):
@@ -55,6 +61,10 @@ class TimestampAuthorities:
     def __init__(self, stampers: Sequence[tuple[str, TimeStamper]]) -> None:
         self._stampers = list(stampers)
         self._failed_at: dict[str, float] = {}
+        #: When a timestamp last came back, and when one last couldn't be had.
+        self._answered_at = -READY_FRESH_SECONDS - 1.0
+        self._unavailable_at = -READY_FRESH_SECONDS - 1.0
+        self._check: asyncio.Task[bool] | None = None
 
     def _order(self) -> list[tuple[str, TimeStamper]]:
         now = time.monotonic()
@@ -96,6 +106,7 @@ class TimestampAuthorities:
             else:
                 if stamped:
                     self._failed_at.pop(url, None)
+                    self._answered_at = time.monotonic()
                     if failures:
                         log.warning(
                             "Timestamp authority failed: %s; %s answered",
@@ -108,9 +119,30 @@ class TimestampAuthorities:
             self._failed_at[url] = time.monotonic()
             failures.append(f"{_host(url)} ({failure})")
         log.error("Every timestamp authority failed: %s", ", ".join(failures) or "out of time")
+        self._unavailable_at = time.monotonic()
         if mismatched:
             raise RemoteSignError(TIMESTAMP_MISMATCH)
         raise TimestampUnavailableError("No timestamp authority answered; try again later")
+
+    async def ready(self) -> bool:
+        """Whether a timestamp authority answered lately: the latest outcome
+        if it is fresh, otherwise a check that concurrent probes share. Runs
+        on the app's own event loop."""
+        if time.monotonic() - max(self._answered_at, self._unavailable_at) < READY_FRESH_SECONDS:
+            return self._answered_at > self._unavailable_at
+        if self._check is None or self._check.done():
+            self._check = asyncio.create_task(self._check_once())
+        try:
+            return await asyncio.wait_for(asyncio.shield(self._check), READY_WAIT_SECONDS)
+        except TimeoutError:
+            return False
+
+    async def _check_once(self) -> bool:
+        try:
+            await self.timestamp(dummy_digest("sha256"), "sha256")
+        except (TimestampUnavailableError, RemoteSignError):
+            return False
+        return True
 
 
 class _FallbackTimeStamper(TimeStamper):

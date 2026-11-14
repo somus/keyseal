@@ -1,0 +1,14 @@
+# Build context: the repository root. bun install needs every workspace's
+# package.json to match bun.lock; the server runs the packages' sources.
+*
+!package.json
+!bun.lock
+!tsconfig.base.json
+!catalogue/package.json
+!packages/*/package.json
+!packages/*/tsconfig.json
+!packages/server/src
+!packages/browser/src
+!examples/*/package.json
+!examples/reference-server/tsconfig.json
+!examples/reference-server/src

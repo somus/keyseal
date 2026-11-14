@@ -79,7 +79,7 @@ KEYSEAL_SOFTHSM_MODULE=/opt/homebrew/lib/softhsm/libsofthsm2.so scripts/ci/e2e.s
 
 ## Running the helper against a local server
 
-The helper refuses plain-HTTP origins unless `KEYSEAL_ALLOW_INSECURE_ORIGINS=1` is set in its environment, and the server needs `allowInsecureOrigin: true`. With the reference server running (see its README), start a job from its page, or run a link headless:
+The helper refuses plain-HTTP origins unless `KEYSEAL_ALLOW_INSECURE_ORIGINS=1` is set in its environment, and the server needs `allowInsecureOrigin: true`. [quickstart.md](quickstart.md) walks through the whole setup with Docker Compose and a SoftHSM test token. With the reference server running (see its README), start a job from its page, or run a link headless:
 
 ```sh
 cd helper

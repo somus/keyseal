@@ -2,6 +2,7 @@
 
 | Document | For |
 | --- | --- |
+| [quickstart.md](quickstart.md) | Trying KeySeal without a USB token: the service and the reference server in Docker Compose, a SoftHSM test token and the released helper |
 | [integrating.md](integrating.md) | Adding token signing to a web application: the service, `@keyseal/server`, `@keyseal/browser` and the helper |
 | [design.md](design.md) | How KeySeal is built and the security rules the code follows: protocol flow, trust model, token access, updates |
 | [development.md](development.md) | Working on KeySeal: layout, prerequisites, checks, the end-to-end test, previewing the windows |

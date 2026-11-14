@@ -106,7 +106,7 @@ Released images are published as `ghcr.io/somus/keyseal-service`, for linux/amd6
 ```bash
 docker run --rm -p 8080:8080 \
   -e SIGNING_SERVICE_TOKEN="$(openssl rand -base64 32)" \
-  ghcr.io/somus/keyseal-service:0.4
+  ghcr.io/somus/keyseal-service:0.5
 ```
 
 To build it from a checkout instead, run `docker build -t keyseal-service service` and use `keyseal-service` as the image.
@@ -114,7 +114,7 @@ To build it from a checkout instead, run `docker build -t keyseal-service servic
 A derived image adds plugins and, if needed, its own roots:
 
 ```dockerfile
-FROM ghcr.io/somus/keyseal-service:0.4
+FROM ghcr.io/somus/keyseal-service:0.5
 USER root
 RUN uv pip install --python /app/.venv/bin/python acme-keyseal
 USER signing

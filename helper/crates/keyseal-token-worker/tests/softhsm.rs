@@ -16,7 +16,7 @@ use std::process::{Command, Output, Stdio};
 use std::time::Duration;
 
 use keyseal_core::cms::{DigestAlgorithm, SignatureAlgorithm};
-use keyseal_core::token::{Driver, LoginError, TokenBackend};
+use keyseal_core::token::{Driver, LoginError};
 use keyseal_core::worker::{self, Backend, WorkerToken};
 use serde_json::{Value, json};
 use zeroize::Zeroizing;

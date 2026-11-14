@@ -411,6 +411,10 @@ pub(crate) fn group_digest(hex: &str) -> String {
         .join("\n")
 }
 
+#[expect(
+    clippy::large_enum_variant,
+    reason = "requests travel boxed in Event::Ui"
+)]
 pub(crate) enum Request {
     Trust {
         host: String,

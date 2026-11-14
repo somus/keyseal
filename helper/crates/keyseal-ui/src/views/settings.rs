@@ -545,7 +545,6 @@ impl Render for SettingsWindow {
                     .flex_1()
                     .overflow_y_scroll()
                     .track_scroll(&self.scroll)
-                    .vertical_scrollbar(&self.scroll)
                     .px_5()
                     .pt_4()
                     .pb_5()
@@ -589,6 +588,10 @@ impl Render for SettingsWindow {
                         cx,
                     )),
             )
+            // Drawn here rather than in the padded column, where it would
+            // count toward the column's height and make it scroll by its
+            // padding.
+            .vertical_scrollbar(&self.scroll)
     }
 }
 

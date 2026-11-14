@@ -71,7 +71,6 @@ impl Render for MessageWindow {
                     .flex_1()
                     .overflow_y_scroll()
                     .track_scroll(&self.scroll)
-                    .vertical_scrollbar(&self.scroll)
                     .px_6()
                     .pt_5()
                     .pb_2()
@@ -109,6 +108,10 @@ impl Render for MessageWindow {
                     .on_click(cx.listener(|this, _, window, _| this.close(window))),
                 cx,
             ))
+            // Drawn here rather than in the padded message, where it would
+            // count toward the message's height and make it scroll by its
+            // padding.
+            .vertical_scrollbar(&self.scroll)
     }
 }
 

@@ -645,7 +645,6 @@ impl Render for JobWindow {
                             .min_h(px(0.))
                             .overflow_y_scroll()
                             .track_scroll(&self.scroll)
-                            .vertical_scrollbar(&self.scroll)
                             .px_5()
                             .pt_4()
                             .map(|this| if pinned { this.pb_4() } else { this.pb_3() })
@@ -729,7 +728,11 @@ impl Render for JobWindow {
                     )
                     .when(pinned, |this| {
                         this.child(self.stage_body(cx).flex_shrink_0().px_5().pb_3())
-                    }),
+                    })
+                    // Drawn here rather than in the padded job, where it would
+                    // count toward the job's height and make it scroll by its
+                    // padding.
+                    .vertical_scrollbar(&self.scroll),
             )
             .child(button_bar(
                 Some(
@@ -753,7 +756,7 @@ mod tests {
     use std::sync::mpsc;
 
     use gpui_kit::test::{TestQueryExt, TestWindowExt};
-    use gpui_kit::{AppContext, TestAppContext};
+    use gpui_kit::{AppContext, ScrollDelta, TestAppContext, point, px};
 
     use keyseal_core::flow::Step;
     use keyseal_core::preferences::Preferences;
@@ -794,6 +797,33 @@ mod tests {
                 note >= job,
                 "the note starts at {note:?}, above the job's {job:?}"
             );
+        })
+        .unwrap();
+    }
+
+    /// A job that fits its window does not scroll, so it shows no scrollbar.
+    #[gpui_kit::test]
+    fn a_job_that_fits_does_not_scroll(cx: &mut TestAppContext) {
+        let mut windows = setup(cx);
+        cx.update(|cx| {
+            windows.handle(
+                Request::Job {
+                    job: job(),
+                    stage: Stage::Choose {
+                        certificates: vec![certificate("ASHA RAO"), certificate("A. SIGNER")],
+                        reply: mpsc::channel().0,
+                    },
+                },
+                cx,
+            )
+        });
+        let handle = *open_windows(cx).last().unwrap();
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            let before = window.find("signer").bounds();
+            window.scroll("job", ScrollDelta::Pixels(point(px(0.), px(-200.))), cx);
+            window.render_frame(cx);
+            assert_eq!(window.find("signer").bounds(), before);
         })
         .unwrap();
     }

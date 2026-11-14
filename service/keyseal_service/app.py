@@ -25,10 +25,10 @@ from fastapi.responses import JSONResponse
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field, StringConstraints
 from pyhanko.sign import timestamps
-from pyhanko_certvalidator.fetchers.aiohttp_fetchers import AIOHttpFetcherBackend
 
 from . import remote_sign
 from .appearance import SignedByStampStyle
+from .fetch_cache import CachingFetcherBackend, FetchCache
 from .fetching import public_fetch_session
 from .prepare import MAX_FIELDS, FieldRequest, PrepareError, prepare_fields
 from .request_guard import RequestGuard
@@ -151,6 +151,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         raise SystemExit(1) from error
 
     validation = resolved.validation
+    #: What requests fetched, for later ones in this process.
+    fetch_cache = FetchCache()
 
     async def _in_thread(work: Callable[[], Coroutine[Any, Any, T]]) -> T:
         # pyHanko hashes and parses inline between its awaits, so its work
@@ -166,7 +168,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 return await work(validation)
             async with public_fetch_session() as session:
                 return await work(
-                    replace(validation, fetcher_backend=AIOHttpFetcherBackend(session=session))
+                    replace(validation, fetcher_backend=CachingFetcherBackend(fetch_cache, session))
                 )
 
         return await _in_thread(run)

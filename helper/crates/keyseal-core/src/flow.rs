@@ -22,7 +22,7 @@ use std::time::Duration;
 
 use zeroize::Zeroizing;
 
-use crate::cms::{self, KeyKind};
+use crate::cms::{self, DigestAlgorithm, KeyKind, SignatureAlgorithm};
 #[cfg(windows)]
 use crate::cng::CngStore;
 use crate::document;
@@ -152,7 +152,7 @@ pub struct DigestConfirm<'a> {
 }
 
 /// What the job is doing while the signer waits, in order. Enrol takes
-/// Connecting, OpeningToken and CheckingCertificate.
+/// Connecting, OpeningToken, Signing (its proof) and CheckingCertificate.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Step {
     /// Fetching the manifest and claiming the job.
@@ -162,6 +162,7 @@ pub enum Step {
     CheckingCertificate,
     /// Downloading and checking every document (section 8.4).
     Downloading,
+    /// Signing the documents, or an enrol job's proof.
     Signing,
     /// Posting the signatures.
     Sending,
@@ -440,7 +441,9 @@ fn sign(
 /// Enrol logs in to see which certificates have a private key; the PIN
 /// prompt shows the origin, title and signer first (section 12.2). The
 /// certificate store needs no login, so the job is shown before the store is read, and the
-/// certificate choice is always asked.
+/// certificate choice is always asked. Either way the chosen certificate's
+/// key then signs the proof (section 8.6): in the PIN's session, or behind
+/// the system's or vendor's PIN dialog.
 fn enrol(
     client: &JobClient,
     job: &JobDescription,
@@ -484,10 +487,40 @@ fn enrol(
         )?,
     };
     let chain = chain(token, &certificate)?;
+    show_step(ui, view, Step::Signing, ENROLMENT_CANCELLED).inspect_err(|_| token.close())?;
+    let proof = prove(client, job, token, &certificate, ui.window_handle());
     token.close();
+    let proof = proof?;
     show_step(ui, view, Step::CheckingCertificate, ENROLMENT_CANCELLED)?;
-    client.enrol(&job.claim_nonce, &certificate.der, &chain)?;
+    client.enrol(&job.claim_nonce, &certificate.der, &chain, &proof)?;
     Ok(Outcome::Enrolled)
+}
+
+/// The enrol proof: `certificate`'s key signs the message the helper builds
+/// (section 8.6), with the scheme and digest section 11.1 fixes for the key,
+/// so nothing about it comes from the server but the job's nonce.
+fn prove(
+    client: &JobClient,
+    job: &JobDescription,
+    token: &dyn TokenBackend,
+    certificate: &TokenCertificate,
+    window: Option<isize>,
+) -> Result<Vec<u8>, Failure> {
+    let (digest, scheme) = match KeyKind::of_certificate(&certificate.der)? {
+        KeyKind::Rsa => (DigestAlgorithm::Sha256, SignatureAlgorithm::RsaPkcs1v15),
+        KeyKind::P256 | KeyKind::BrainpoolP256r1 => {
+            (DigestAlgorithm::Sha256, SignatureAlgorithm::Ecdsa)
+        }
+        KeyKind::P384 | KeyKind::BrainpoolP384r1 => {
+            (DigestAlgorithm::Sha384, SignatureAlgorithm::Ecdsa)
+        }
+    };
+    let message = client.enrol_proof_message(&job.claim_nonce, &certificate.sha256);
+    let signatures = token.sign(&certificate.der, &[message], digest, scheme, window)?;
+    match <[Vec<u8>; 1]>::try_from(signatures) {
+        Ok([proof]) => Ok(proof),
+        Err(_) => Err("The token didn't sign the proof that the certificate is yours.".into()),
+    }
 }
 
 /// Asks for the PIN and logs in. A wrong PIN is asked for again, in the
@@ -1084,6 +1117,8 @@ mod tests {
         }
     }
 
+    type SignCall = (Vec<Vec<u8>>, DigestAlgorithm, SignatureAlgorithm);
+
     /// A token showing `public` before login and `private` after.
     struct FakeToken {
         public: Vec<&'static [u8]>,
@@ -1091,6 +1126,8 @@ mod tests {
         logged_in: Cell<bool>,
         /// How many items each `sign` call got, shared with the test.
         signed: Arc<Mutex<Vec<usize>>>,
+        /// What each `sign` call got: its items, digest and scheme.
+        sign_calls: Arc<Mutex<Vec<SignCall>>>,
         /// What each login answers, in order; then it succeeds.
         logins: std::cell::RefCell<std::collections::VecDeque<LoginError>>,
         /// How many logins were made, shared with the test.
@@ -1107,6 +1144,7 @@ mod tests {
                 private,
                 logged_in: Cell::new(false),
                 signed: Arc::default(),
+                sign_calls: Arc::default(),
                 logins: Default::default(),
                 attempts: Arc::default(),
                 warnings: Vec::new(),
@@ -1149,11 +1187,15 @@ mod tests {
             &self,
             _: &[u8],
             data: &[Vec<u8>],
-            _: crate::cms::DigestAlgorithm,
-            _: crate::cms::SignatureAlgorithm,
+            digest: DigestAlgorithm,
+            scheme: SignatureAlgorithm,
             _: Option<isize>,
         ) -> Result<Vec<Vec<u8>>, TokenError> {
             self.signed.lock().unwrap().push(data.len());
+            self.sign_calls
+                .lock()
+                .unwrap()
+                .push((data.to_vec(), digest, scheme));
             Ok(data.iter().map(|_| vec![1]).collect())
         }
         fn close(&self) {}
@@ -1262,6 +1304,9 @@ mod tests {
         ByteRange,
         /// The job's failure report takes [`SLOW_REPORT`] to answer.
         SlowReport,
+        /// Its certificate is refused with 422, as a server refuses an
+        /// enrol proof that doesn't verify.
+        RefuseProof,
     }
 
     const SLOW_REPORT: Duration = Duration::from_secs(2);
@@ -1271,6 +1316,8 @@ mod tests {
         requests: Arc<Mutex<Vec<String>>>,
         /// How many signatures each round 2 carried.
         signatures: Arc<Mutex<Vec<usize>>>,
+        /// The body of each `/certificate` request.
+        certificates: Arc<Mutex<Vec<serde_json::Value>>>,
     }
 
     /// Serves a job of `kind` with `count` documents, `fault` breaking one
@@ -1288,6 +1335,8 @@ mod tests {
         let seen = requests.clone();
         let signatures = Arc::new(Mutex::new(Vec::new()));
         let signed = signatures.clone();
+        let certificates = Arc::new(Mutex::new(Vec::new()));
+        let posted = certificates.clone();
         let documents: Vec<serde_json::Value> = (0..count)
             .map(|index| {
                 json!({
@@ -1351,7 +1400,17 @@ mod tests {
                     ),
                     Some(_) if served.is_some() => (200, document(served.unwrap()).0),
                     Some(_) => (404, b"{}".to_vec()),
+                    None if request.ends_with("/certificate")
+                        && matches!(fault, Some((_, Fault::RefuseProof))) =>
+                    {
+                        let message = "The proof doesn't match the certificate.";
+                        (422, json!({ "message": message }).to_string().into_bytes())
+                    }
                     None if request.ends_with("/certificate") => {
+                        posted
+                            .lock()
+                            .unwrap()
+                            .push(serde_json::from_slice(&body).unwrap());
                         let documents: Vec<serde_json::Value> = (0..count)
                             .map(|index| {
                                 let to_sign = signed_attributes(RSA, &document(index).1);
@@ -1397,6 +1456,7 @@ mod tests {
             origin,
             requests,
             signatures,
+            certificates,
         }
     }
 
@@ -1492,6 +1552,14 @@ mod tests {
                 false,
                 vec![],
                 vec![RSA],
+                Stage::Progress(Step::Signing),
+                1,
+            ),
+            (
+                "enrol",
+                false,
+                vec![],
+                vec![RSA],
                 Stage::Progress(Step::CheckingCertificate),
                 1,
             ),
@@ -1533,8 +1601,8 @@ mod tests {
             if reports == 0 {
                 assert!(requests.is_empty(), "{case}: {requests:?}");
             }
-            // The enrolment goes to the server only after its step.
-            if cancel_at == Stage::Progress(Step::CheckingCertificate) {
+            // A cancelled enrolment never reaches the server.
+            if kind == "enrol" {
                 assert!(
                     !requests.iter().any(|r| r.ends_with("/certificate")),
                     "{case}"
@@ -1563,7 +1631,7 @@ mod tests {
                 "enrol",
                 vec![],
                 vec![RSA],
-                &[Connecting, OpeningToken, CheckingCertificate][..],
+                &[Connecting, OpeningToken, Signing, CheckingCertificate][..],
             ),
         ] {
             let (origin, _) = serve(kind, serde_json::Value::Null);
@@ -1866,6 +1934,95 @@ mod tests {
         assert_eq!(
             offered(json!({ "keyUsage": "digitalSignature" })),
             [RSA, DIGITAL_SIGNATURE]
+        );
+    }
+
+    /// Runs an enrol link against `served` with `token`, from a PKCS#11
+    /// token or the certificate store.
+    fn run_enrol(served: &Served, token: FakeToken, in_store: bool) -> Result<Outcome, Failure> {
+        let config_dir = std::env::temp_dir().join(format!("keyseal-enrol-{}", std::process::id()));
+        let env = Environment {
+            allow_insecure: true,
+            config_dir: config_dir.clone(),
+        };
+        let link: String = url::form_urlencoded::byte_serialize(
+            format!("{}/api/keyseal/v1/jobs/{TOKEN}", served.origin).as_bytes(),
+        )
+        .collect();
+        let token = std::cell::RefCell::new(Some(Box::new(token)));
+        let open = |_: KeyUsage, before_store: BeforeStore| {
+            let token = token.borrow_mut().take().expect("one token per job");
+            if !in_store {
+                return Ok(Found::Backend(Backend::Pkcs11(token)));
+            }
+            before_store()?;
+            Ok(Found::Backend(Backend::Store(token)))
+        };
+        // Enrol never reaches this step, so nothing is cancelled.
+        let mut ui = CancellingUi::new(Stage::Progress(Step::Sending));
+        let result = run_with(&format!("keyseal://enrol?job={link}"), &mut ui, &env, &open);
+        let _ = std::fs::remove_dir_all(&config_dir);
+        result
+    }
+
+    /// Enrol signs one proof, the helper's own message binding the job URL,
+    /// the claim nonce and the certificate, with the scheme the key type
+    /// fixes, and posts it with the certificate.
+    #[test]
+    fn enrols_with_a_proof_of_the_key() {
+        for (certificate, digest, scheme) in [
+            (
+                RSA,
+                DigestAlgorithm::Sha256,
+                SignatureAlgorithm::RsaPkcs1v15,
+            ),
+            (P256, DigestAlgorithm::Sha256, SignatureAlgorithm::Ecdsa),
+        ] {
+            for in_store in [false, true] {
+                let served = serve_documents("enrol", serde_json::Value::Null, 1, None);
+                let token = if in_store {
+                    FakeToken::new(vec![certificate], vec![])
+                } else {
+                    FakeToken::new(vec![], vec![certificate])
+                };
+                let calls = token.sign_calls.clone();
+                let result = run_enrol(&served, token, in_store);
+                assert_eq!(result.unwrap(), Outcome::Enrolled, "{in_store}");
+                let message = format!(
+                    "KeySeal enrol proof v1\0{}/api/keyseal/v1/jobs/{TOKEN}\0{NONCE}\0{}",
+                    served.origin,
+                    token::sha256_hex(certificate)
+                );
+                assert_eq!(
+                    *calls.lock().unwrap(),
+                    [(vec![message.into_bytes()], digest, scheme)],
+                    "{in_store}"
+                );
+                let posted = served.certificates.lock().unwrap();
+                assert_eq!(posted.len(), 1);
+                assert_eq!(posted[0]["certificate"], STANDARD.encode(certificate));
+                assert_eq!(posted[0]["proof"], STANDARD.encode([1]));
+            }
+        }
+    }
+
+    /// A proof the server refuses fails the job with the server's message.
+    #[test]
+    fn a_refused_proof_fails_the_enrolment() {
+        let served = serve_documents(
+            "enrol",
+            serde_json::Value::Null,
+            1,
+            Some((0, Fault::RefuseProof)),
+        );
+        let failure = run_enrol(&served, FakeToken::new(vec![], vec![RSA]), false).unwrap_err();
+        assert!(!failure.cancelled);
+        assert!(
+            failure
+                .message
+                .contains("The proof doesn't match the certificate."),
+            "{}",
+            failure.message
         );
     }
 

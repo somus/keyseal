@@ -212,7 +212,7 @@ fn runs_both_rounds_and_the_failure_report() {
     client
         .submit_signatures(NONCE, &[b"signature".to_vec(), b"second".to_vec()])
         .unwrap();
-    client.enrol(NONCE, b"certificate", &[]).unwrap();
+    client.enrol(NONCE, b"certificate", &[], b"proof").unwrap();
     client
         .report_failure(NONCE, &format!("  {}  ", "x".repeat(600)))
         .unwrap();
@@ -241,6 +241,7 @@ fn runs_both_rounds_and_the_failure_report() {
         json!({ "claimNonce": NONCE, "signatures": ["c2lnbmF0dXJl", "c2Vjb25k"] })
     );
     assert_eq!(requests[3].json()["chain"], json!([]));
+    assert_eq!(requests[3].json()["proof"], "cHJvb2Y=");
     assert_eq!(
         requests[4].path,
         format!("/api/keyseal/v1/jobs/{TOKEN}/failure")

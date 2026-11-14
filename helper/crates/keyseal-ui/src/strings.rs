@@ -43,13 +43,13 @@ strings! {
     PIN_FINAL_TRY = "One more wrong PIN will lock your token. If you aren't sure of it, cancel and check it first.";
     DIGEST_NEXT = "You'll check the document once more before it's signed.";
     DIGESTS_NEXT = "You'll check the documents once more before they're signed.";
-    ENROL_NOTE = "Your PIN unlocks your token so KeySeal can find your certificate.";
+    ENROL_NOTE = "Your PIN unlocks your token so KeySeal can find your certificate and prove you hold its key. No document is signed.";
     CONFIRM_NOTE = "Make sure this is the document you meant to sign, then confirm.";
     CONFIRM_BATCH_NOTE = "Make sure these are the documents you meant to sign, then confirm.";
     ENROL_STORE_NOTE = if cfg!(target_os = "macos") {
-        "Next, KeySeal looks for your certificate in the macOS keychain."
+        "Next, KeySeal looks for your certificate in the macOS keychain and proves you hold its key, so macOS asks for your token's PIN. No document is signed."
     } else {
-        "Next, KeySeal looks for your certificate in Windows."
+        "Next, KeySeal looks for your certificate in Windows and proves you hold its key, so Windows or your token's software asks for its PIN. No document is signed."
     };
     CHOOSE_NOTE = "Your token holds more than one certificate. Choose the one to use.";
     // Under the certificate's name. "{issuer}" is the issuer's name and
@@ -76,6 +76,7 @@ strings! {
     STEP_DOWNLOADING = "Downloading the document...";
     STEP_DOWNLOADING_BATCH = "Downloading the documents...";
     STEP_SIGNING = "Signing...";
+    STEP_PROVING = "Proving you hold your certificate's key...";
     STEP_SENDING = "Sending the signature...";
     STEP_SENDING_BATCH = "Sending the signatures...";
     SIGN = "Sign";

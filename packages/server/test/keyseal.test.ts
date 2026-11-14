@@ -9,6 +9,7 @@ import {
   JobRefused,
   nodeCertificateInspector,
   ServiceClient,
+  type CertificateInspector,
   type CompletedResult,
   type Job,
   type JobFailure,
@@ -111,6 +112,29 @@ function sha256(base64: string): string {
     .update(Buffer.from(base64, "base64"))
     .digest("hex");
 }
+
+/**
+ * An enrol proof as the helper sends it (protocol section 8.6): `key` signs
+ * the job URL, claim nonce and SHA-256 of `certificate` behind a fixed label.
+ */
+function proofFor(
+  key: keyof typeof KEYS,
+  jobUrl: string,
+  claimNonce: string,
+  certificate: string
+): string {
+  const message = `KeySeal enrol proof v1\0${jobUrl}\0${claimNonce}\0${sha256(certificate)}`;
+  return signWith(key, Buffer.from(message).toString("base64"));
+}
+
+/**
+ * Verifies every signature, for the certificates whose keys the fixtures
+ * lack, so an enrol job can take any proof.
+ */
+const ANY_PROOF: CertificateInspector = {
+  inspect: (der) => nodeCertificateInspector.inspect(der),
+  verify: () => true,
+};
 
 /** A stand-in for the signing service's HTTP API. */
 function fakeService() {
@@ -1122,6 +1146,7 @@ describe("enrol flow", () => {
       certificate: CERTS.p384,
       chain: [],
       claimNonce: description.claimNonce,
+      proof: proofFor("p384", jobUrl, description.claimNonce, CERTS.p384),
     });
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({});
@@ -1139,7 +1164,7 @@ describe("enrol flow", () => {
 
   test("refuses a certificate other than the expected one", async () => {
     const t = setup();
-    const { id, token } = await t.keyseal.createEnrolJob({
+    const { id, token, jobUrl } = await t.keyseal.createEnrolJob({
       expectedCertificateSha256: sha256(CERTS.rsa),
       signer: "Asha Rao",
       title: "DSC enrolment",
@@ -1149,9 +1174,154 @@ describe("enrol flow", () => {
       certificate: CERTS.p256,
       chain: [],
       claimNonce,
+      proof: proofFor("p256", jobUrl, claimNonce, CERTS.p256),
     });
     expect(response.status).toBe(422);
     expect((await t.keyseal.status(id))?.state).toBe("failed");
+  });
+});
+
+describe("enrol proof", () => {
+  const UPGRADE = "Update the signing helper, then try again.";
+  const REFUSED =
+    "The proof doesn't match the certificate: was the right token used?";
+
+  test("a valid proof completes the job for RSA, P-256 and P-384 keys", async () => {
+    for (const key of ["rsa", "p256", "p384"] as const) {
+      const t = setup();
+      const { id, token, jobUrl } = await t.keyseal.createEnrolJob({
+        signer: "Asha Rao",
+        title: "DSC enrolment",
+      });
+      const { claimNonce } = await t.claim(token);
+      const response = await t.post(token, "certificate", {
+        certificate: CERTS[key],
+        chain: [],
+        claimNonce,
+        proof: proofFor(key, jobUrl, claimNonce, CERTS[key]),
+      });
+      expect({ key, status: response.status }).toEqual({ key, status: 200 });
+      expect((await t.keyseal.status(id))?.state).toBe("completed");
+    }
+  });
+
+  test("426 without a proof fails the job and names the first helper that sends one", async () => {
+    for (const [minHelperVersion, minVersion] of [
+      [undefined, "0.5.0"],
+      ["0.4.0", "0.5.0"],
+      ["0.5.0", "0.5.0"],
+      ["1.2.0", "1.2.0"],
+    ] as const) {
+      const t = setup(minHelperVersion ? { minHelperVersion } : {});
+      const { id, token } = await t.keyseal.createEnrolJob({
+        signer: "Asha Rao",
+        title: "DSC enrolment",
+      });
+      const claimed = await t.send("GET", t.jobPath(token), {
+        headers: { "X-KeySeal-Version": "9.0.0" },
+      });
+      const { claimNonce } = (await claimed.json()) as Description;
+      const response = await t.send("POST", t.jobPath(token, "certificate"), {
+        body: { certificate: CERTS.rsa, chain: [], claimNonce },
+        headers: { "X-KeySeal-Version": "9.0.0" },
+      });
+      expect(response.status).toBe(426);
+      expect(response.headers.get("Cache-Control")).toBe("no-store");
+      expect(await response.json()).toEqual({ message: UPGRADE, minVersion });
+      expect(await t.keyseal.status(id)).toMatchObject({
+        message: UPGRADE,
+        state: "failed",
+      });
+      expect(t.failed.map(({ failure }) => failure)).toEqual([
+        { message: UPGRADE, reportedBy: "server" },
+      ]);
+      expect(t.fake.calls).toEqual([]);
+      expect(t.completed).toHaveLength(0);
+    }
+  });
+
+  test("a sign job's round 1 needs no proof", async () => {
+    const { prepared } = await setup().preparedJob();
+    expect(prepared).toHaveProperty("documents.0.toSign");
+  });
+
+  test("422 for a proof that doesn't verify fails the job", async () => {
+    const cases: [
+      string,
+      (jobUrl: string, claimNonce: string, token: string) => string,
+    ][] = [
+      ["another key", (url, nonce) => proofFor("p256", url, nonce, CERTS.rsa)],
+      [
+        "another job URL",
+        (_url, nonce) =>
+          proofFor(
+            "rsa",
+            `${ORIGIN}/v1/jobs/${"o".repeat(43)}`,
+            nonce,
+            CERTS.rsa
+          ),
+      ],
+      [
+        "another origin",
+        (_url, nonce, token) =>
+          proofFor(
+            "rsa",
+            `https://evil.example/v1/jobs/${token}`,
+            nonce,
+            CERTS.rsa
+          ),
+      ],
+      [
+        "another claim nonce",
+        (url) => proofFor("rsa", url, "n".repeat(43), CERTS.rsa),
+      ],
+      [
+        "another certificate",
+        (url, nonce) => proofFor("rsa", url, nonce, CERTS.p256),
+      ],
+      ["a document signature", () => signWith("rsa", toSignFor("Signature1"))],
+      ["not a signature", () => btoa("proof")],
+    ];
+    for (const [name, proof] of cases) {
+      const t = setup();
+      const { id, token, jobUrl } = await t.keyseal.createEnrolJob({
+        signer: "Asha Rao",
+        title: "DSC enrolment",
+      });
+      const { claimNonce } = await t.claim(token);
+      const response = await t.post(token, "certificate", {
+        certificate: CERTS.rsa,
+        chain: [],
+        claimNonce,
+        proof: proof(jobUrl, claimNonce, token),
+      });
+      expect({ name, status: response.status }).toEqual({ name, status: 422 });
+      expect(await response.json()).toEqual({ message: REFUSED });
+      expect(await t.keyseal.status(id)).toMatchObject({
+        message: REFUSED,
+        state: "failed",
+      });
+      expect(t.completed).toHaveLength(0);
+    }
+  });
+
+  test("422 for a proof that isn't base64 leaves the job claimed", async () => {
+    for (const proof of ["", "not base64!", 5, null, "A".repeat(4100)]) {
+      const t = setup();
+      const { id, token } = await t.keyseal.createEnrolJob({
+        signer: "Asha Rao",
+        title: "DSC enrolment",
+      });
+      const { claimNonce } = await t.claim(token);
+      const response = await t.post(token, "certificate", {
+        certificate: CERTS.rsa,
+        chain: [],
+        claimNonce,
+        proof,
+      });
+      expect(response.status).toBe(422);
+      expect((await t.keyseal.status(id))?.state).toBe("claimed");
+    }
   });
 });
 
@@ -1238,7 +1408,7 @@ describe("certificate policy", () => {
     ];
     for (const [name, accepted] of cases) {
       for (const [setting, certificatePolicy] of Object.entries(policies)) {
-        const t = setup();
+        const t = setup({ certificateInspector: ANY_PROOF });
         const { token } = await t.keyseal.createEnrolJob({
           certificatePolicy,
           signer: "Asha Rao",
@@ -1249,6 +1419,7 @@ describe("certificate policy", () => {
           certificate: CERTS[name],
           chain: [],
           claimNonce,
+          proof: "AA==",
         });
         expect({ name, setting, status: response.status }).toEqual({
           name,
@@ -1310,7 +1481,7 @@ describe("certificate policy", () => {
   });
 
   test("accepts a certificate that satisfies every member", async () => {
-    const t = setup();
+    const t = setup({ certificateInspector: ANY_PROOF });
     const { id, token } = await t.keyseal.createEnrolJob({
       certificatePolicy: POLICY,
       signer: "Asha Rao",
@@ -1321,6 +1492,7 @@ describe("certificate policy", () => {
       certificate: CERTS.policy,
       chain: [],
       claimNonce,
+      proof: "AA==",
     });
     expect(response.status).toBe(200);
     expect((await t.keyseal.status(id))?.state).toBe("completed");
@@ -1361,6 +1533,7 @@ describe("certificate policy", () => {
           certificate,
           chain: [],
           claimNonce,
+          proof: "AA==",
         });
         expect(response.status).toBe(422);
         const message =
@@ -1916,6 +2089,7 @@ describe("status codes", () => {
       certificate: CERTS.p384,
       chain: [],
       claimNonce: description.claimNonce,
+      proof: proofFor("p384", enrol.jobUrl, description.claimNonce, CERTS.p384),
     });
     expect(refused.status).toBe(422);
     expect(await t.keyseal.status(enrol.id)).toMatchObject({

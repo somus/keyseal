@@ -100,6 +100,9 @@ paths:
         moves from claimed to completed and the response is an EnrolResult.
         A certificate that misses the job's expected SHA-256 or does not
         satisfy its certificate policy is refused with 422 and fails the job.
+        An enrol submission carries a proof of possession (section 8.6): a
+        server that requires it answers a submission without one with 426,
+        and refuses a proof that doesn't verify with 422, failing the job.
       requestBody:
         required: true
         content:
@@ -356,7 +359,7 @@ components:
           schema:
             $ref: "#/components/schemas/Error"
     UpgradeRequired:
-      description: Helper version below the server's minimum.
+      description: Helper version below the server's minimum, or an enrol submission without the proof the server requires (section 8.6).
       headers:
         Cache-Control:
           $ref: "#/components/headers/NoStore"
@@ -566,6 +569,17 @@ components:
           maxItems: 8
           items:
             $ref: "#/components/schemas/CertificateDer"
+        proof:
+          description: >-
+            Enrol jobs only (section 8.6): the certificate's key signing
+            "KeySeal enrol proof v1", the job URL, the claim nonce and the
+            certificate's SHA-256 as lowercase hex, separated by zero bytes,
+            with rsa-pkcs1-v1_5 and sha256 for an RSA key or ecdsa and the
+            curve's digest for an EC key. Encoded as a signature is. A helper
+            that implements section 8.6 sends it; a server may require it.
+          allOf:
+            - $ref: "#/components/schemas/Base64"
+          maxLength: 4096
     PreparedSignature:
       type: object
       required: [digestAlgorithm, signatureAlgorithm, documents]

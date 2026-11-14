@@ -309,7 +309,7 @@ mod tests {
     }
 
     /// A token CryptoTokenKit exposes, as the virtual PIV card that
-    /// scripts/ci/virtual-piv.sh sets up in the macos-token workflow: its
+    /// scripts/ci/virtual-piv.sh sets up in the macOS checks job: its
     /// signing certificate is found through the token access group and
     /// counts as on a token. Signing would need the system's PIN dialog.
     #[test]

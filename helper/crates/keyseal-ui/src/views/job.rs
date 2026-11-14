@@ -376,8 +376,16 @@ impl JobWindow {
             }
             Stage::Confirm { .. } => body.child(note(strings::CONFIRM_NOTE, cx)),
             Stage::Enrol { .. } => body.child(note(strings::ENROL_STORE_NOTE, cx)),
-            Stage::Choose { subjects, .. } => {
-                body.child(note(strings::CHOOSE_NOTE, cx)).child(group(
+            Stage::Choose { subjects, .. } => body
+                .child(
+                    div()
+                        .id("choose")
+                        .role(Role::Note)
+                        .aria_label(strings::CHOOSE_NOTE)
+                        .child(note(strings::CHOOSE_NOTE, cx))
+                        .test_support(),
+                )
+                .child(group(
                     subjects.iter().enumerate().map(|(index, subject)| {
                         h_flex()
                             .gap_3()
@@ -395,8 +403,7 @@ impl JobWindow {
                             .into_any_element()
                     }),
                     cx,
-                ))
-            }
+                )),
             Stage::Busy => body.child(progress_line(strings::WORKING.into(), cx)),
             Stage::Progress(step) => body.child(progress_line(self.step_text(*step), cx)),
         }
@@ -558,7 +565,16 @@ impl Render for JobWindow {
                             .when(self.job.insecure, |this| this.child(insecure_banner(cx)))
                             .child(
                                 v_flex()
-                                    .min_h(px(0.))
+                                    // Gives a batch's list the height left above
+                                    // what is pinned. Above a list of certificates
+                                    // it keeps its height and the job scrolls.
+                                    .map(|this| {
+                                        if pinned {
+                                            this.min_h(px(0.))
+                                        } else {
+                                            this.flex_shrink_0()
+                                        }
+                                    })
                                     .gap_1()
                                     // Before the claim there is only the host
                                     // to show.
@@ -627,6 +643,36 @@ mod tests {
 
     use crate::views::open_settings;
     use crate::{Job, Request, Stage, strings};
+
+    /// More certificates than the window holds scroll with the job instead of
+    /// squeezing the rows above them.
+    #[gpui_kit::test]
+    fn a_long_list_of_certificates_stays_below_the_job(cx: &mut TestAppContext) {
+        let mut windows = setup(cx);
+        cx.update(|cx| {
+            windows.handle(
+                Request::Job {
+                    job: job(),
+                    stage: Stage::Choose {
+                        subjects: (1..=12).map(|n| format!("CN=Signer {n}")).collect(),
+                        reply: mpsc::channel().0,
+                    },
+                },
+                cx,
+            )
+        });
+        let handle = *open_windows(cx).last().unwrap();
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            let job = window.find("signer").bounds().bottom();
+            let note = window.find("choose").bounds().top();
+            assert!(
+                note >= job,
+                "the note starts at {note:?}, above the job's {job:?}"
+            );
+        })
+        .unwrap();
+    }
 
     /// On a PIN pad, a batch says the pad may ask once per document.
     #[gpui_kit::test]

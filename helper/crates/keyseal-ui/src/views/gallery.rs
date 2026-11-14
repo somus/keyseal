@@ -302,7 +302,7 @@ pub(crate) fn gallery(view: &str, cx: &mut App) {
         "choose" => Stage::Choose {
             certificates: vec![
                 certificate("Verasys Sub CA 2022", "12 March 2027", "4F A1 9C"),
-                certificate("Verasys Sub CA 2022", "2 February 2026", "0B 7E 31"),
+                certificate("Verasys Sub CA 2022", "2 February 2027", "0B 7E 31"),
                 certificate(
                     "e-Mudhra Sub CA for Class 3 Individual 2022",
                     "2 June 2028",

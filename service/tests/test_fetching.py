@@ -127,7 +127,7 @@ def certificate_with_issuer_url(pki: Pki, url: str) -> str:
 def check_certificate(pki: Pki, url: str, allow_fetching: bool = True) -> dict[str, Any]:
     """POST /certificate, which opens a public fetch session for the request."""
     validation = ValidationSettings(trust_roots=[], allow_fetching=allow_fetching)
-    app = create_app(Settings(token=TOKEN, tsa_url=None, validation=validation))
+    app = create_app(Settings(token=TOKEN, tsa_urls=(), validation=validation))
     with TestClient(app) as client:
         response = client.post(
             "/certificate",
@@ -289,7 +289,7 @@ def test_a_crl_past_the_cap_leaves_revocation_unchecked(
     if oversized:
         monkeypatch.setattr(fetching, "MAX_CRL_BYTES", len(crl) - 1)
     validation = ValidationSettings(trust_roots=[pki.ca_asn1], allow_fetching=True)
-    app = create_app(Settings(token=TOKEN, tsa_url=None, validation=validation))
+    app = create_app(Settings(token=TOKEN, tsa_urls=(), validation=validation))
     with TestClient(app) as client:
         response = client.post(
             "/certificate",

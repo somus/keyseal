@@ -11,9 +11,9 @@ Every route except `GET /health`, plugin routes included, needs `Authorization: 
 | `POST /certificate` | Whether a certificate chains to a configured root and may sign (`trusted`), and whether its revocation status was checked (`revocationChecked`); optional `keyUsage` (below) |
 | `POST /prepare` | Adds empty signature fields as one incremental update |
 | `POST /sign/start` | Reserves the signature and returns `toSign`, `digestAlgorithm` (`sha256` or `sha384`), `signatureAlgorithm` (`rsa-pkcs1-v1_5`, `rsa-pss` or `ecdsa`) and an opaque `state`; optional `stampStyle`, `rsaPadding` (`pkcs1` or `pss`), `reason`, `location` and `contactInfo` |
-| `POST /sign/finish` | Builds the CMS around the token's signature and returns the signed PDF (PAdES B-T); a 422 when the TSA's token doesn't stamp the digest of that signature |
-| `POST /finalize` | Revocation data for every signature and a document timestamp (PAdES B-LTA) |
-| `POST /retimestamp` | Another document timestamp before the last one's certificate expires |
+| `POST /sign/finish` | Builds the CMS around the token's signature and returns the signed PDF (PAdES B-T); a 503 when no timestamp authority answered, and a 422 when the only tokens it got don't stamp the digest of that signature |
+| `POST /finalize` | Revocation data for every signature and a document timestamp (PAdES B-LTA); a 503 when no timestamp authority answered |
+| `POST /retimestamp` | Another document timestamp before the last one's certificate expires; a 503 when no timestamp authority answered |
 
 `keyUsage` on `/certificate` and `/validate` is `nonRepudiation`, the default, or `digitalSignature`. With `nonRepudiation` a certificate may sign only when its KeyUsage extension asserts nonRepudiation; with `digitalSignature`, when it asserts digitalSignature or nonRepudiation. A certificate without a KeyUsage extension never may, nor may a CA's certificate on `/certificate`. Any other value is a 422.
 
@@ -48,12 +48,14 @@ The service refuses to start, logging which rule failed and exiting 1, when the 
 | Variable | Default | Meaning |
 |---|---|---|
 | `SIGNING_SERVICE_TOKEN` | none, required | Bearer token shared with the integrator backend |
-| `SIGNING_TSA_URL` | `http://timestamp.digicert.com` | RFC 3161 timestamp authority; `none` turns timestamps off, and `/finalize` and `/retimestamp` then answer 503 |
+| `SIGNING_TSA_URL` | `http://timestamp.digicert.com` | RFC 3161 timestamp authorities, one or more http or https URLs separated by commas or whitespace and tried in that order (below); `none` turns timestamps off, and `/finalize` and `/retimestamp` then answer 503. Anything else refuses to start |
 | `SIGNING_TRUST_ROOTS_DIR` | bundled CCA India roots and intermediates | Directory of `.pem`, `.cer`, `.crt` or `.der` certificates replacing the bundled ones; self-signed ones are roots, the rest intermediates |
 | `SIGNING_EXTRA_TRUST_ROOTS_DIR` | none | Directory of `.pem`, `.cer`, `.crt` or `.der` certificates added to the bundled ones, or to `SIGNING_TRUST_ROOTS_DIR`'s; self-signed ones are roots, the rest intermediates |
 | `SIGNING_ALLOW_FETCHING` | off | `true` lets validation fetch issuer certificates, OCSP and CRL data |
 | `SIGNING_LOG_LEVEL` | `INFO` | Level of the service's own log records: `DEBUG`, `INFO`, `WARNING`, `ERROR` or `CRITICAL`, in any case. They go to stderr as `LEVEL: logger: message`, beside uvicorn's own; any other value refuses to start. At `INFO` they include why `/certificate` refused a certificate |
 | `TZ` | container's (UTC) | Time zone of the date in the built-in stamp, for example `Asia/Kolkata`; a zone name, since pyHanko refuses POSIX zones such as `IST-5:30` |
+
+Each timestamp, on `/sign/finish`, `/finalize` and `/retimestamp`, asks the timestamp authorities in turn and takes the first token that stamps the digest it asked for. An authority that can't be reached, takes more than 10 seconds, answers with an HTTP error, a rejection or something unreadable, or stamps another digest counts as failed, and the next one is asked; one timestamp asks for at most 20 seconds in all, which keeps `/finalize` and `/retimestamp`, which ask twice, inside their 45 and `/sign/finish` inside the 60 `@keyseal/server` waits. An authority that failed is asked after the others for the next minute, so a dead first one costs its timeout once, not on every request. A failure followed by an answer is logged as a warning and every one failing as an error, naming the hosts. When none answered, the route answers 503, which `@keyseal/server` treats as an outage, leaving the job for the helper to retry; when the only tokens it got stamp another digest, it is a 422 that fails the job. A second authority is opt-in: list one only if its tokens are trusted wherever the PDFs are validated.
 
 The default TSA is plain HTTP, as DigiCert serves no HTTPS endpoint for it. `/sign/finish` refuses a token whose imprint isn't the digest of the signature, but someone on the network path could still answer with a correctly imprinted token from another TSA. That shows up only at validation, and only where the TSA's trust is checked: `timestampValid` says the timestamp is intact and matches, not who issued it, and a token from any TSA chaining to a system root is trusted. Point `SIGNING_TSA_URL` at an HTTPS TSA to close the gap.
 

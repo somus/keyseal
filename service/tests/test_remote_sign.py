@@ -222,9 +222,9 @@ def test_a_timestamp_for_another_digest_is_refused(
     monkeypatch.setattr(
         app_module.timestamps,
         "HTTPTimeStamper",
-        lambda _url: misstamping(pki.timestamper(datetime.now(UTC))),
+        lambda _url, **_: misstamping(pki.timestamper(datetime.now(UTC))),
     )
-    client = client_for(ValidationSettings(trust_roots=[pki.ca_asn1]), "https://tsa.invalid")
+    client = client_for(ValidationSettings(trust_roots=[pki.ca_asn1]), ("https://tsa.invalid",))
     body = _start_with(client, pki).json()
     finished = client.post(
         "/sign/finish",
@@ -407,7 +407,7 @@ def test_sign_finish_refuses_a_state_it_did_not_issue(pki: Pki) -> None:
         )
 
     other_pdf = b64(blank_pdf())
-    other = TestClient(create_app(Settings(token=OTHER_TOKEN, tsa_url=None, validation=settings)))
+    other = TestClient(create_app(Settings(token=OTHER_TOKEN, tsa_urls=(), validation=settings)))
     refusals = [
         finish_with(_tampered(state, lambda m: m.update(output=other_pdf))),
         finish_with(_tampered(state, lambda m: m.update(reservedStart=m["reservedStart"] + 1))),
@@ -539,13 +539,15 @@ def test_a_pdf_that_cannot_be_signed_is_refused_with_the_reason(
     build, message, _ = UNSIGNABLE[kind]
     pdf = build(pki)
     monkeypatch.setattr(
-        app_module.timestamps, "HTTPTimeStamper", lambda _url: pki.timestamper(datetime.now(UTC))
+        app_module.timestamps,
+        "HTTPTimeStamper",
+        lambda _url, **_: pki.timestamper(datetime.now(UTC)),
     )
     client = TestClient(
         create_app(
             Settings(
                 token=TOKEN,
-                tsa_url="https://tsa.invalid",
+                tsa_urls=("https://tsa.invalid",),
                 validation=ValidationSettings(trust_roots=[pki.ca_asn1]),
             )
         ),

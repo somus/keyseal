@@ -31,7 +31,15 @@ from .appearance import SignedByStampStyle
 from .fetching import public_fetch_session
 from .prepare import MAX_FIELDS, FieldRequest, PrepareError, prepare_fields
 from .request_guard import RequestGuard
-from .settings import LogLevelError, Settings, TrustRootsError, WeakTokenError, check_token
+from .settings import (
+    LogLevelError,
+    Settings,
+    TrustRootsError,
+    TsaUrlError,
+    WeakTokenError,
+    check_token,
+)
+from .timestamping import TSA_TIMEOUT_SECONDS, TimestampAuthorities, TimestampUnavailableError
 from .validate import (
     DEFAULT_KEY_USAGE,
     KeyUsage,
@@ -137,7 +145,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     except WeakTokenError as error:
         log.critical("Refusing to start: %s. Generate one with `openssl rand -base64 32`.", error)
         raise SystemExit(1) from error
-    except (TrustRootsError, LogLevelError) as error:
+    except (TrustRootsError, LogLevelError, TsaUrlError) as error:
         log.critical("Refusing to start: %s.", error)
         raise SystemExit(1) from error
 
@@ -170,7 +178,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         max_pdf_bytes=MAX_PDF_BYTES,
         pdf_paths=PDF_PATHS,
     )
-    tsa = timestamps.HTTPTimeStamper(resolved.tsa_url) if resolved.tsa_url else None
+    tsa = (
+        TimestampAuthorities(
+            [
+                (url, timestamps.HTTPTimeStamper(url, timeout=TSA_TIMEOUT_SECONDS))
+                for url in resolved.tsa_urls
+            ]
+        )
+        if resolved.tsa_urls
+        else None
+    )
     stamp_styles = {
         DEFAULT_STAMP_STYLE: SignedByStampStyle,
         **{ep.name: ep.load() for ep in entry_points(group=STAMP_STYLES_GROUP)},
@@ -272,9 +289,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         try:
             state = remote_sign.open_state(state_key, body.state)
             signature = _b64(body.signature, "signature")
-            pdf = await _in_thread(lambda: remote_sign.finish(state, signature, tsa))
+            stamper = tsa.stamper() if tsa else None
+            pdf = await _in_thread(lambda: remote_sign.finish(state, signature, stamper))
         except remote_sign.RemoteSignError as error:
             raise HTTPException(422, str(error)) from error
+        except TimestampUnavailableError as error:
+            raise HTTPException(503, str(error)) from error
         return Response(content=pdf, media_type="application/pdf")
 
     @app.post("/finalize")
@@ -282,12 +302,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if tsa is None:
             raise HTTPException(503, "No timestamp authority is configured")
         pdf = await _read_pdf(request)
+        stamper = tsa.stamper()
         try:
             out = await _validating(
-                lambda settings: remote_sign.finalize(pdf, tsa, settings.context())
+                lambda settings: remote_sign.finalize(pdf, stamper, settings.context())
             )
         except (remote_sign.RemoteSignError, ValidationLimitError) as error:
             raise HTTPException(422, str(error)) from error
+        except TimestampUnavailableError as error:
+            raise HTTPException(503, str(error)) from error
         except Exception as error:  # noqa: BLE001 - reported, the PDF stays as it was
             log.exception("Couldn't finalise")
             raise HTTPException(422, f"Couldn't finalise: {type(error).__name__}") from error
@@ -298,12 +321,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if tsa is None:
             raise HTTPException(503, "No timestamp authority is configured")
         pdf = await _read_pdf(request)
+        stamper = tsa.stamper()
         try:
             out = await _validating(
-                lambda settings: remote_sign.retimestamp(pdf, tsa, settings.context())
+                lambda settings: remote_sign.retimestamp(pdf, stamper, settings.context())
             )
         except (remote_sign.RemoteSignError, ValidationLimitError) as error:
             raise HTTPException(422, str(error)) from error
+        except TimestampUnavailableError as error:
+            raise HTTPException(503, str(error)) from error
         except Exception as error:  # noqa: BLE001 - reported, the PDF stays as it was
             log.exception("Couldn't timestamp")
             raise HTTPException(422, f"Couldn't timestamp: {type(error).__name__}") from error

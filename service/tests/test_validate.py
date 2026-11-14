@@ -749,9 +749,11 @@ def _unanswered(stopped: threading.Event) -> Any:
 
 def _with_local_tsa(pki: Pki, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     monkeypatch.setattr(
-        app_module.timestamps, "HTTPTimeStamper", lambda _url: pki.timestamper(datetime.now(UTC))
+        app_module.timestamps,
+        "HTTPTimeStamper",
+        lambda _url, **_: pki.timestamper(datetime.now(UTC)),
     )
-    return client_for(settings_with(pki), "https://tsa.invalid")
+    return client_for(settings_with(pki), ("https://tsa.invalid",))
 
 
 def test_a_certificate_check_past_its_budget_stops_and_may_be_retried(

@@ -15,7 +15,7 @@ use gpui_kit::{
 };
 use keyseal_core::flow::Step;
 use keyseal_core::protocol::Kind;
-use keyseal_core::token::CertificateSummary;
+use keyseal_core::token::{CertificateSummary, TokenSummary};
 use zeroize::Zeroizing;
 
 use super::widgets::{
@@ -68,6 +68,25 @@ fn describe(text: &str, certificate: &CertificateSummary) -> String {
         .replace("{issuer}", &certificate.issuer)
         .replace("{date}", &certificate.valid_until)
         .replace("{serial}", &certificate.serial_end)
+}
+
+/// `text` with the token's `{model}`, `{serial}` and `{names}`.
+fn describe_token(text: &str, token: &TokenSummary) -> String {
+    text.replace("{model}", &token.model)
+        .replace("{serial}", &token.serial)
+        .replace("{names}", &token.names.join(", "))
+}
+
+/// The line under a token's label: its model and serial number, or the one
+/// of them it reports. A token without a label is labelled by its model.
+fn token_detail(token: &TokenSummary) -> Option<String> {
+    let model = !token.model.is_empty() && token.model != token.label;
+    match (model, !token.serial.is_empty()) {
+        (true, true) => Some(describe_token(strings::TOKEN_MODEL, token)),
+        (true, false) => Some(token.model.clone()),
+        (false, true) => Some(describe_token(strings::TOKEN_SERIAL, token)),
+        (false, false) => None,
+    }
 }
 
 /// The list of a batch's documents takes the height the window has left,
@@ -255,7 +274,7 @@ impl JobWindow {
             Stage::Confirm { reply, .. } | Stage::Enrol { reply } => {
                 let _ = reply.send(true);
             }
-            Stage::Choose { reply, .. } => {
+            Stage::Choose { reply, .. } | Stage::ChooseToken { reply, .. } => {
                 let _ = reply.send(Some(self.selected));
             }
             Stage::Busy | Stage::Progress(_) => {}
@@ -318,6 +337,7 @@ impl JobWindow {
         match &self.stage {
             Stage::Pin {
                 pin_pad,
+                token,
                 warning,
                 wrong_pin,
                 digests,
@@ -353,19 +373,21 @@ impl JobWindow {
                         )
                         .when(*wrong_pin, |this| this.child(wrong_pin_line(cx)))
                     } else {
+                        // Names the token when several were plugged in.
+                        let label = match token {
+                            Some(token) => strings::PIN_FOR_TOKEN.replace("{token}", token).into(),
+                            None => SharedString::from(strings::PIN),
+                        };
                         this.child(
                             v_flex()
                                 .gap_1p5()
-                                .child(div().text_sm().font_medium().child(strings::PIN))
+                                .child(div().text_sm().font_medium().child(label.clone()))
                                 .child(
-                                    Input::new(&self.pin)
-                                        .id("pin")
-                                        .aria_label(strings::PIN)
-                                        .prefix(
-                                            icon("lock-keyhole")
-                                                .size_4()
-                                                .text_color(cx.theme().muted_foreground),
-                                        ),
+                                    Input::new(&self.pin).id("pin").aria_label(label).prefix(
+                                        icon("lock-keyhole")
+                                            .size_4()
+                                            .text_color(cx.theme().muted_foreground),
+                                    ),
                                 )
                                 .when(*wrong_pin, |this| this.child(wrong_pin_line(cx))),
                         )
@@ -436,6 +458,54 @@ impl JobWindow {
                     }),
                     cx,
                 )),
+            Stage::ChooseToken { tokens, .. } => body
+                .child(
+                    div()
+                        .id("choose-token")
+                        .role(Role::Note)
+                        .aria_label(strings::CHOOSE_TOKEN_NOTE)
+                        .child(note(strings::CHOOSE_TOKEN_NOTE, cx))
+                        .test_support(),
+                )
+                .child(group(
+                    tokens.iter().enumerate().map(|(index, token)| {
+                        let detail = token_detail(token);
+                        let holds = (!token.names.is_empty())
+                            .then(|| describe_token(strings::TOKEN_HOLDS, token));
+                        // Read out as the row reads.
+                        let label = [Some(token.label.clone()), detail.clone(), holds.clone()]
+                            .into_iter()
+                            .flatten()
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        h_flex()
+                            .gap_3()
+                            .px_3()
+                            .py_2p5()
+                            .child(
+                                Radio::new(("token", index))
+                                    .flex_1()
+                                    .min_w_0()
+                                    .label(token.label.clone())
+                                    .accessibility_label(label)
+                                    .checked(index == self.selected)
+                                    .on_click(cx.listener(move |this, _: &bool, _, cx| {
+                                        this.selected = index;
+                                        cx.notify();
+                                    }))
+                                    .child(
+                                        v_flex()
+                                            .gap_0p5()
+                                            .text_xs()
+                                            .text_color(cx.theme().muted_foreground)
+                                            .children(detail)
+                                            .children(holds),
+                                    ),
+                            )
+                            .into_any_element()
+                    }),
+                    cx,
+                )),
             Stage::Busy => body.child(progress_line(strings::WORKING.into(), cx)),
             Stage::Progress(step) => body.child(progress_line(self.step_text(*step), cx)),
         }
@@ -467,9 +537,11 @@ impl Render for JobWindow {
                 Some(digests.clone()),
                 strings::CONFIRM,
             ),
-            Stage::Choose { .. } | Stage::Enrol { .. } | Stage::Busy | Stage::Progress(_) => {
-                (None, None, strings::CONTINUE)
-            }
+            Stage::Choose { .. }
+            | Stage::ChooseToken { .. }
+            | Stage::Enrol { .. }
+            | Stage::Busy
+            | Stage::Progress(_) => (None, None, strings::CONTINUE),
         };
         let busy = matches!(self.stage, Stage::Busy | Stage::Progress(_));
         let brand = self.job.brand.as_ref();
@@ -539,8 +611,8 @@ impl Render for JobWindow {
         });
         // The PIN field and the notes stay in view below the job, which
         // scrolls when the details of a batch outgrow the window. A list of
-        // certificates scrolls with the job.
-        let pinned = !matches!(self.stage, Stage::Choose { .. });
+        // certificates or tokens scrolls with the job.
+        let pinned = !matches!(self.stage, Stage::Choose { .. } | Stage::ChooseToken { .. });
 
         window_frame(&self.focus, CONTEXT, window, cx)
             .on_action(cx.listener(Self::on_submit))
@@ -599,7 +671,7 @@ impl Render for JobWindow {
                                 v_flex()
                                     // Gives a batch's list the height left above
                                     // what is pinned. Above a list of certificates
-                                    // it keeps its height and the job scrolls.
+                                    // or tokens it keeps its height and the job scrolls.
                                     .map(|this| {
                                         if pinned {
                                             this.min_h(px(0.))
@@ -668,7 +740,7 @@ mod tests {
 
     use keyseal_core::flow::Step;
     use keyseal_core::preferences::Preferences;
-    use keyseal_core::token::CertificateSummary;
+    use keyseal_core::token::{CertificateSummary, TokenSummary};
 
     use crate::views::testing::{
         DIGEST, certificate, job, log, open_windows, pass_input_delay, probe, setup, temp_dir,
@@ -751,6 +823,89 @@ mod tests {
         assert_eq!(answer.recv(), Ok(Some(1)));
     }
 
+    /// Each token row names the token, its model and serial number and the
+    /// names it shows, to the eye and to a screen reader; the row clicked
+    /// is the one chosen. The PIN prompt then names that token.
+    #[gpui_kit::test]
+    fn token_rows_tell_tokens_apart(cx: &mut TestAppContext) {
+        let mut windows = setup(cx);
+        let token = |label: &str, names: &[&str]| TokenSummary {
+            label: label.into(),
+            model: "Feitian ePass2003".into(),
+            serial: format!("{label}-01"),
+            names: names.iter().map(|name| name.to_string()).collect(),
+        };
+        let (reply, answer) = mpsc::channel();
+        cx.update(|cx| {
+            windows.handle(
+                Request::Job {
+                    job: job(),
+                    stage: Stage::ChooseToken {
+                        tokens: vec![
+                            token("Office", &["ASHA RAO"]),
+                            token("Home", &[]),
+                            TokenSummary {
+                                serial: String::new(),
+                                ..token("Spare", &[])
+                            },
+                            TokenSummary {
+                                label: "Feitian ePass2003".into(),
+                                serial: "77".into(),
+                                ..token("", &[])
+                            },
+                        ],
+                        reply,
+                    },
+                },
+                cx,
+            )
+        });
+        let handle = *open_windows(cx).last().unwrap();
+        pass_input_delay(cx);
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            assert_eq!(
+                window.find("choose-token").label(),
+                Some(strings::CHOOSE_TOKEN_NOTE)
+            );
+            window.find_by_label(
+                "Office, Feitian ePass2003, serial number Office-01, Holds: ASHA RAO",
+            );
+            window.find_by_label("Home, Feitian ePass2003, serial number Home-01");
+            // A token reports what it has: no serial number, or no label.
+            window.find_by_label("Spare, Feitian ePass2003");
+            window.find_by_label("Feitian ePass2003, Serial number 77");
+            window.click(("token", 1usize), cx);
+            window.render_frame(cx);
+            window.click("submit", cx);
+        })
+        .unwrap();
+        assert_eq!(answer.recv(), Ok(Some(1)));
+
+        cx.update(|cx| {
+            windows.handle(
+                Request::Job {
+                    job: job(),
+                    stage: Stage::Pin {
+                        token: Some("Home".into()),
+                        certificate: None,
+                        digests: None,
+                        pin_pad: false,
+                        warning: None,
+                        wrong_pin: false,
+                        reply: mpsc::channel().0,
+                    },
+                },
+                cx,
+            )
+        });
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            assert_eq!(window.find("pin").label(), Some("PIN for Home"));
+        })
+        .unwrap();
+    }
+
     /// On a PIN pad, a batch says the pad may ask once per document.
     #[gpui_kit::test]
     fn the_pin_pad_note_names_a_batch(cx: &mut TestAppContext) {
@@ -767,6 +922,7 @@ mod tests {
                             certificate: Some("CN=A. Signer".into()),
                             digests: Some(digests),
                             pin_pad: true,
+                            token: None,
                             warning: None,
                             wrong_pin: false,
                             reply: mpsc::channel().0,
@@ -797,6 +953,7 @@ mod tests {
                         certificate: Some("CN=A. Signer".into()),
                         digests: Some(vec![DIGEST.into()]),
                         pin_pad: false,
+                        token: None,
                         warning: Some("One PIN attempt is left before the token locks."),
                         wrong_pin: false,
                         reply,
@@ -905,6 +1062,7 @@ mod tests {
                         certificate: None,
                         digests: None,
                         pin_pad: false,
+                        token: None,
                         warning: None,
                         wrong_pin: false,
                         reply,
@@ -933,6 +1091,7 @@ mod tests {
                 certificate: Some("CN=A. Signer".into()),
                 digests: Some(vec![DIGEST.into()]),
                 pin_pad: false,
+                token: None,
                 warning,
                 wrong_pin,
                 reply,
@@ -1052,6 +1211,7 @@ mod tests {
                         certificate: Some("CN=A. Signer".into()),
                         digests: Some(vec![DIGEST.into()]),
                         pin_pad: false,
+                        token: None,
                         warning: None,
                         wrong_pin: false,
                         reply,
@@ -1098,6 +1258,7 @@ mod tests {
                         certificate: Some("CN=A. Signer".into()),
                         digests: Some(digests.clone()),
                         pin_pad: false,
+                        token: None,
                         warning: None,
                         wrong_pin: false,
                         reply,
@@ -1146,6 +1307,7 @@ mod tests {
                         certificate: None,
                         digests: None,
                         pin_pad: false,
+                        token: None,
                         warning: None,
                         wrong_pin: false,
                         reply,
@@ -1218,6 +1380,7 @@ mod tests {
                         certificate: Some("CN=A. Signer".into()),
                         digests: Some(vec![DIGEST.into()]),
                         pin_pad: false,
+                        token: None,
                         warning: None,
                         wrong_pin: false,
                         reply,
@@ -1253,6 +1416,7 @@ mod tests {
                 certificate: None,
                 digests: None,
                 pin_pad: false,
+                token: None,
                 warning: None,
                 wrong_pin: false,
                 reply,

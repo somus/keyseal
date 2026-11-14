@@ -14,7 +14,7 @@ use keyseal_core::flow::{
 };
 use keyseal_core::origin::{self, Origin};
 use keyseal_core::protocol::{KeyUsage, Kind};
-use keyseal_core::token::{self, CertificateSummary};
+use keyseal_core::token::{self, CertificateSummary, TokenSummary};
 use keyseal_core::trust::TrustStore;
 use keyseal_core::{doctor, install, update};
 use zeroize::Zeroizing;
@@ -286,8 +286,19 @@ impl Ui for Headless {
         None
     }
 
+    fn choose_token(&mut self, _: &JobView, _: &[TokenSummary]) -> Option<usize> {
+        None
+    }
+
+    fn can_choose_token(&self) -> bool {
+        false
+    }
+
     fn prompt_pin(&mut self, prompt: &PinPrompt) -> Option<Zeroizing<String>> {
         describe(prompt.job);
+        if let Some(token) = &prompt.token {
+            eprintln!("Token: {token}");
+        }
         if let Some(certificate) = &prompt.certificate {
             eprintln!("Certificate: {certificate}");
         }
@@ -340,35 +351,68 @@ impl Ui for Headless {
     }
 }
 
-/// `keyseal list`: the certificates on the token, before login, or after
-/// logging in with `KEYSEAL_PIN` when none are visible.
+/// `keyseal list`: the certificates on each token, before login, or with
+/// one token after logging in with `KEYSEAL_PIN` when none are visible.
+/// With several tokens each is named first, and the PIN isn't tried: it
+/// belongs to one of them, and a wrong PIN counts against the others.
 fn list() -> Result<(), String> {
-    let backend = flow::open_backend(KeyUsage::DigitalSignature, &mut || Ok(()), &mut |_, _| {})
-        .map_err(|failure| failure.message)?;
-    let token = backend.token();
-    let mut certificates = token.certificates(false)?;
-    if certificates.is_empty()
-        && let Some(pin) = env_var("KEYSEAL_PIN").map(Zeroizing::new)
-    {
-        token.login(pin).map_err(|e| e.to_string())?;
-        certificates = token.certificates(false)?;
+    let mut index = 0;
+    loop {
+        let mut names = Vec::new();
+        let backend =
+            flow::open_backend(KeyUsage::DigitalSignature, &mut || Ok(()), &mut |_, _| {})
+                .and_then(|found| {
+                    found.open(|tokens| {
+                        names = tokens
+                            .iter()
+                            .map(|token| {
+                                TokenSummary::of(token, KeyUsage::DigitalSignature).to_string()
+                            })
+                            .collect();
+                        Ok(index)
+                    })
+                })
+                .map_err(|failure| failure.message)?;
+        let token = backend.token();
+        if let Some(name) = names.get(index) {
+            println!("{name}:");
+        }
+        let mut certificates = token.certificates(false)?;
+        if certificates.is_empty()
+            && names.is_empty()
+            && let Some(pin) = env_var("KEYSEAL_PIN").map(Zeroizing::new)
+        {
+            token.login(pin).map_err(|e| e.to_string())?;
+            certificates = token.certificates(false)?;
+        }
+        if certificates.is_empty() {
+            println!(
+                "{}",
+                if names.is_empty() {
+                    "No certificates are visible on the token. Set KEYSEAL_PIN to look after login."
+                } else {
+                    "No certificates are visible on this token. To look after login, set KEYSEAL_PIN with only this token plugged in."
+                }
+            );
+        }
+        for certificate in certificates {
+            let role = if token::is_signing_certificate(&certificate.der, KeyUsage::default()) {
+                "signing"
+            } else {
+                "other"
+            };
+            println!(
+                "{}  {role:7}  {}",
+                certificate.sha256,
+                token::subject(&certificate.der)
+            );
+        }
+        token.close();
+        index += 1;
+        if index >= names.len() {
+            return Ok(());
+        }
     }
-    if certificates.is_empty() {
-        println!("No certificates are visible on the token. Set KEYSEAL_PIN to look after login.");
-    }
-    for certificate in certificates {
-        let role = if token::is_signing_certificate(&certificate.der, KeyUsage::default()) {
-            "signing"
-        } else {
-            "other"
-        };
-        println!(
-            "{}  {role:7}  {}",
-            certificate.sha256,
-            token::subject(&certificate.der)
-        );
-    }
-    Ok(())
 }
 
 /// `keyseal doctor`: what the helper sees, as text or with `json` as the

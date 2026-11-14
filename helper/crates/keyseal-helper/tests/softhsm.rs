@@ -7,7 +7,9 @@
 //! and algorithm, documents that don't hash to the digest, a batch with one
 //! such document, and untrusted origins, and enrols a certificate. A
 //! second test signs with keys that need the PIN for each signature and
-//! with brainpool keys, and applies the job's key usage.
+//! with brainpool keys, and applies the job's key usage. A third has two
+//! tokens in one module, where the job's expected certificate settles which
+//! to use and a headless run without one fails.
 //! Runs when `KEYSEAL_SOFTHSM_MODULE` names libsofthsm2, and needs
 //! softhsm2-util, pkcs11-tool (OpenSC) and openssl on the PATH.
 
@@ -1015,6 +1017,103 @@ fn signs_with_other_keys_on_softhsm() {
             Some("No signing certificate was found on the token.")
         );
         assert!(posted.certificate.is_none());
+    }
+
+    let _ = std::fs::remove_dir_all(&setup.dir);
+}
+
+/// Two tokens in one module: the job's expected certificate picks the one
+/// holding it without asking, and without one a headless run, which can't
+/// ask, fails before sending a certificate.
+#[test]
+fn picks_a_token_by_the_expected_certificate_on_softhsm() {
+    let Ok(module) = std::env::var("KEYSEAL_SOFTHSM_MODULE") else {
+        eprintln!("skipped: set KEYSEAL_SOFTHSM_MODULE to libsofthsm2 to run");
+        return;
+    };
+    let dir = std::env::temp_dir().join(format!("keyseal-softhsm-tokens-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("tokens")).unwrap();
+    let setup = Setup { dir, module };
+    let conf = "tokens.conf";
+    std::fs::write(
+        setup.dir.join(conf),
+        format!(
+            "directories.tokendir = {}\n",
+            setup.dir.join("tokens").display()
+        ),
+    )
+    .unwrap();
+    make_certificate(&setup.dir, "ca", &["-newkey", "rsa:2048"], None);
+    for name in ["first", "second"] {
+        run(Command::new("softhsm2-util")
+            .env("SOFTHSM2_CONF", setup.dir.join(conf))
+            .args(["--init-token", "--free", "--label", name])
+            .args(["--pin", PIN, "--so-pin", "5678"]));
+        make_certificate(&setup.dir, name, &["-newkey", "rsa:2048"], SIGNING);
+        for (file, kind) in [
+            (format!("{name}.der"), "cert"),
+            (format!("{name}.key"), "privkey"),
+        ] {
+            run(Command::new("pkcs11-tool")
+                .current_dir(&setup.dir)
+                .env("SOFTHSM2_CONF", setup.dir.join(conf))
+                .args(["--module", &setup.module, "--token-label", name])
+                .args(["--login", "--pin", PIN])
+                .args(["--write-object", &file, "--type", kind, "--id", "01"])
+                .args(["--label", name]));
+        }
+    }
+
+    for name in ["first", "second"] {
+        let certificate = setup.read(&format!("{name}.der"));
+        let (output, posted) = setup.run_job(
+            conf,
+            Job::sign(&certificate, "sha256", "rsa-pkcs1-v1_5"),
+            PIN,
+            true,
+        );
+        assert!(output.status.success(), "{name}: {}", stderr(&output));
+        assert_eq!(posted.certificate.as_deref(), Some(&certificate[..]));
+        setup.verify(
+            name,
+            "sha256",
+            "rsa-pkcs1-v1_5",
+            &posted.to_sign[0],
+            &posted.signatures.unwrap()[0],
+        );
+    }
+
+    let certificate = setup.read("first.der");
+    let job = Job {
+        expected: None,
+        ..Job::sign(&certificate, "sha256", "rsa-pkcs1-v1_5")
+    };
+    let (output, posted) = setup.run_job(conf, job, PIN, true);
+    assert!(!output.status.success());
+    assert_eq!(
+        posted.failure.as_deref(),
+        Some(keyseal_core::flow::SEVERAL_TOKENS)
+    );
+    assert!(posted.certificate.is_none());
+
+    // `keyseal list` names each token above its certificates, and doesn't
+    // try KEYSEAL_PIN when it can't tell whose it is.
+    let output = Command::new(env!("CARGO_BIN_EXE_keyseal"))
+        .arg("list")
+        .env("SOFTHSM2_CONF", setup.dir.join(conf))
+        .env("KEYSEAL_PKCS11_MODULE", &setup.module)
+        .env("KEYSEAL_CONFIG_DIR", setup.dir.join("config"))
+        .env("KEYSEAL_PIN", "0000")
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{}", stderr(&output));
+    let listed = String::from_utf8_lossy(&output.stdout);
+    for name in ["first", "second"] {
+        let token = format!("{name} (SoftHSM project SoftHSM v2, serial number ");
+        let certificate = keyseal_core::token::sha256_hex(&setup.read(&format!("{name}.der")));
+        let at = listed.find(&token).unwrap_or_else(|| panic!("{listed}"));
+        assert!(listed[at..].contains(&certificate), "{listed}");
     }
 
     let _ = std::fs::remove_dir_all(&setup.dir);

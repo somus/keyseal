@@ -16,7 +16,7 @@ use std::process::{Command, Output, Stdio};
 use std::time::Duration;
 
 use keyseal_core::cms::{DigestAlgorithm, SignatureAlgorithm};
-use keyseal_core::token::{LoginError, TokenBackend};
+use keyseal_core::token::{Driver, LoginError};
 use keyseal_core::worker::{self, Backend, WorkerToken};
 use serde_json::{Value, json};
 use zeroize::Zeroizing;
@@ -130,7 +130,11 @@ fn round_trip(dir: &Path, worker: &Path, module: &Path) {
     let rsa = std::fs::read(dir.join("rsa.der")).unwrap();
     let p256 = std::fs::read(dir.join("p256.der")).unwrap();
     let always = std::fs::read(dir.join("always.der")).unwrap();
-    let token = WorkerToken::open(worker, module, Duration::ZERO).unwrap();
+    let started = WorkerToken::start(worker).unwrap();
+    let tokens = started.tokens(module, Duration::ZERO).unwrap();
+    assert_eq!(tokens.len(), 1);
+    assert_eq!(started.shown(tokens[0].slot).len(), 3);
+    let token = Box::new(started).open(tokens[0].slot).unwrap();
     assert!(!token.pin_pad());
     assert_eq!(token.pin_warning(), None);
     let public: Vec<Vec<u8>> = token
@@ -183,6 +187,9 @@ fn round_trip(dir: &Path, worker: &Path, module: &Path) {
 /// Raw lines: every stdout line is a reply, a bad request gets an error
 /// reply, and closing stdin ends the worker.
 fn raw_session(worker: &Path, module: &Path) {
+    let started = WorkerToken::start(worker).unwrap();
+    let slot = started.tokens(module, Duration::ZERO).unwrap()[0].slot;
+    drop(started);
     let mut child = Command::new(worker)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -192,9 +199,10 @@ fn raw_session(worker: &Path, module: &Path) {
     writeln!(
         stdin,
         "{}",
-        json!({ "Open": { "module": module, "wait": Duration::ZERO } })
+        json!({ "Tokens": { "module": module, "wait": Duration::ZERO } })
     )
     .unwrap();
+    writeln!(stdin, "{}", json!({ "Open": { "slot": slot } })).unwrap();
     writeln!(stdin, "not json").unwrap();
     writeln!(
         stdin,
@@ -210,11 +218,12 @@ fn raw_session(worker: &Path, module: &Path) {
         .lines()
         .map(|line| serde_json::from_str(line).unwrap())
         .collect();
-    assert_eq!(replies.len(), 3, "{replies:?}");
-    assert!(replies[0]["Ok"]["Opened"].is_object(), "{replies:?}");
-    assert!(replies[1]["Err"].is_string(), "{replies:?}");
+    assert_eq!(replies.len(), 4, "{replies:?}");
+    assert_eq!(replies[0]["Ok"]["Tokens"][0]["slot"], slot, "{replies:?}");
+    assert!(replies[1]["Ok"]["Opened"].is_object(), "{replies:?}");
+    assert!(replies[2]["Err"].is_string(), "{replies:?}");
     assert_eq!(
-        replies[2]["Ok"]["Certificates"].as_array().unwrap().len(),
+        replies[3]["Ok"]["Certificates"].as_array().unwrap().len(),
         3
     );
 }

@@ -16,7 +16,30 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Whether the pull request's files need e2e (scripts/ci/changes.sh). On
+  # main it always runs. A skipped e2e job still satisfies branch protection.
+  changes:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      e2e: ${{ steps.changes.outputs.e2e }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: scripts/ci
+      - id: changes
+        run: scripts/ci/changes.sh >>"$GITHUB_OUTPUT"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+
+  # A skipped e2e passes branch protection, so it's skipped only when changes
+  # said so: if changes failed, its output is empty and e2e runs.
   e2e:
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.e2e != 'false' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

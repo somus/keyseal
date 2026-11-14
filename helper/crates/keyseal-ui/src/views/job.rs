@@ -6,11 +6,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::radio::Radio;
+use gpui_kit::component::scroll::ScrollableElement;
 use gpui_kit::component::{ActiveTheme, Disableable, Sizable, StyledExt, h_flex, v_flex};
 use gpui_kit::{
     AnyElement, App, AppContext, Context, Div, Entity, FocusHandle, Focusable, Global, Hsla, Image,
     ImageFormat, InteractiveElement, IntoElement, ParentElement, Render, RenderImage, Role,
-    SharedString, StatefulInteractiveElement, Styled, Subscription, TestSupportExt, Window, div,
+    ScrollHandle, SharedString, StatefulInteractiveElement, Styled, Subscription, TestSupportExt, Window, div,
     prelude::FluentBuilder, px, rgb, size,
 };
 use keyseal_core::flow::Step;
@@ -95,7 +96,12 @@ const DOCUMENT_LIST_MIN_HEIGHT: f32 = 120.;
 
 /// A batch's documents in order, each numbered with its title and, once
 /// round 1 has them, its digest, in a group that scrolls inside itself.
-fn document_list(titles: &[String], digests: Option<&[String]>, cx: &App) -> AnyElement {
+fn document_list(
+    titles: &[String],
+    digests: Option<&[String]>,
+    scroll: &ScrollHandle,
+    cx: &App,
+) -> AnyElement {
     let palette = native::palette(cx);
     let separator = native::color(palette.separator);
     v_flex()
@@ -103,6 +109,7 @@ fn document_list(titles: &[String], digests: Option<&[String]>, cx: &App) -> Any
         .mt_1()
         .min_h(px(DOCUMENT_LIST_MIN_HEIGHT))
         .overflow_y_scroll()
+        .track_scroll(scroll)
         .rounded(cx.theme().radius_lg)
         .border_1()
         .border_color(separator)
@@ -147,6 +154,7 @@ fn document_list(titles: &[String], digests: Option<&[String]>, cx: &App) -> Any
                 )
                 .test_support()
         }))
+        .vertical_scrollbar(scroll)
         .into_any_element()
 }
 
@@ -166,6 +174,10 @@ pub(super) struct JobWindow {
     closed: Arc<AtomicBool>,
     log: fn(&str),
     focus: FocusHandle,
+    /// The job and a batch's list of documents, which show a scrollbar
+    /// while they hold more than fits.
+    scroll: ScrollHandle,
+    documents_scroll: ScrollHandle,
     delay: InputDelay,
     _subscriptions: Vec<Subscription>,
 }
@@ -200,6 +212,8 @@ impl JobWindow {
             closed,
             log,
             focus: cx.focus_handle(),
+            scroll: ScrollHandle::new(),
+            documents_scroll: ScrollHandle::new(),
             delay: InputDelay::new(|this: &mut Self| &mut this.delay, window, cx),
             _subscriptions: vec![subscription],
         };
@@ -608,7 +622,7 @@ impl Render for JobWindow {
         }
         let documents = batch.then(|| {
             let digests = digests.as_deref().filter(|_| self.details);
-            document_list(&self.job.documents, digests, cx)
+            document_list(&self.job.documents, digests, &self.documents_scroll, cx)
         });
         // The PIN field and the notes stay in view below the job, which
         // scrolls when the details of a batch outgrow the window. A list of
@@ -630,6 +644,8 @@ impl Render for JobWindow {
                             .id("job")
                             .min_h(px(0.))
                             .overflow_y_scroll()
+                            .track_scroll(&self.scroll)
+                            .vertical_scrollbar(&self.scroll)
                             .px_5()
                             .pt_4()
                             .map(|this| if pinned { this.pb_4() } else { this.pb_3() })

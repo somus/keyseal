@@ -3,10 +3,11 @@
 use std::sync::mpsc;
 
 use gpui_kit::component::button::{Button, ButtonVariants};
+use gpui_kit::component::scroll::ScrollableElement;
 use gpui_kit::component::{ActiveTheme, v_flex};
 use gpui_kit::{
     Context, FocusHandle, InteractiveElement, IntoElement, ParentElement, Render, Role,
-    SharedString, StatefulInteractiveElement, Styled, TestSupportExt, Window, div,
+    ScrollHandle, SharedString, StatefulInteractiveElement, Styled, TestSupportExt, Window, div,
     prelude::FluentBuilder,
 };
 use keyseal_core::modules;
@@ -22,6 +23,8 @@ pub(super) struct MessageWindow {
     no_driver: bool,
     pub(super) reply: Option<mpsc::Sender<()>>,
     focus: FocusHandle,
+    /// Shows a scrollbar while the message is longer than the window.
+    scroll: ScrollHandle,
 }
 
 impl MessageWindow {
@@ -40,6 +43,7 @@ impl MessageWindow {
             message: message.into(),
             reply,
             focus,
+            scroll: ScrollHandle::new(),
         }
     }
 
@@ -66,6 +70,8 @@ impl Render for MessageWindow {
                     .aria_label(self.message.clone())
                     .flex_1()
                     .overflow_y_scroll()
+                    .track_scroll(&self.scroll)
+                    .vertical_scrollbar(&self.scroll)
                     .px_6()
                     .pt_5()
                     .pb_2()

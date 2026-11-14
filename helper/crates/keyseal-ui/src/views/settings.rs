@@ -3,11 +3,12 @@
 use std::path::PathBuf;
 
 use gpui_kit::component::button::{Button, ButtonVariants};
+use gpui_kit::component::scroll::ScrollableElement;
 use gpui_kit::component::switch::Switch;
 use gpui_kit::component::{ActiveTheme, Disableable, Sizable, h_flex, v_flex};
 use gpui_kit::{
     AnyElement, AnyWindowHandle, App, AppContext, ClipboardItem, Context, FocusHandle, Global,
-    Hsla, InteractiveElement, IntoElement, ParentElement, Render, SharedString,
+    Hsla, InteractiveElement, IntoElement, ParentElement, Render, ScrollHandle, SharedString,
     StatefulInteractiveElement, Styled, Task, TestSupportExt, Window, div, prelude::FluentBuilder,
     rgb, white,
 };
@@ -122,6 +123,8 @@ struct SettingsWindow {
     /// The running probe, dropped with the window.
     _probing: Task<()>,
     focus: FocusHandle,
+    /// Shows a scrollbar while the settings are taller than the window.
+    scroll: ScrollHandle,
 }
 
 impl SettingsWindow {
@@ -145,6 +148,7 @@ impl SettingsWindow {
             copied: false,
             _probing: Task::ready(()),
             focus,
+            scroll: ScrollHandle::new(),
         };
         this.check_tokens(cx);
         this
@@ -540,6 +544,8 @@ impl Render for SettingsWindow {
                     .id("settings")
                     .flex_1()
                     .overflow_y_scroll()
+                    .track_scroll(&self.scroll)
+                    .vertical_scrollbar(&self.scroll)
                     .px_5()
                     .pt_4()
                     .pb_5()

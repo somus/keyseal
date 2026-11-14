@@ -5,6 +5,7 @@
 //! window is glass: the system's translucent window material shows through
 //! a transparent title bar and background.
 
+use gpui_kit::component::scroll::ScrollbarMode;
 use gpui_kit::component::{ActiveTheme, Theme, ThemeMode};
 use gpui_kit::{
     App, FontWeight, Global, Hsla, Pixels, TitlebarOptions, Window, WindowAppearance,
@@ -424,6 +425,9 @@ fn tokens(cx: &mut App) {
         theme.radius = px(look().radius);
         theme.radius_lg = px(look().radius_lg);
         theme.shadow = false;
+        // A scroll area shows its scrollbar while it holds more than fits, so
+        // the signer can tell there are more rows below.
+        theme.scrollbar_mode = ScrollbarMode::Always;
         let window = color(palette.window);
         let colors = &mut theme.colors;
         colors.background = if glass { window } else { window.alpha(1.) };

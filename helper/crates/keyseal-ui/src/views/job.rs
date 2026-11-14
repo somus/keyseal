@@ -11,8 +11,8 @@ use gpui_kit::component::{ActiveTheme, Disableable, Sizable, StyledExt, h_flex, 
 use gpui_kit::{
     AnyElement, App, AppContext, Context, Div, Entity, FocusHandle, Focusable, Global, Hsla, Image,
     ImageFormat, InteractiveElement, IntoElement, ParentElement, Render, RenderImage, Role,
-    ScrollHandle, SharedString, StatefulInteractiveElement, Styled, Subscription, TestSupportExt, Window, div,
-    prelude::FluentBuilder, px, rgb, size,
+    ScrollHandle, SharedString, StatefulInteractiveElement, Styled, Subscription, TestSupportExt,
+    Window, div, prelude::FluentBuilder, px, rgb, size,
 };
 use keyseal_core::flow::Step;
 use keyseal_core::protocol::Kind;

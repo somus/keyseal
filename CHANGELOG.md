@@ -259,9 +259,9 @@ lines under the new version with the release date.
 #### Changed
 
 - With `SIGNING_ALLOW_FETCHING=true`, CRLs and OCSP responses the service
-  fetched are reused by later requests until their nextUpdate, and issuer
-  certificates until evicted, in memory and at most 64 MiB, so a sign
-  job's certificate checks no longer download the CA's CRL each time.
+  fetched are reused by later requests until their nextUpdate, for an hour
+  at most, as are issuer certificates, in memory and at most 64 MiB, so a
+  sign job's certificate checks no longer download the CA's CRL each time.
 
 ### [0.4.0][service-0.4.0] - 2026-11-13
 

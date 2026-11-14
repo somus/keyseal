@@ -47,7 +47,8 @@ def _check(client: TestClient, cert: x509.Certificate) -> dict[str, Any]:
 
 
 class _Later(datetime):
-    """The cache's clock two days on, past the test CRL's nextUpdate."""
+    """The cache's clock two days on, past the test CRL's nextUpdate and the
+    cache's own oldest age."""
 
     @classmethod
     def now(cls, tz: Any = None) -> Any:
@@ -185,6 +186,18 @@ def test_the_least_recently_used_entry_is_evicted_past_the_cap() -> None:
     cache.put("big", (b"x" * 11,), later)
     assert cache.get("big") is None
     assert cache.get("a") == (b"aaaa",)
+
+
+def test_nothing_is_reused_past_the_oldest_age(monkeypatch: pytest.MonkeyPatch) -> None:
+    cache = FetchCache(max_age=timedelta(days=1))
+    cache.put("crl", (b"x",), datetime.now(UTC) + timedelta(days=7))
+    cache.put("certs", (b"y",), None)
+    assert cache.get("crl") == (b"x",)
+    assert cache.get("certs") == (b"y",)
+    # Two days on: inside the first one's nextUpdate, past the oldest age.
+    monkeypatch.setattr(fetch_cache, "datetime", _Later)
+    assert cache.get("crl") is None
+    assert cache.get("certs") is None
 
 
 def test_stale_data_is_not_kept() -> None:

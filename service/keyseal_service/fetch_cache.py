@@ -1,5 +1,5 @@
 """CRLs, OCSP responses and issuer certificates a request fetched, kept in
-memory for later requests until their own nextUpdate.
+memory for later requests until their own nextUpdate, an hour at most.
 
 Each request validates on its own worker thread and event loop with its own
 fetch session (`app._validating`), so the cache is shared across threads and
@@ -21,7 +21,7 @@ from __future__ import annotations
 import threading
 from collections import OrderedDict
 from collections.abc import Hashable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import aiohttp
 from asn1crypto import crl, ocsp, x509
@@ -38,17 +38,20 @@ from pyhanko_certvalidator.util import issuer_serial
 
 #: Room for several of the largest CRLs `fetching.MAX_CRL_BYTES` allows.
 MAX_CACHE_BYTES = 64 * 1024 * 1024
+#: How long anything is reused, however far off its nextUpdate. A CA lists
+#: a revocation in its next CRL, often days before the last one's
+#: nextUpdate, so reuse up to that would hide it for as long.
+MAX_AGE = timedelta(hours=1)
 
 
 class FetchCache:
-    """DER by key, each until it expires, least recently used evicted first
-    past `max_bytes`. Safe across threads."""
+    """DER by key, each until it expires or is `max_age` old, least recently
+    used evicted first past `max_bytes`. Safe across threads."""
 
-    def __init__(self, max_bytes: int = MAX_CACHE_BYTES) -> None:
+    def __init__(self, max_bytes: int = MAX_CACHE_BYTES, max_age: timedelta = MAX_AGE) -> None:
         self._max_bytes = max_bytes
-        self._entries: OrderedDict[Hashable, tuple[datetime | None, tuple[bytes, ...]]] = (
-            OrderedDict()
-        )
+        self._max_age = max_age
+        self._entries: OrderedDict[Hashable, tuple[datetime, tuple[bytes, ...]]] = OrderedDict()
         self._size = 0
         self._lock = threading.Lock()
 
@@ -58,17 +61,21 @@ class FetchCache:
             if entry is None:
                 return None
             expires, ders = entry
-            if expires is not None and expires <= datetime.now(UTC):
+            if expires <= datetime.now(UTC):
                 self._remove(key)
                 return None
             self._entries.move_to_end(key)
             return ders
 
     def put(self, key: Hashable, ders: tuple[bytes, ...], expires: datetime | None) -> None:
-        """Keeps `ders` until `expires`, or until evicted when that is None."""
+        """Keeps `ders` until `expires`, for `max_age` at most, and for
+        `max_age` when that is None."""
         size = sum(len(der) for der in ders)
-        if size > self._max_bytes or (expires is not None and expires <= datetime.now(UTC)):
+        now = datetime.now(UTC)
+        if size > self._max_bytes or (expires is not None and expires <= now):
             return
+        oldest = now + self._max_age
+        expires = oldest if expires is None else min(expires, oldest)
         with self._lock:
             if key in self._entries:
                 self._remove(key)
@@ -140,7 +147,8 @@ class _CachingCertificateFetcher(AIOHttpCertificateFetcher):
         self._cache = cache
 
     async def fetch_certs(self, url: str, url_origin_type: str) -> list[x509.Certificate]:
-        # A certificate doesn't change, so it is kept until evicted.
+        # A certificate doesn't change, but what a URL serves may: kept
+        # as long as anything else.
         key = ("certs", url)
         cached = self._cache.get(key)
         if cached is not None:

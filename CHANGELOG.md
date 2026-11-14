@@ -19,6 +19,13 @@ lines under the new version with the release date.
 
 ### [Unreleased][helper-unreleased]
 
+#### Added
+
+- With more than one token plugged in, KeySeal asks which one to use
+  before asking for the PIN, and names that token in the PIN prompt. When
+  the job names its certificate, the token holding it is used without
+  asking. Before, KeySeal used the first token it found.
+
 #### Changed
 
 - When the token holds several certificates, each one in the list shows

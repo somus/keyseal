@@ -821,7 +821,7 @@ mod tests {
         cx.update_window(handle, |_, window, cx| {
             window.render_frame(cx);
             let before = window.find("signer").bounds();
-            window.scroll("job", ScrollDelta::Pixels(point(px(0.), px(-200.))), cx);
+            window.scroll("signer", ScrollDelta::Pixels(point(px(0.), px(-200.))), cx);
             window.render_frame(cx);
             assert_eq!(window.find("signer").bounds(), before);
         })

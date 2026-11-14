@@ -16,7 +16,31 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Which jobs the pull request's files need (scripts/ci/changes.sh). On
+  # main every job runs. The checks job below is the one branch protection
+  # requires, so a job skipped here doesn't hold a pull request back.
+  changes:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      typescript: ${{ steps.changes.outputs.typescript }}
+      service: ${{ steps.changes.outputs.service }}
+      helper: ${{ steps.changes.outputs.helper }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: scripts/ci
+      - id: changes
+        run: scripts/ci/changes.sh >>"$GITHUB_OUTPUT"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+
   typescript:
+    needs: changes
+    if: needs.changes.outputs.typescript == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -37,6 +61,8 @@ jobs:
   # The packed @keyseal/server and @keyseal/browser, imported from dist under
   # the oldest Node the server supports.
   node:
+    needs: changes
+    if: needs.changes.outputs.typescript == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -50,6 +76,8 @@ jobs:
       - run: scripts/ci/node-smoke.sh
 
   service:
+    needs: changes
+    if: needs.changes.outputs.service == 'true'
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -64,6 +92,8 @@ jobs:
       - run: uv run pytest
 
   helper:
+    needs: changes
+    if: needs.changes.outputs.helper == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -105,17 +135,27 @@ jobs:
           module="$(brew --prefix softhsm)/lib/softhsm/libsofthsm2.so"
           test -f "$module"
           echo "KEYSEAL_SOFTHSM_MODULE=$module" >>"$GITHUB_ENV"
-      # Chocolatey's softhsm.install no longer leaves SoftHSM2-for-Windows
-      # 2.5.0 installed, so extract its MSI with an administrative install,
-      # which lays it out in C:\SoftHSM2. The tests write their own
-      # softhsm2.conf. OpenSC's MSI puts pkcs11-tool under tools.
-      # softhsm2-util loads softhsm2-x64.dll by name, so lib goes on the PATH.
+      # SoftHSM2-for-Windows 2.5.0 and OpenSC 0.26.1 straight from their
+      # GitHub releases, checked against the SHA-256 of each asset, rather
+      # than through Chocolatey, whose feed times out at times and which
+      # fetches the same files. An administrative install of the SoftHSM MSI
+      # lays it out in C:\SoftHSM2; the tests write their own softhsm2.conf.
+      # OpenSC's MSI puts pkcs11-tool under tools. softhsm2-util loads
+      # softhsm2-x64.dll by name, so lib goes on the PATH.
       - name: SoftHSM (Windows)
         if: runner.os == 'Windows'
+        working-directory: ${{ runner.temp }}
         run: |
-          choco install -y --no-progress softhsm.install opensc
-          msi=$(cygpath -w /c/ProgramData/chocolatey/lib/softhsm.install/tools/SoftHSM2-2.5.0.msi)
-          powershell -NoProfile -Command "Start-Process msiexec -Wait -ArgumentList '/a','\"$msi\"','/qn','TARGETDIR=C:\'"
+          curl -fsSLO --retry 3 https://github.com/disig/SoftHSM2-for-Windows/releases/download/v2.5.0/SoftHSM2-2.5.0.msi
+          curl -fsSLO --retry 3 https://github.com/OpenSC/OpenSC/releases/download/0.26.1/OpenSC-0.26.1_win64.msi
+          sha256sum -c - <<'SUMS'
+          f9215d8f3965327519b09483ac29ff2a90306da95239859489f69e44185c599c  SoftHSM2-2.5.0.msi
+          bb2a47bd7a87617f38828c17eb7129a40fe27fe6656781882f2924fc2c9cf96e  OpenSC-0.26.1_win64.msi
+          SUMS
+          softhsm=$(cygpath -w "$PWD/SoftHSM2-2.5.0.msi")
+          opensc=$(cygpath -w "$PWD/OpenSC-0.26.1_win64.msi")
+          powershell -NoProfile -Command "Start-Process msiexec -Wait -ArgumentList '/a','\"$softhsm\"','/qn','TARGETDIR=C:\'"
+          powershell -NoProfile -Command "Start-Process msiexec -Wait -ArgumentList '/i','\"$opensc\"','/qn'"
           module='C:\SoftHSM2\lib\softhsm2-x64.dll'
           test -f "$module"
           test -f 'C:\SoftHSM2\bin\softhsm2-util.exe'
@@ -127,7 +167,37 @@ jobs:
       # The gallery example builds only with its feature.
       - run: cargo clippy -p keyseal-ui --all-targets --features gallery -- -D warnings
       - run: cargo test
+      # The keychain code against a token macOS's own PIV driver exposes
+      # through CryptoTokenKit: a virtual PIV card from
+      # scripts/ci/virtual-piv.sh. Signing isn't covered, since it needs the
+      # system's PIN dialog. jCardSim and PivApplet build with JDK 11.
+      - if: runner.os == 'macOS'
+        uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78 # v6.2.0
+        with:
+          distribution: temurin
+          java-version: "11"
+      - name: Virtual PIV card (macOS)
+        if: runner.os == 'macOS'
+        run: ../scripts/ci/virtual-piv.sh "$RUNNER_TEMP/piv"
+      - name: Find the token through the keychain (macOS)
+        if: runner.os == 'macOS'
+        run: cargo test -p keyseal-core --lib keychain::tests::finds_a_token_in_the_keychain -- --ignored --exact
+      - if: failure() && runner.os == 'macOS'
+        run: tail -100 "$RUNNER_TEMP/piv/jcardsim.log" || true
       - name: Install and uninstall (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: ../scripts/ci/windows-install-smoke.ps1
+
+  # The one check branch protection requires from this workflow: it fails if
+  # any job above failed or was cancelled, and passes when they passed or
+  # weren't needed.
+  checks:
+    needs: [changes, typescript, node, service, helper]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          FAILED: ${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}
+        run: |
+          [ "$FAILED" = false ] || { echo "A job failed or was cancelled." >&2; exit 1; }

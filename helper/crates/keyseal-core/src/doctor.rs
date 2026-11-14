@@ -156,13 +156,21 @@ struct Facts {
     opened: Result<Option<Opened>, String>,
 }
 
-/// The token a job would use.
+/// The tokens a job would find: one, or several it asks the signer to
+/// choose from.
 struct Opened {
-    /// The PKCS#11 module, and where it runs: the token worker's path, or
-    /// `None` for this process.
+    /// The first token's PKCS#11 module, and where it runs: the token
+    /// worker's path, or `None` for this process.
     module: Option<(PathBuf, Result<Option<PathBuf>, String>)>,
+    tokens: Vec<OpenedToken>,
+}
+
+struct OpenedToken {
+    /// Its label, model and serial number, when several are plugged in.
+    name: Option<String>,
     pin_warning: Option<&'static str>,
-    /// SHA-256 and subject of each certificate visible before login.
+    /// SHA-256 and subject of each certificate visible before login, or
+    /// why the token couldn't be opened or read.
     certificates: Result<Vec<(String, String)>, String>,
 }
 
@@ -209,16 +217,51 @@ fn gather(gpu: Result<Option<String>, String>) -> Facts {
         // Opened as a job would: each found module in turn, then on Windows
         // and macOS the certificate store.
         // The loosest usage, so the report shows every certificate a job
-        // could use.
-        let backend = flow::open_backend(
-            KeyUsage::DigitalSignature,
-            &mut || Ok(()),
-            &mut |attempt, outcome| {
-                tried.push((attempt.clone(), outcome.map_err(str::to_owned)));
-            },
-        )
-        // The first token, as a job with one plugged in would use.
-        .and_then(|found| found.open(|_| Ok(0)));
+        // could use. With several tokens plugged in, each is found and
+        // opened in turn.
+        // The token at `index`, and every token's name when there are
+        // several.
+        let open = |index: usize, tried: &mut Vec<(Attempt, Result<(), String>)>| {
+            let mut names = Vec::new();
+            let backend = flow::open_backend(
+                KeyUsage::DigitalSignature,
+                &mut || Ok(()),
+                &mut |attempt, outcome| {
+                    if index == 0 {
+                        tried.push((attempt.clone(), outcome.map_err(str::to_owned)));
+                    }
+                },
+            )
+            .and_then(|found| {
+                found.open(|tokens| {
+                    names = tokens
+                        .iter()
+                        .map(|token| {
+                            token::TokenSummary::of(token, KeyUsage::DigitalSignature).to_string()
+                        })
+                        .collect();
+                    Ok(index)
+                })
+            });
+            (backend, names)
+        };
+        let read = |backend: &flow::Backend, name: Option<String>| {
+            let token = backend.token();
+            OpenedToken {
+                name,
+                pin_warning: token.pin_warning().map(token::PinWarning::message),
+                certificates: token
+                    .certificates(false)
+                    .map(|certificates| {
+                        certificates
+                            .iter()
+                            .map(|c| (c.sha256.clone(), token::subject(&c.der)))
+                            .collect()
+                    })
+                    .map_err(|e| e.0),
+            }
+        };
+        let (backend, names) = open(0, &mut tried);
         opened = match backend {
             Ok(backend) => {
                 let used = tried.iter().find(|(_, outcome)| outcome.is_ok());
@@ -235,20 +278,20 @@ fn gather(gpu: Result<Option<String>, String>) -> Facts {
                     }
                     _ => None,
                 };
-                let token = backend.token();
-                Ok(Some(Opened {
-                    module,
-                    pin_warning: token.pin_warning().map(token::PinWarning::message),
-                    certificates: token
-                        .certificates(false)
-                        .map(|certificates| {
-                            certificates
-                                .iter()
-                                .map(|c| (c.sha256.clone(), token::subject(&c.der)))
-                                .collect()
-                        })
-                        .map_err(|e| e.0),
-                }))
+                let mut tokens = vec![read(&backend, names.first().cloned())];
+                drop(backend);
+                for index in 1..names.len() {
+                    let name = names.get(index).cloned();
+                    tokens.push(match open(index, &mut tried).0 {
+                        Ok(backend) => read(&backend, name),
+                        Err(failure) => OpenedToken {
+                            name,
+                            pin_warning: None,
+                            certificates: Err(failure.message),
+                        },
+                    });
+                }
+                Ok(Some(Opened { module, tokens }))
             }
             Err(failure) if failure.message == token::NO_TOKEN => Ok(None),
             Err(failure) => Err(failure.message),
@@ -387,16 +430,27 @@ fn write(facts: &Facts, lines: &mut Vec<String>) -> Result<Status, String> {
         });
         lines.push(format!("Opened the first token of {}", path.display()));
     }
-    if let Some(warning) = opened.pin_warning {
-        lines.push(format!("  {warning}"));
+    if opened.tokens.len() > 1 {
+        lines.push(format!(
+            "Tokens plugged in: {}; a job asks which one to use",
+            opened.tokens.len()
+        ));
     }
-    let certificates = opened.certificates.as_ref().map_err(String::clone)?;
-    lines.push(format!(
-        "Certificates visible before login: {}",
-        certificates.len()
-    ));
-    for (sha256, subject) in certificates {
-        lines.push(format!("  {sha256}  {subject}"));
+    for token in &opened.tokens {
+        if let Some(name) = &token.name {
+            lines.push(format!("Token {name}:"));
+        }
+        if let Some(warning) = token.pin_warning {
+            lines.push(format!("  {warning}"));
+        }
+        let certificates = token.certificates.as_ref().map_err(String::clone)?;
+        lines.push(format!(
+            "Certificates visible before login: {}",
+            certificates.len()
+        ));
+        for (sha256, subject) in certificates {
+            lines.push(format!("  {sha256}  {subject}"));
+        }
     }
     Ok(Status::Ready)
 }
@@ -499,8 +553,11 @@ mod tests {
             tried: vec![(Attempt::Module(plugged), Ok(()))],
             opened: Ok(Some(Opened {
                 module: Some(("/usr/local/lib/libcastle.dylib".into(), Ok(None))),
-                pin_warning: None,
-                certificates: Ok(vec![("ab12".into(), "ASHA RAO".into())]),
+                tokens: vec![OpenedToken {
+                    name: None,
+                    pin_warning: None,
+                    certificates: Ok(vec![("ab12".into(), "ASHA RAO".into())]),
+                }],
             })),
         }
     }
@@ -544,6 +601,31 @@ mod tests {
                 ("libmtoken.dylib", None, &DriverState::Missing),
             ]
         );
+    }
+
+    #[test]
+    fn reports_each_of_several_tokens() {
+        let mut facts = facts();
+        let Ok(Some(opened)) = &mut facts.opened else {
+            unreachable!()
+        };
+        opened.tokens[0].name = Some("Office (Feitian ePass2003, serial number 01)".into());
+        opened.tokens.push(OpenedToken {
+            name: Some("Home (Feitian ePass2003)".into()),
+            pin_warning: Some("One more wrong PIN will lock the token."),
+            certificates: Ok(Vec::new()),
+        });
+        let report = report(&facts);
+        assert_eq!(report.status, Status::Ready);
+        assert!(report.text.ends_with(
+            "Opened the first token of /usr/local/lib/libcastle.dylib\n\
+             Tokens plugged in: 2; a job asks which one to use\n\
+             Token Office (Feitian ePass2003, serial number 01):\n\
+             Certificates visible before login: 1\n  ab12  ASHA RAO\n\
+             Token Home (Feitian ePass2003):\n\
+             \x20 One more wrong PIN will lock the token.\n\
+             Certificates visible before login: 0\n"
+        ));
     }
 
     #[test]

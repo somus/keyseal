@@ -255,6 +255,9 @@ lines under the new version with the release date.
   503 when none did, for monitoring and an integrator's own "signing is
   unavailable" message. It needs no token, checks at most once a minute and
   names no authority.
+
+#### Changed
+
 - With `SIGNING_ALLOW_FETCHING=true`, CRLs and OCSP responses the service
   fetched are reused by later requests until their nextUpdate, and issuer
   certificates until evicted, in memory and at most 64 MiB, so a sign

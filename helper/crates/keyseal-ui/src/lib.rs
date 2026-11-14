@@ -22,7 +22,7 @@ use keyseal_core::doctor::Report;
 use keyseal_core::flow::{DigestConfirm, JobView, PinPrompt, Progress, Step, Ui};
 use keyseal_core::origin::Origin;
 use keyseal_core::protocol::{Kind, plain};
-use keyseal_core::token::PinWarning;
+use keyseal_core::token::{CertificateSummary, PinWarning};
 use zeroize::Zeroizing;
 
 actions!(keyseal, [OpenSettings]);
@@ -454,7 +454,7 @@ pub(crate) enum Stage {
         reply: mpsc::Sender<bool>,
     },
     Choose {
-        subjects: Vec<String>,
+        certificates: Vec<CertificateSummary>,
         reply: mpsc::Sender<Option<usize>>,
     },
     /// Enrol through the system's certificate store: the job before the
@@ -504,11 +504,25 @@ impl Ui for WindowUi {
         .unwrap_or(false)
     }
 
-    fn choose_certificate(&mut self, job: &JobView, subjects: &[String]) -> Option<usize> {
-        let subjects = subjects.iter().map(|subject| plain(subject)).collect();
+    fn choose_certificate(
+        &mut self,
+        job: &JobView,
+        certificates: &[CertificateSummary],
+    ) -> Option<usize> {
+        let certificates = certificates
+            .iter()
+            .map(|certificate| CertificateSummary {
+                name: plain(&certificate.name),
+                issuer: plain(&certificate.issuer),
+                ..certificate.clone()
+            })
+            .collect();
         self.ask_signer(|reply| Request::Job {
             job: Job::of(job),
-            stage: Stage::Choose { subjects, reply },
+            stage: Stage::Choose {
+                certificates,
+                reply,
+            },
         })
         .flatten()
     }

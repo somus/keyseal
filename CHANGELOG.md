@@ -19,6 +19,13 @@ lines under the new version with the release date.
 
 ### [Unreleased][helper-unreleased]
 
+#### Changed
+
+- When the token holds several certificates, each one in the list shows
+  the name, then who issued it, the last day it is valid and the end of
+  its serial number, so a renewed certificate and the one it replaces no
+  longer look the same.
+
 #### Fixed
 
 - Edge and Chrome on Windows name KeySeal, not "keyseal", for a helper that

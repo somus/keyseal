@@ -255,7 +255,9 @@ impl CertificatePolicy {
 
 /// The string value of a name's only attribute of one type; `None` when it
 /// has none, several, or one that isn't a string type.
-fn only<'a>(mut values: impl Iterator<Item = &'a AttributeTypeAndValue<'a>>) -> Option<String> {
+pub(crate) fn only<'a>(
+    mut values: impl Iterator<Item = &'a AttributeTypeAndValue<'a>>,
+) -> Option<String> {
     let value = values.next()?;
     if values.next().is_some() {
         return None;

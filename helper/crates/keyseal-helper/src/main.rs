@@ -14,7 +14,7 @@ use keyseal_core::flow::{
 };
 use keyseal_core::origin::{self, Origin};
 use keyseal_core::protocol::{KeyUsage, Kind};
-use keyseal_core::token;
+use keyseal_core::token::{self, CertificateSummary};
 use keyseal_core::trust::TrustStore;
 use keyseal_core::{doctor, install, update};
 use zeroize::Zeroizing;
@@ -267,11 +267,21 @@ impl Ui for Headless {
         false
     }
 
-    fn choose_certificate(&mut self, job: &JobView, subjects: &[String]) -> Option<usize> {
+    fn choose_certificate(
+        &mut self,
+        job: &JobView,
+        certificates: &[CertificateSummary],
+    ) -> Option<usize> {
         describe(job);
         eprintln!("Several certificates fit this job, and a headless run can't choose one:");
-        for subject in subjects {
-            eprintln!("  {subject}");
+        for certificate in certificates {
+            eprintln!(
+                "  {}, issued by {}, valid until {}, serial ending {}",
+                certificate.name,
+                certificate.issuer,
+                certificate.valid_until,
+                certificate.serial_end
+            );
         }
         None
     }

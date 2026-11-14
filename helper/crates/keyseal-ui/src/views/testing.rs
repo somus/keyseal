@@ -2,6 +2,7 @@
 
 use gpui_kit::{AnyWindowHandle, TestAppContext};
 use keyseal_core::protocol::Kind;
+use keyseal_core::token::CertificateSummary;
 
 use keyseal_core::doctor::{Report, Status};
 
@@ -57,4 +58,14 @@ pub(super) fn open_windows(cx: &mut TestAppContext) -> Vec<AnyWindowHandle> {
 pub(super) fn pass_input_delay(cx: &mut TestAppContext) {
     cx.executor().advance_clock(INPUT_DELAY);
     cx.run_until_parked();
+}
+
+/// A certificate named `name` from the same issuer as every other.
+pub(super) fn certificate(name: &str) -> CertificateSummary {
+    CertificateSummary {
+        name: name.into(),
+        issuer: "Verasys Sub CA 2022".into(),
+        valid_until: "12 March 2027".into(),
+        serial_end: "4F A1 9C".into(),
+    }
 }

@@ -262,7 +262,7 @@ mod tests {
     use gpui_kit::test::TestWindowExt;
     use gpui_kit::{AppContext, TestAppContext};
 
-    use crate::views::testing::{job, open_windows, pass_input_delay, setup};
+    use crate::views::testing::{certificate, job, open_windows, pass_input_delay, setup};
 
     use crate::{Request, Stage};
 
@@ -338,7 +338,7 @@ mod tests {
         let choose = |reply| Request::Job {
             job: job(),
             stage: Stage::Choose {
-                subjects: vec!["CN=One".into()],
+                certificates: vec![certificate("One")],
                 reply,
             },
         };

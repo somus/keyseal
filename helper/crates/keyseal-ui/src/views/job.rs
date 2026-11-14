@@ -730,7 +730,7 @@ mod tests {
 
     use keyseal_core::flow::Step;
     use keyseal_core::preferences::Preferences;
-    use keyseal_core::token::CertificateSummary;
+    use keyseal_core::token::{CertificateSummary, TokenSummary};
 
     use crate::views::testing::{
         DIGEST, certificate, job, log, open_windows, pass_input_delay, probe, setup, temp_dir,
@@ -811,6 +811,74 @@ mod tests {
         })
         .unwrap();
         assert_eq!(answer.recv(), Ok(Some(1)));
+    }
+
+    /// Each token row names the token, its model and serial number and the
+    /// names it shows, to the eye and to a screen reader; the row clicked
+    /// is the one chosen. The PIN prompt then names that token.
+    #[gpui_kit::test]
+    fn token_rows_tell_tokens_apart(cx: &mut TestAppContext) {
+        let mut windows = setup(cx);
+        let token = |label: &str, names: &[&str]| TokenSummary {
+            label: label.into(),
+            model: "Feitian ePass2003".into(),
+            serial: format!("{label}-01"),
+            names: names.iter().map(|name| name.to_string()).collect(),
+        };
+        let (reply, answer) = mpsc::channel();
+        cx.update(|cx| {
+            windows.handle(
+                Request::Job {
+                    job: job(),
+                    stage: Stage::ChooseToken {
+                        tokens: vec![token("Office", &["ASHA RAO"]), token("Home", &[])],
+                        reply,
+                    },
+                },
+                cx,
+            )
+        });
+        let handle = *open_windows(cx).last().unwrap();
+        pass_input_delay(cx);
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            assert_eq!(
+                window.find("choose-token").label(),
+                Some(strings::CHOOSE_TOKEN_NOTE)
+            );
+            window.find_by_label(
+                "Office, Feitian ePass2003, serial number Office-01, holds ASHA RAO",
+            );
+            window.find_by_label("Home, Feitian ePass2003, serial number Home-01");
+            window.click(("token", 1usize), cx);
+            window.render_frame(cx);
+            window.click("submit", cx);
+        })
+        .unwrap();
+        assert_eq!(answer.recv(), Ok(Some(1)));
+
+        cx.update(|cx| {
+            windows.handle(
+                Request::Job {
+                    job: job(),
+                    stage: Stage::Pin {
+                        token: Some("Home".into()),
+                        certificate: None,
+                        digests: None,
+                        pin_pad: false,
+                        warning: None,
+                        wrong_pin: false,
+                        reply: mpsc::channel().0,
+                    },
+                },
+                cx,
+            )
+        });
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            assert_eq!(window.find("pin").label(), Some("PIN for Home"));
+        })
+        .unwrap();
     }
 
     /// On a PIN pad, a batch says the pad may ask once per document.

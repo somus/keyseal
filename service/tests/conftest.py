@@ -29,8 +29,8 @@ TOKEN = "Test-token-0123456789-abcdefghijkl"
 AUTH = {"Authorization": f"Bearer {TOKEN}"}
 
 
-def client_for(validation: ValidationSettings, tsa_url: str | None = None) -> TestClient:
-    return TestClient(create_app(Settings(token=TOKEN, tsa_url=tsa_url, validation=validation)))
+def client_for(validation: ValidationSettings, tsa_urls: tuple[str, ...] = ()) -> TestClient:
+    return TestClient(create_app(Settings(token=TOKEN, tsa_urls=tsa_urls, validation=validation)))
 
 
 def _name(cn: str) -> x509.Name:

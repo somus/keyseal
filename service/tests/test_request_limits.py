@@ -72,7 +72,7 @@ def request(
         messages.append(message)
 
     app = app_module.create_app(
-        Settings(token=TOKEN, tsa_url="https://tsa.example", validation=ValidationSettings([]))
+        Settings(token=TOKEN, tsa_urls=("https://tsa.example",), validation=ValidationSettings([]))
     )
     scope = {
         "type": "http",
@@ -142,7 +142,7 @@ def test_the_pdf_limit_is_25_mb() -> None:
 
 def test_a_plugin_websocket_needs_the_token() -> None:
     app = app_module.create_app(
-        Settings(token=TOKEN, tsa_url=None, validation=ValidationSettings([]))
+        Settings(token=TOKEN, tsa_urls=(), validation=ValidationSettings([]))
     )
     client = TestClient(app)
     with pytest.raises(WebSocketDisconnect) as refused:

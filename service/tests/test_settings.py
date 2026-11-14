@@ -53,7 +53,7 @@ def test_a_hex_token_missing_one_digit_passes() -> None:
 def test_the_service_refuses_to_start_with_a_weak_token(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    settings = Settings(token="local-signing-token", tsa_url=None, validation=ValidationSettings([]))
+    settings = Settings(token="local-signing-token", tsa_urls=(), validation=ValidationSettings([]))
     with caplog.at_level(logging.CRITICAL), pytest.raises(SystemExit) as exited:
         create_app(settings)
     assert exited.value.code == 1
@@ -65,7 +65,7 @@ def test_bundled_cca_india_roots_load_by_default(monkeypatch: pytest.MonkeyPatch
     settings = Settings.from_env()
     assert len(settings.validation.trust_roots) == 1
     assert len(settings.validation.intermediates) == 2
-    assert settings.tsa_url == "http://timestamp.digicert.com"
+    assert settings.tsa_urls == ("http://timestamp.digicert.com",)
 
 
 def test_a_roots_dir_replaces_the_bundled_roots(
@@ -80,7 +80,7 @@ def test_a_roots_dir_replaces_the_bundled_roots(
     assert [c.subject.native["common_name"] for c in settings.validation.intermediates] == [
         "PRIYA S RAGHAVAN"
     ]
-    assert settings.tsa_url is None
+    assert settings.tsa_urls == ()
 
 
 def test_a_roots_dir_without_roots_refuses_to_start(
@@ -210,3 +210,42 @@ def test_an_unknown_log_level_refuses_to_start(
         create_app()
     assert exited.value.code == 1
     assert "Refusing to start: SIGNING_LOG_LEVEL verbose is not" in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("value", "urls"),
+    [
+        ("", ()),
+        ("none", ()),
+        ("https://one.example/tsa", ("https://one.example/tsa",)),
+        (
+            "https://one.example/tsa, http://two.example\n  http://three.example",
+            ("https://one.example/tsa", "http://two.example", "http://three.example"),
+        ),
+    ],
+)
+def test_the_tsa_list_is_split_on_commas_and_whitespace(
+    monkeypatch: pytest.MonkeyPatch, value: str, urls: tuple[str, ...]
+) -> None:
+    monkeypatch.setenv("SIGNING_TSA_URL", value)
+    assert Settings.from_env().tsa_urls == urls
+
+
+@pytest.mark.parametrize(
+    ("value", "entry"),
+    [
+        ("timestamp.digicert.com", "timestamp.digicert.com"),
+        ("http://one.example, none", "none"),
+        ("https://one.example ftp://two.example", "ftp://two.example"),
+        ("http://[::1", "http://[::1"),
+    ],
+)
+def test_a_tsa_list_with_anything_but_http_urls_refuses_to_start(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, value: str, entry: str
+) -> None:
+    monkeypatch.setenv("SIGNING_SERVICE_TOKEN", TOKEN)
+    monkeypatch.setenv("SIGNING_TSA_URL", value)
+    with caplog.at_level(logging.CRITICAL), pytest.raises(SystemExit) as exited:
+        create_app()
+    assert exited.value.code == 1
+    assert f"Refusing to start: SIGNING_TSA_URL entry {entry} is not an http or https URL" in caplog.text

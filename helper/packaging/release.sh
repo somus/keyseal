@@ -153,18 +153,22 @@ else
   work="$(mktemp -d "${TMPDIR:-/tmp}/keyseal-release-$version.XXXXXX")"
 fi
 
-# The tag's release run makes the draft; wait for it rather than fail.
+# The tag's release run makes the draft; wait for it rather than fail. The
+# draft exists before the run has uploaded every asset, so a run still
+# going is waited for even when the draft is there.
 waited=0
-until is_draft="$(gh release view "$tag" --repo "$repo" --json isDraft --jq .isDraft 2>/dev/null)"; do
+while :; do
   run="$(gh run list --repo "$repo" --workflow release.yml --event push --branch "$tag" \
     --json status,conclusion,url --jq '.[0] // empty')"
-  if [ -z "$run" ]; then
-    [ "$waited" -lt 600 ] || fail "$tag has no release and no release run in $repo"
-  elif [ "$(jq -r .status <<<"$run")" = completed ]; then
-    # A run that passed made the draft as its last step; look once more.
-    [ "$(jq -r .conclusion <<<"$run")" = success ] || fail "the release run for $tag failed: $(jq -r .url <<<"$run")"
-    is_draft="$(gh release view "$tag" --repo "$repo" --json isDraft --jq .isDraft)" || fail "$tag has no release in $repo"
+  if [ -n "$run" ] && [ "$(jq -r .status <<<"$run")" != completed ]; then
+    :
+  elif is_draft="$(gh release view "$tag" --repo "$repo" --json isDraft --jq .isDraft 2>/dev/null)"; then
     break
+  elif [ -n "$run" ]; then
+    [ "$(jq -r .conclusion <<<"$run")" = success ] || fail "the release run for $tag failed: $(jq -r .url <<<"$run")"
+    fail "the release run for $tag passed but made no release: $(jq -r .url <<<"$run")"
+  else
+    [ "$waited" -lt 600 ] || fail "$tag has no release and no release run in $repo"
   fi
   [ "$waited" -gt 0 ] || echo "Waiting for the release run of $tag to make the draft."
   sleep 30
@@ -377,15 +381,30 @@ jq -cs '{signatures: .}' "$work"/SHA256SUMS-*.json >"$work/SHA256SUMS.sig"
 "$src/helper/packaging/verify-signatures.sh" "$draft/SHA256SUMS" "$work/SHA256SUMS.sig"
 
 step "Publishing"
-run_url="$(gh workflow run release.yml --repo "$repo" --ref main -f tag="$tag" \
+# gh doesn't always say which run it started, so the publish run is the
+# dispatched run that wasn't there before. Only this script starts them.
+newest_dispatch() {
+  gh run list --repo "$repo" --workflow release.yml --event workflow_dispatch --limit 1 \
+    --json databaseId --jq '.[0].databaseId // empty'
+}
+before="$(newest_dispatch)"
+gh workflow run release.yml --repo "$repo" --ref main -f tag="$tag" \
   -f signatures="$(cat "$work/keyseal-update.json.sig")" \
-  -f checksum_signatures="$(cat "$work/SHA256SUMS.sig")" | grep -oE 'https://[^ ]+/actions/runs/[0-9]+' || true)"
-[ -n "$run_url" ] || fail "gh didn't say which publish run it started; follow it at https://github.com/$repo/actions/workflows/release.yml"
+  -f checksum_signatures="$(cat "$work/SHA256SUMS.sig")" >/dev/null
+publish_run=""
+for _ in $(seq 30); do
+  publish_run="$(newest_dispatch)"
+  [ -z "$publish_run" ] || [ "$publish_run" = "$before" ] || break
+  publish_run=""
+  sleep 5
+done
+[ -n "$publish_run" ] || fail "the publish run didn't appear; follow it at https://github.com/$repo/actions/workflows/release.yml"
+run_url="https://github.com/$repo/actions/runs/$publish_run"
 echo "Waiting for the publish run: $run_url"
-until [ "$(gh run view "${run_url##*/}" --repo "$repo" --json status --jq .status)" = completed ]; do
+until [ "$(gh run view "$publish_run" --repo "$repo" --json status --jq .status)" = completed ]; do
   sleep 30
 done
-[ "$(gh run view "${run_url##*/}" --repo "$repo" --json conclusion --jq .conclusion)" = success ] \
+[ "$(gh run view "$publish_run" --repo "$repo" --json conclusion --jq .conclusion)" = success ] \
   || fail "the publish run failed: $run_url"
 [ "$(gh release view "$tag" --repo "$repo" --json isDraft --jq .isDraft)" = false ] \
   || fail "the publish run passed but $tag is still a draft"

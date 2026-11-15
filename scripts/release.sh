@@ -21,7 +21,7 @@
 # unlocked at the start when a helper release is due, so the only input is
 # that one password. --dry-run prints the plan and changes nothing.
 #
-# Needs gh, jq, git and python3, and for a helper release what
+# Needs gh, jq and git, and for a helper release what
 # helper/packaging/release.sh needs.
 set -euo pipefail
 
@@ -59,7 +59,7 @@ trap notify EXIT
 trap 'exit 130' INT TERM
 
 step "Preflight"
-for tool in gh jq git python3; do
+for tool in gh jq git; do
   command -v "$tool" >/dev/null || fail "needs $tool on the PATH"
 done
 gh auth status >/dev/null 2>&1 || fail "gh isn't signed in: gh auth login"
@@ -71,7 +71,9 @@ sha="$(git rev-parse HEAD)"
 [ "$sha" = "$(git rev-parse origin/main)" ] || fail "HEAD isn't origin/main; check out main and pull"
 
 helper_version="$(awk -F'"' '/^version = /{print $2; exit}' helper/Cargo.toml)"
-service_version="$(python3 -c 'import tomllib; print(tomllib.load(open("service/pyproject.toml", "rb"))["project"]["version"])')"
+# Not tomllib: macOS's own python3 is older than it. service.yml refuses a
+# tag that isn't the version it reads.
+service_version="$(awk -F'"' '/^version = /{print $2; exit}' service/pyproject.toml)"
 server_version="$(jq -r .version packages/server/package.json)"
 browser_version="$(jq -r .version packages/browser/package.json)"
 helper_tag="helper-v$helper_version"
@@ -152,7 +154,7 @@ fi
 
 # Waits for one of the run's results; the URL goes with it either way.
 wait_for_run() {
-  local workflow="$1" tag="$2" run
+  local workflow="$1" tag="$2" run waited=0
   while :; do
     run="$(gh run list --repo "$repo" --workflow "$workflow" --event push --branch "$tag" \
       --json status,conclusion,url --jq '.[0] // empty')"
@@ -161,10 +163,19 @@ wait_for_run() {
       echo "$tag: published by $(jq -r .url <<<"$run")"
       return 0
     fi
+    # A tag push starts its run within seconds.
+    if [ -z "$run" ] && [ "$waited" -ge 300 ]; then
+      echo "$tag: the push started no $workflow run"
+      return 1
+    fi
     sleep 30
+    waited=$((waited + 30))
   done
 }
 
+# At most three tags in one push: GitHub starts no workflow for a push of
+# more, and the plan never holds more (helper, service and browser, or
+# service, browser and server).
 push_tags() {
   local tag
   for tag in "$@"; do

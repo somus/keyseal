@@ -4,9 +4,10 @@
 # PSS), P-256, P-384, brainpoolP256r1 and brainpoolP384r1 keys, batches of
 # three documents signed in one token session, one of them on a key that
 # needs the PIN for every signature, a job that accepts a certificate with
-# digitalSignature but not nonRepudiation, two enrol jobs, one of them with a
-# certificate policy, and three jobs that must fail, and every signed PDF
-# validates as intact and trusted and carries the reason its job asked for.
+# digitalSignature but not nonRepudiation, an enrol job for each key type and
+# one with a certificate policy, and three jobs that must fail, and every
+# signed PDF validates as intact and trusted and carries the reason its job
+# asked for.
 #
 #   KEYSEAL_SOFTHSM_MODULE=/path/to/libsofthsm2.so scripts/ci/e2e.sh
 #
@@ -228,12 +229,14 @@ curl -fsS -H "Authorization: Bearer $service_token" --data-binary "@$signed" "$s
   jq -e '.signatures[0] | .intact and (.trusted | not)' >/dev/null
 echo "digitalSignature: signed, and trusted only when the validation accepts it"
 
-step "Enrol"
-job="$(create /enrol-jobs "$(jq -n --arg sha "$(sha256 "$work/token/p256.der")" \
-  '{title: "e2e enrolment", signer: "keyseal e2e", expectedCertificateSha256: $sha}')")"
-run_helper "$job"
-final_status "$(jq -r .id <<<"$job")" completed >/dev/null
-echo "enrol job completed"
+for name in rsa p256 p384 bp256 bp384; do
+  step "Enrol with $name"
+  job="$(create /enrol-jobs "$(jq -n --arg sha "$(sha256 "$work/token/$name.der")" --arg title "e2e enrolment $name" \
+    '{title: $title, signer: "keyseal e2e", expectedCertificateSha256: $sha}')")"
+  run_helper "$job"
+  final_status "$(jq -r .id <<<"$job")" completed >/dev/null
+  echo "$name: enrol job completed"
+done
 
 step "Enrol with a certificate policy"
 job="$(create /enrol-jobs "$(jq -n --arg sha "$(sha256 "$work/token/p256.der")" \

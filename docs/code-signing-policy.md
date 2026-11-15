@@ -126,7 +126,17 @@ the assets. Per platform it checks:
   same SHA-256 as `SHA256SUMS-unsigned`, and requires the tarball, deb and
   AppImage to hold that binary. This is the only platform rebuilt
   independently of CI, and `--skip-rebuild` skips it, leaving the Linux
-  binary and packages with no independent check.
+  binary and packages with no independent check. By default x64 rebuilds
+  in a Boat sandbox made for the run, without the maintainer's stored
+  secrets, and arm64 in Docker on the maintainer's Mac;
+  `--rebuild-boat` puts arm64 in a second sandbox under QEMU user
+  emulation, `--rebuild-host` uses an x86_64 Linux machine over SSH and
+  `--rebuild-local` keeps both on the Mac. The sandbox or host gets the
+  source and the packages and returns only the binary's SHA-256, so it
+  can't change what is signed, but the comparison trusts its answer: a
+  rebuild on Boat or over SSH is independent of GitHub's CI, not of Boat
+  or of that host. Only a rebuild in local Docker is independent of
+  both.
 - **Windows**: not rebuilt. The update exe and the zip's `keyseal.exe`
   must equal the unsigned exe the release run uploaded and its entry in
   `SHA256SUMS-unsigned`, so they are checked against CI's build, not an

@@ -104,7 +104,8 @@ revocation are described in `docs/code-signing-policy.md`.
    Each of these files has a build provenance attestation
    ([Checking build provenance](#checking-build-provenance)).
 4. Check, sign and publish with one script on a Mac, with Bitwarden
-   unlocked, Docker running and cargo-about 0.9.3 installed
+   unlocked, Docker running, the `boat` CLI signed in and cargo-about 0.9.3
+   installed
    (`cargo install --locked --features cli cargo-about@0.9.3`, once):
 
    ```sh
@@ -116,17 +117,48 @@ revocation are described in `docs/code-signing-policy.md`.
    clones the tag, and stops unless the tagged commit is on `main`, pins
    `main`'s keys and is the commit the release run built. It checks every
    asset the way `sign-manifest.md` describes, the Windows and macOS ones
-   against that run's unsigned binaries, rebuilds the Linux binary in the
+   against that run's unsigned binaries, rebuilds the Linux binaries in the
    pinned container, and stops at the first difference. Then it signs
    `keyseal-update.json` and `SHA256SUMS` with your release key, verifies
    the signatures with `verify-signatures.sh` (never by running the draft's
    helper, which could read `BW_SESSION`), and, once you confirm, starts
-   the publish run. The Linux rebuild takes
-   about 15 minutes under emulation; `--rebuild-host <ssh host>` runs it
-   natively on an x86_64 Linux machine with Docker, in a throwaway
-   container fed over SSH, and `--skip-rebuild` skips it. macOS and Windows aren't rebuilt: they need the
-   Xcode, or the Visual Studio and Windows SDK, that `BUILDINFO` names
-   (below).
+   the publish run.
+
+   The two Linux architectures rebuild at the same time, each in a
+   throwaway container that gets the tagged source, the rebuild script and
+   the three Linux packages on its standard input; the script reads back
+   only the rebuilt binary's SHA-256, and the build output goes to a log in
+   the work directory. Where they run:
+
+   - By default, x64 in a Boat sandbox made for this run, with none of your
+     stored secrets and deleted when the script exits (2 to 3 minutes on
+     a `large` sandbox), and arm64 in Docker on the Mac, natively on Apple
+     silicon (about 5 minutes). The whole script took under 10 minutes for
+     0.5.0.
+   - `--rebuild-boat`: both in Boat sandboxes, arm64 in the same arm64
+     container under QEMU user emulation (Ubuntu's `qemu-user-static`),
+     since Boat machines are x86_64. The Mac needs no Docker, but arm64
+     takes about 40 minutes.
+   - `--rebuild-local`: both in Docker on the Mac; x64 is emulated there
+     and takes about 15 minutes.
+   - `--rebuild-host <ssh host>`: both natively on an x86_64 Linux machine
+     with Docker, in throwaway containers fed over SSH.
+   - `--skip-rebuild`: no rebuild.
+
+   A rebuild on Boat or over SSH trusts that machine's answer: it is
+   independent of GitHub's CI, not of Boat or of that host. macOS and Windows aren't rebuilt: they
+   need the Xcode, or the Visual Studio and Windows SDK, that `BUILDINFO`
+   names (below).
+
+   `--verify-only` runs every check and stops before signing, without
+   Bitwarden, on a draft or a published release; on a published one it
+   also verifies the signatures the release carries. Anyone can use it to
+   check a release:
+
+   ```sh
+   helper/packaging/release.sh 1.4.0 --verify-only
+   ```
+
 5. Approve the `release` environment. The publish run checks the tag again,
    verifies both files' signatures with the pinned keys and threshold,
    checks every asset against `SHA256SUMS` and the update assets against
@@ -175,6 +207,8 @@ what `BUILDINFO` in the draft records.
   `build-release.sh linux-arm64`; a Docker that won't pull the arm64 image by
   the index digest takes its own,
   `ubuntu@sha256:88881eb36da489f9ff8746ece8048ca16cc94f80e8cd3ae7e8335d8822631591`.
+  On an x86_64 Linux machine, arm64 runs under QEMU user emulation once
+  `qemu-user-static` and `binfmt-support` are installed.
 
   ```sh
   docker run --rm --platform linux/amd64 -v "$PWD":/src -w /src \

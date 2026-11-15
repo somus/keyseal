@@ -51,7 +51,10 @@ the unsigned binaries you build in step 2.
 
 2. Rebuild the unsigned binaries yourself into `rebuilt` and compare them
    with `draft/SHA256SUMS-unsigned` (see "Reproducing a release" in
-   `docs/releasing.md`). Don't sign if any differ.
+   `docs/releasing.md`). Don't sign if any differ. `release.sh` rebuilds
+   only Linux: by default x64 in a Boat sandbox, which it trusts to report
+   the hash honestly (`docs/code-signing-policy.md`), and arm64 in Docker
+   on your Mac; `--rebuild-local` keeps both on your Mac.
 3. Check that `keyseal-update.json` and `SHA256SUMS` describe the draft's
    assets, and nothing else. Run `make-manifest.sh` from a checkout of the
    tag: the manifest's `expires` comes from the commit it runs in.

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Checks a draft helper release, signs it and starts the publish run, on a
-# maintainer's Mac (docs/releasing.md, steps 4 to 6):
+# Checks a draft helper release, signs it and publishes it, on a
+# maintainer's Mac (docs/releasing.md). scripts/release.sh runs it; it also
+# runs on its own:
 #
 #   helper/packaging/release.sh <version> [--verify-only]
 #     [--rebuild-boat | --rebuild-local | --rebuild-host <ssh host> | --skip-rebuild]
@@ -31,9 +32,14 @@
 #    the tag holds.
 # 4. Signs both files with the release key in Bitwarden
 #    ($KEYSEAL_RELEASE_KEY, by default "KeySeal release key"), verifies the
-#    signatures with verify-signatures.sh, and, once you confirm, starts
-#    the publish run, which then waits for approval of the `release`
-#    environment.
+#    signatures with verify-signatures.sh, starts the publish run, waits for
+#    it, and requires the release to be published and latest.
+#
+# A missing draft is waited for: the tag's release run makes it. Bitwarden
+# is unlocked once at the start unless BW_SESSION is set; either way the
+# session is taken out of the environment and handed only to bw and
+# sign-file.sh. The terminal bell and a notification mark the end, unless
+# KEYSEAL_NO_NOTIFY=1 (scripts/release.sh notifies instead).
 #
 # --verify-only stops after step 3, needs no Bitwarden, and takes a published
 # release as well as a draft, whose uploaded signatures it then verifies too.
@@ -77,22 +83,63 @@ done
 rebuild="${rebuild:-default}"
 [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || usage
 
+# Held unexported, so no process this script starts inherits it; only bw
+# and sign-file.sh get it, per command.
+bw_session="${BW_SESSION:-}"
+unset BW_SESSION
+
 tag="helper-v$version"
 here="$(cd "$(dirname "$0")" && pwd)"
-repo="$(gh repo view --json nameWithOwner --jq .nameWithOwner)"
 key="${KEYSEAL_RELEASE_KEY:-KeySeal release key}"
-signer="$(gh api user --jq .login)"
 step() { printf '\n== %s\n' "$*"; }
 fail() { echo "FAILED: $*" >&2; exit 1; }
-# Boat's CLI from the PATH, kept from updating itself mid-release and from
-# seeing the Bitwarden session.
-run_boat() { env -u BW_SESSION BOAT_NO_UPDATE=1 boat "$@"; }
+# Boat's CLI from the PATH, kept from updating itself mid-release.
+run_boat() { BOAT_NO_UPDATE=1 boat "$@"; }
+# Deleted on every way out of this script, and only the ones it made.
+sandboxes=()
+outcome="$tag: the release failed; see the terminal."
+on_exit() {
+  for id in ${sandboxes[@]+"${sandboxes[@]}"}; do
+    run_boat delete "$id" --yes >/dev/null || echo "Couldn't delete Boat sandbox $id; delete it with: boat delete $id" >&2
+  done
+  # For a maintainer who has walked away.
+  if [ "${KEYSEAL_NO_NOTIFY:-}" != 1 ]; then
+    printf '\a'
+    osascript -e 'on run argv' -e 'display notification (item 1 of argv) with title "KeySeal release"' -e 'end run' \
+      "$outcome" >/dev/null 2>&1 || true
+  fi
+}
+trap on_exit EXIT
+trap 'exit 130' INT TERM
+
+step "Preflight"
+for tool in gh jq git openssl codesign ditto spctl cargo-about rustup; do
+  command -v "$tool" >/dev/null || fail "needs $tool on the PATH"
+done
+case "$(openssl version)" in
+  "OpenSSL "[3-9]*) ;;
+  *) fail "needs OpenSSL 3 or later first on the PATH, not $(openssl version)" ;;
+esac
+gh auth status >/dev/null 2>&1 || fail "gh isn't signed in: gh auth login"
 case "$rebuild" in
-  default | rebuild-boat) command -v boat >/dev/null || fail "the rebuild uses Boat sandboxes and needs boat on the PATH; or pass --rebuild-local" ;;
+  default | rebuild-boat)
+    command -v boat >/dev/null && run_boat status >/dev/null 2>&1 \
+      || fail "the rebuild uses Boat sandboxes and needs a signed-in boat on the PATH; or pass --rebuild-local"
+    ;;
 esac
 case "$rebuild" in
   default | rebuild-local) docker info >/dev/null 2>&1 || fail "the rebuild needs Docker running on this Mac; or pass --rebuild-boat" ;;
 esac
+if ! $verify_only; then
+  command -v bw >/dev/null || fail "needs bw on the PATH"
+  if [ -z "$bw_session" ]; then
+    [ "$(bw status | jq -r .status)" != unauthenticated ] || fail "Bitwarden isn't logged in: bw login"
+    bw_session="$(bw unlock --raw)" || fail "unlocking Bitwarden"
+  fi
+  [ "$(BW_SESSION="$bw_session" bw status | jq -r .status)" = unlocked ] || fail "Bitwarden is locked"
+fi
+repo="$(gh repo view --json nameWithOwner --jq .nameWithOwner)"
+signer="$(gh api user --jq .login)"
 
 # The scripts and files in here run and get signed with the release key, so
 # nobody else may write to it.
@@ -106,12 +153,23 @@ else
   work="$(mktemp -d "${TMPDIR:-/tmp}/keyseal-release-$version.XXXXXX")"
 fi
 
-case "$(openssl version)" in
-  "OpenSSL "[3-9]*) ;;
-  *) fail "needs OpenSSL 3 or later first on the PATH, not $(openssl version)" ;;
-esac
-is_draft="$(gh release view "$tag" --repo "$repo" --json isDraft --jq .isDraft)" \
-  || fail "$tag has no release in $repo"
+# The tag's release run makes the draft; wait for it rather than fail.
+waited=0
+until is_draft="$(gh release view "$tag" --repo "$repo" --json isDraft --jq .isDraft 2>/dev/null)"; do
+  run="$(gh run list --repo "$repo" --workflow release.yml --event push --branch "$tag" \
+    --json status,conclusion,url --jq '.[0] // empty')"
+  if [ -z "$run" ]; then
+    [ "$waited" -lt 600 ] || fail "$tag has no release and no release run in $repo"
+  elif [ "$(jq -r .status <<<"$run")" = completed ]; then
+    # A run that passed made the draft as its last step; look once more.
+    [ "$(jq -r .conclusion <<<"$run")" = success ] || fail "the release run for $tag failed: $(jq -r .url <<<"$run")"
+    is_draft="$(gh release view "$tag" --repo "$repo" --json isDraft --jq .isDraft)" || fail "$tag has no release in $repo"
+    break
+  fi
+  [ "$waited" -gt 0 ] || echo "Waiting for the release run of $tag to make the draft."
+  sleep 30
+  waited=$((waited + 30))
+done
 $verify_only || [ "$is_draft" = true ] || fail "$tag is not a draft release in $repo"
 
 step "Downloading the draft and the tagged source into $work"
@@ -146,9 +204,7 @@ cmp "$work/mine/SHA256SUMS" "$draft/SHA256SUMS" || fail "SHA256SUMS"
 jq . "$draft/keyseal-update.json"
 
 step "Third-party notices from the tagged source"
-# cargo-about isn't one of this checkout's scripts, so it doesn't get
-# BW_SESSION.
-env -u BW_SESSION "$src/helper/packaging/third-party-notices.sh" "$work/THIRD-PARTY-NOTICES.txt" \
+"$src/helper/packaging/third-party-notices.sh" "$work/THIRD-PARTY-NOTICES.txt" \
   || fail "making the third-party notices"
 notices="$work/THIRD-PARTY-NOTICES.txt"
 
@@ -189,15 +245,6 @@ step "Linux"
 if [ "$rebuild" = skip-rebuild ]; then
   echo "Skipped the rebuild (--skip-rebuild)."
 else
-  # Deleted on every way out of this script, and only the ones it made.
-  sandboxes=()
-  delete_sandboxes() {
-    for id in ${sandboxes[@]+"${sandboxes[@]}"}; do
-      run_boat delete "$id" --yes >/dev/null || echo "Couldn't delete Boat sandbox $id; delete it with: boat delete $id" >&2
-    done
-  }
-  trap delete_sandboxes EXIT
-  trap 'exit 130' INT TERM
   platforms=()
   pids=()
   started=$SECONDS
@@ -305,34 +352,44 @@ if $verify_only; then
     [ ! -f "$draft/$file.sig" ] || "$src/helper/packaging/verify-signatures.sh" "$draft/$file" "$draft/$file.sig"
   done
   step "Every check passed; nothing signed (--verify-only)"
+  outcome="$tag: every check passed."
   exit 0
 fi
 
 step "Signing with \"$key\""
-[ "$(bw status | jq -r .status)" = unlocked ] \
-  || fail 'Bitwarden is locked: export BW_SESSION="$(bw unlock --raw)"'
 for file in keyseal-update.json SHA256SUMS; do
-  "$src/helper/packaging/sign-file.sh" bitwarden "$key" "$draft/$file" >"$work/$file-$signer.json"
+  BW_SESSION="$bw_session" "$src/helper/packaging/sign-file.sh" bitwarden "$key" "$draft/$file" >"$work/$file-$signer.json"
 done
 echo "Wrote $work/keyseal-update.json-$signer.json and $work/SHA256SUMS-$signer.json."
 if [ "${KEYSEAL_SIGN_ONLY:-}" = 1 ]; then
   echo "Send both to whoever publishes (KEYSEAL_SIGN_ONLY=1)."
+  outcome="$tag: signed, not published (KEYSEAL_SIGN_ONLY=1)."
   exit 0
 fi
 
 step "Verifying the signatures with the pinned keys"
 jq -cs '{signatures: .}' "$work"/keyseal-update.json-*.json >"$work/keyseal-update.json.sig"
 jq -cs '{signatures: .}' "$work"/SHA256SUMS-*.json >"$work/SHA256SUMS.sig"
-# Not with the draft's own helper: it is CI's build, and any process run as
-# you can read BW_SESSION from this script's environment (ps -E). The
-# publish run checks the manifest again with a helper built from the tag.
+# Not with the draft's own helper: it is CI's build, and this script holds
+# the Bitwarden session. The publish run checks the manifest again with a
+# helper built from the tag.
 "$src/helper/packaging/verify-signatures.sh" "$draft/keyseal-update.json" "$work/keyseal-update.json.sig"
 "$src/helper/packaging/verify-signatures.sh" "$draft/SHA256SUMS" "$work/SHA256SUMS.sig"
 
 step "Publishing"
-read -rp "Start the publish run for $tag? [y/N] " answer
-[ "$answer" = y ] || { echo "Not published. The signatures are in $work."; exit 0; }
-gh workflow run release.yml --repo "$repo" --ref main -f tag="$tag" \
+run_url="$(gh workflow run release.yml --repo "$repo" --ref main -f tag="$tag" \
   -f signatures="$(cat "$work/keyseal-update.json.sig")" \
-  -f checksum_signatures="$(cat "$work/SHA256SUMS.sig")"
-echo "Started. Approve the release environment: https://github.com/$repo/actions/workflows/release.yml"
+  -f checksum_signatures="$(cat "$work/SHA256SUMS.sig")" | grep -oE 'https://[^ ]+/actions/runs/[0-9]+' || true)"
+[ -n "$run_url" ] || fail "gh didn't say which publish run it started; follow it at https://github.com/$repo/actions/workflows/release.yml"
+echo "Waiting for the publish run: $run_url"
+until [ "$(gh run view "${run_url##*/}" --repo "$repo" --json status --jq .status)" = completed ]; do
+  sleep 30
+done
+[ "$(gh run view "${run_url##*/}" --repo "$repo" --json conclusion --jq .conclusion)" = success ] \
+  || fail "the publish run failed: $run_url"
+[ "$(gh release view "$tag" --repo "$repo" --json isDraft --jq .isDraft)" = false ] \
+  || fail "the publish run passed but $tag is still a draft"
+[ "$(gh api "repos/$repo/releases/latest" --jq .tag_name)" = "$tag" ] \
+  || fail "$tag is published but isn't the latest release, so helpers won't update to it"
+outcome="$tag is published and latest."
+echo "$outcome"

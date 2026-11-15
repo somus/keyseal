@@ -30,8 +30,13 @@ every check passing).
   and merge pull requests.
 - **Reviewers**: the maintainers review every change from someone who isn't
   one before it is merged.
-- **Approvers**: the maintainers approve every signing request: the
-  `release-macos` and `release` environments, and each SignPath request.
+- **Approvers**: the maintainers approve each SignPath request. The
+  `release-macos` and `release` environments have no required reviewer
+  while there is one maintainer, since an approval by the account that
+  pushed the tag added nothing; they still admit only runs from
+  `helper-v*` tags and from `main`, and the publish run accepts only
+  signatures from the pinned keys. Required reviewers come back when a
+  second maintainer exists.
 
 Every maintainer uses multi-factor authentication on GitHub and SignPath.
 
@@ -44,9 +49,10 @@ driver catalogue from this repository's GitHub releases. The README's
 
 ## Who may sign
 
-Maintainers are listed in the table below. Only they hold release keys, and
-only they may approve the `release` and `release-macos` environments or
-SignPath signing requests. Adding or removing a maintainer is a reviewed
+Maintainers are listed in the table below. Only they hold release keys,
+only they may push release tags, and only they may approve SignPath
+signing requests (and the `release` and `release-macos` environments, once
+those have required reviewers again). Adding or removing a maintainer is a reviewed
 change to this file and, for release keys, to `RELEASE_KEYS` in
 `helper/crates/keyseal-core/src/update.rs`.
 
@@ -72,7 +78,8 @@ change to this file and, for release keys, to `RELEASE_KEYS` in
   release drops the software keys.
 - CI never holds a release key. The Apple Developer ID certificate and App
   Store Connect API key are GitHub environment secrets usable only by the
-  release workflow after a maintainer approves the run.
+  release workflow's runs for `helper-v*` tags, which only maintainers can
+  push.
 
 ## Threshold
 

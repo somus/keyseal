@@ -12,17 +12,54 @@ Every release goes the same way:
 
 1. Bump the component's version, move its Unreleased entries in
    `CHANGELOG.md` under the new version and date, and merge the pull
-   request.
-2. Wait for the `checks` and `e2e` runs on the merge commit on `main` to
-   pass. Each workflow stops unless the tag is on `main`, matches the
-   component's version, and both runs passed on that commit
-   (`scripts/ci/ci-passed.sh`); if a run was still going, re-run the failed
-   job once it has passed.
-3. Tag the merge commit and push the tag, for example:
+   request. The sections below say where each version lives.
+2. From a clean checkout of `main` at that merge commit, run the release
+   script on a Mac:
 
    ```sh
-   git tag server-v0.2.0 && git push origin server-v0.2.0
+   git switch main && git pull
+   scripts/release.sh --dry-run   # the plan, changing nothing
+   scripts/release.sh
    ```
+
+   It reads each component's version from the checkout, finds out from
+   GitHub what is left to do, and prints that as a plan. When a helper
+   release is due it asks for your Bitwarden master password once, at the
+   start; nothing after that needs you. It then waits for the `checks` and
+   `e2e` runs on the commit's push to `main` to pass, pushes the tags not
+   yet on GitHub, checks, signs and publishes the helper
+   ([Helper](#helper)), and waits for the npm and service runs its tags
+   started. A `server-v` tag waits until the helper released with it is
+   published and latest, since a server version can require that helper.
+   It ends with what it released, the terminal bell and a macOS
+   notification, on failure too.
+
+   The plan comes from what GitHub holds, not from an earlier run: a tag
+   that isn't on GitHub is pushed, a helper whose release is missing or a
+   draft is checked, signed and published, and a published helper is done.
+   After a failure, fix the cause and run it again to carry on. The rebuild
+   flags `--rebuild-boat`, `--rebuild-local`, `--rebuild-host <ssh host>`
+   and `--skip-rebuild` go through to `helper/packaging/release.sh`
+   (step 4 of [Helper](#helper)); without one, Docker must be running on
+   the Mac for the arm64 rebuild.
+
+Each workflow stops unless the tag is on `main`, matches the component's
+version, and both runs passed on that commit (`scripts/ci/ci-passed.sh`).
+
+### By hand
+
+The script only automates what follows. Once the `checks` and `e2e` runs
+on the merge commit have passed (if a workflow ran while they were still
+going, re-run its failed job once they have passed), tag the merge commit
+and push the tag, for example:
+
+```sh
+git tag server-v0.2.0 && git push origin server-v0.2.0
+```
+
+For a helper, push its tag, then run `helper/packaging/release.sh` (step 4
+below), and push a `server-v` tag only after the helper release is
+published.
 
 ## Helper
 
@@ -40,9 +77,9 @@ here before changing any of it.
   (`helper/crates/keyseal-core/src/update.rs`) and the catalogue keys in
   `CATALOGUE_KEYS` (`catalogue.rs`). The fingerprints and custody rules are
   in `docs/code-signing-policy.md`.
-- The `release` environment, with a maintainer as required reviewer, gates
-  the publish run.
-- The `release-macos` environment, with a maintainer as required reviewer,
+- The `release` environment, which only `main` can use, runs the publish
+  run.
+- The `release-macos` environment, which only `helper-v*` tags can use,
   holds the macOS signing secrets `APPLE_DEVELOPER_ID_P12` (base64 of the
   Developer ID Application certificate and key),
   `APPLE_DEVELOPER_ID_P12_PASSWORD`, `APPLE_API_KEY_P8` (the App Store
@@ -53,6 +90,11 @@ here before changing any of it.
   signs the macOS app and disk image instead of notarizing them, and Mac
   users approve the app once in System Settings, Privacy & Security, Open
   Anyway.
+- Neither environment has a required reviewer. With one maintainer, an
+  approval by the account that had just pushed the tag added nothing: the
+  branch and tag restrictions above decide which runs reach the secrets,
+  and the publish run still accepts only signatures from the pinned keys.
+  Required reviewers come back when a second maintainer exists.
 - A branch ruleset on `main` allows changes only through reviewed pull
   requests.
 - A tag ruleset on `helper-v*` restricts creating, updating and deleting
@@ -76,17 +118,13 @@ revocation are described in `docs/code-signing-policy.md`.
 1. Set `version` in `helper/Cargo.toml` (`[workspace.package]`), update
    `Cargo.lock` (`cargo check` in `helper/`), move the helper's Unreleased
    entries in `CHANGELOG.md` under the new version and date, and merge.
-2. Once the checks have passed on it, tag the merge commit on `main` and
-   push the tag. The tag must be `helper-v<version>`; the workflow fails
-   otherwise.
-
-   ```sh
-   git tag helper-v1.4.0 && git push origin helper-v1.4.0
-   ```
-
-3. The `release` workflow builds the four platforms (Linux on x64 and arm64), waits for approval of
-   `release-macos`, signs and notarizes the macOS app and disk image, and
-   creates a draft release with:
+2. Run `scripts/release.sh` (above). Once the checks have passed it
+   pushes the tag, `helper-v<version>`, which starts the release workflow,
+   and runs steps 4 and 5. The rest of this section is what those steps
+   do, and how to run them by hand.
+3. The `release` workflow builds the four platforms (Linux on x64 and
+   arm64), signs and notarizes the macOS app and disk image, and creates a
+   draft release with:
    - `keyseal-helper-<v>-macos-universal.dmg` (download) and `.zip` (update)
    - `keyseal-helper-<v>-windows-x64.zip` (download) and `.exe` (update)
    - `keyseal-helper-<v>-linux-x64.tar.gz` and `keyseal_<v>_amd64.deb`
@@ -103,26 +141,31 @@ revocation are described in `docs/code-signing-policy.md`.
 
    Each of these files has a build provenance attestation
    ([Checking build provenance](#checking-build-provenance)).
-4. Check, sign and publish with one script on a Mac, with Bitwarden
-   unlocked, Docker running, the `boat` CLI signed in and cargo-about 0.9.3
-   installed
-   (`cargo install --locked --features cli cargo-about@0.9.3`, once):
+4. `helper/packaging/release.sh` checks, signs and publishes on a Mac,
+   with Bitwarden logged in, Docker running, the `boat` CLI signed in and
+   cargo-about 0.9.3 installed
+   (`cargo install --locked --features cli cargo-about@0.9.3`, once).
+   `scripts/release.sh` runs it; on its own:
 
    ```sh
-   export BW_SESSION="$(bw unlock --raw)"
    helper/packaging/release.sh 1.4.0
    ```
 
-   Run it from an up-to-date checkout of `main`. It downloads the draft and
-   clones the tag, and stops unless the tagged commit is on `main`, pins
+   Run it from an up-to-date checkout of `main`. It checks its tools,
+   `gh`, `boat` and Bitwarden first, then asks for the master password
+   unless `BW_SESSION` is set; either way it takes the session out of its
+   environment and hands it only to `bw` and `sign-file.sh`. If the draft
+   isn't there yet it waits for the tag's release run, and stops if that
+   run failed. It downloads the draft and clones the tag, and stops unless the tagged commit is on `main`, pins
    `main`'s keys and is the commit the release run built. It checks every
    asset the way `sign-manifest.md` describes, the Windows and macOS ones
    against that run's unsigned binaries, rebuilds the Linux binaries in the
    pinned container, and stops at the first difference. Then it signs
    `keyseal-update.json` and `SHA256SUMS` with your release key, verifies
    the signatures with `verify-signatures.sh` (never by running the draft's
-   helper, which could read `BW_SESSION`), and, once you confirm, starts
-   the publish run.
+   helper while the script holds the session), starts the publish run
+   (step 5), waits for it, and stops unless the release is then published
+   and latest. It rings the bell and posts a notification when it ends.
 
    The two Linux architectures rebuild at the same time, each in a
    throwaway container that gets the tagged source, the rebuild script and
@@ -159,13 +202,14 @@ revocation are described in `docs/code-signing-policy.md`.
    helper/packaging/release.sh 1.4.0 --verify-only
    ```
 
-5. Approve the `release` environment. The publish run checks the tag again,
+5. The publish run checks the tag again,
    verifies both files' signatures with the pinned keys and threshold,
    checks every asset against `SHA256SUMS` and the update assets against
    the manifest, uploads the signatures and publishes the release as
    latest.
 6. With a `THRESHOLD` above 1, each other maintainer runs the script with
-   `KEYSEAL_SIGN_ONLY=1` and sends the two `.json` entries it writes;
+   `KEYSEAL_SIGN_ONLY=1`, which stops after signing, and sends the two
+   `.json` entries it writes;
    whoever publishes runs it with `KEYSEAL_RELEASE_DIR` set to a directory
    of their own and copies the entries into it first. Without it the script
    works in a new private directory each run.

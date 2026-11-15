@@ -506,6 +506,7 @@ Each release publishes two files in the KeySeal GitHub release:
 {
   "format": 1,
   "version": "1.4.0",
+  "expires": "2027-05-13T10:42:07Z",
   "platforms": {
     "macos-universal": { "file": "keyseal-helper-1.4.0-macos-universal.zip", "sha256": "<hex>" },
     "windows-x64": { "file": "keyseal-helper-1.4.0-windows-x64.exe", "sha256": "<hex>" },
@@ -522,6 +523,7 @@ Each release publishes two files in the KeySeal GitHub release:
 - Each signature is Ed25519 over the exact bytes of `keyseal-update.json`. `keyId` is the lowercase hex SHA-256 of the raw 32-byte public key.
 - The helper pins a set of public keys and a threshold. It MUST accept the manifest only if signatures from at least the threshold number of distinct pinned keys verify under strict Ed25519 verification. Signatures from unknown keys are ignored. The threshold is 1 until a second maintainer exists.
 - The helper MUST refuse a `format` other than `1`, and MUST update only to a `version` higher than its own by SemVer precedence.
+- `expires` is an RFC 3339 timestamp, 180 days after the release's tagged commit, so a captured manifest cannot be replayed for long to hide a newer release. The helper MUST refuse a manifest without a valid `expires`, and MUST refuse a fetched manifest when its clock is at or after `expires`, whatever version it offers. A release staged before the expiry MAY be installed after it. Helpers up to 0.5.0 ignore the member.
 - The helper downloads the `file` for its platform and MUST install it only if its SHA-256 equals `sha256`. A platform without an entry does not update.
 - The helper checks at most once a day, with a 5 second budget for the manifest, plus on `426` (section 7.3). Downloads run in the background after a job and apply on the next launch.
 

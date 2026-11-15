@@ -19,6 +19,15 @@ lines under the new version with the release date.
 
 ### [Unreleased][helper-unreleased]
 
+#### Added
+
+- The update manifest carries a signed expiry, 180 days after the release,
+  and KeySeal refuses a manifest past it, so an old manifest can't be
+  served to hide a newer release. Each release renews it. If 180 days pass
+  without a release, KeySeal keeps working but stops updating until the next
+  one, and says why in `keyseal.log` and in `keyseal update`. A release
+  downloaded before the expiry still installs after it.
+
 #### Changed
 
 - A list longer than its window, such as the certificates on a token that

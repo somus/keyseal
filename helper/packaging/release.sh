@@ -2,7 +2,8 @@
 # Checks a draft helper release, signs it and starts the publish run, on a
 # maintainer's Mac (docs/releasing.md, steps 4 to 6):
 #
-#   helper/packaging/release.sh <version> [--skip-rebuild | --rebuild-host <ssh host>]
+#   helper/packaging/release.sh <version> [--verify-only]
+#     [--rebuild-boat | --rebuild-local | --rebuild-host <ssh host> | --skip-rebuild]
 #
 # 1. Downloads the draft and clones its tag, and requires the tagged commit
 #    to be on main, to pin main's keys (check-release-commit.sh, this
@@ -14,44 +15,66 @@
 #    (compare-bundle.sh), with their Developer ID or ad-hoc signature. The
 #    zip and the app must hold the third-party notices this script makes
 #    from the tagged source (third-party-notices.sh).
-# 3. Rebuilds the Linux binary in the pinned container and requires it to
-#    equal SHA256SUMS-unsigned and the binary in the tarball, deb and
+# 3. Rebuilds the Linux binaries in the pinned container and requires each
+#    to equal SHA256SUMS-unsigned and the binary in the tarball, deb and
 #    AppImage (unpacked, never run). The source and the Linux packages are
 #    streamed into a throwaway container, which gets no access to the work
-#    directory. It takes about 15 minutes under emulation on Apple silicon;
-#    --rebuild-host runs that container natively on an x86_64 Linux machine
-#    with Docker over SSH instead, so nothing is written on that machine but
-#    Docker's image cache. --skip-rebuild skips it, accepting that CI built
-#    what the tag holds.
+#    directory, and only its last line, the rebuilt binary's SHA-256, is
+#    compared. Both architectures rebuild at the same time. By default x64
+#    runs in a Boat sandbox and arm64 in Docker on this Mac, natively on
+#    Apple silicon. --rebuild-boat runs arm64 in a second sandbox too, under
+#    QEMU user emulation, so the Mac needs no Docker but it takes about 40
+#    minutes; --rebuild-local runs both in Docker on this Mac;
+#    --rebuild-host runs both natively on an x86_64 Linux machine with
+#    Docker over SSH, so nothing is written on that machine but Docker's
+#    image cache; and --skip-rebuild skips it, accepting that CI built what
+#    the tag holds.
 # 4. Signs both files with the release key in Bitwarden
 #    ($KEYSEAL_RELEASE_KEY, by default "KeySeal release key"), verifies the
 #    signatures with verify-signatures.sh, and, once you confirm, starts
 #    the publish run, which then waits for approval of the `release`
 #    environment.
 #
+# --verify-only stops after step 3, needs no Bitwarden, and takes a published
+# release as well as a draft, whose uploaded signatures it then verifies too.
+#
 # With a THRESHOLD above 1 each maintainer runs it with KEYSEAL_SIGN_ONLY=1
 # and sends their two .json entries; whoever publishes puts every entry in
 # the work directory before running it without.
 #
-# Needs gh, jq, git, docker, bw, OpenSSL 3 or later, the Xcode command
-# line tools, and rustup and cargo-about 0.9.3 for the notices. Works in
-# $KEYSEAL_RELEASE_DIR, a directory you own (made private), or by default a
-# new private one under $TMPDIR; its path must not hold a space.
+# Needs gh, jq, git, bw, OpenSSL 3 or later, the Xcode command line tools,
+# and rustup and cargo-about 0.9.3 for the notices; boat for the default
+# rebuild and --rebuild-boat, Docker for the default and --rebuild-local.
+# Works in $KEYSEAL_RELEASE_DIR, a directory you own (made private), or by
+# default a new private one under $TMPDIR; its path must not hold a space.
 set -euo pipefail
 
 usage() {
-  echo "usage: $0 <version> [--skip-rebuild | --rebuild-host <ssh host>]" >&2
+  echo "usage: $0 <version> [--verify-only] [--rebuild-boat | --rebuild-local | --rebuild-host <ssh host> | --skip-rebuild]" >&2
   exit 2
 }
-version="${1:-}"
-skip_rebuild=false
+version=""
+verify_only=false
+rebuild=""
 rebuild_host=""
-case "${2:-}" in
-  "") ;;
-  --skip-rebuild) skip_rebuild=true ;;
-  --rebuild-host) rebuild_host="${3:-}"; [ -n "$rebuild_host" ] || usage ;;
-  *) usage ;;
-esac
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --verify-only) verify_only=true ;;
+    --rebuild-boat | --rebuild-local | --rebuild-host | --skip-rebuild)
+      [ -z "$rebuild" ] || usage
+      rebuild="${1#--}"
+      if [ "$1" = --rebuild-host ]; then
+        rebuild_host="${2:-}"
+        [ -n "$rebuild_host" ] || usage
+        shift
+      fi
+      ;;
+    -*) usage ;;
+    *) [ -z "$version" ] || usage; version="$1" ;;
+  esac
+  shift
+done
+rebuild="${rebuild:-default}"
 [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || usage
 
 tag="helper-v$version"
@@ -61,6 +84,15 @@ key="${KEYSEAL_RELEASE_KEY:-KeySeal release key}"
 signer="$(gh api user --jq .login)"
 step() { printf '\n== %s\n' "$*"; }
 fail() { echo "FAILED: $*" >&2; exit 1; }
+# Boat's CLI from the PATH, kept from updating itself mid-release and from
+# seeing the Bitwarden session.
+run_boat() { env -u BW_SESSION BOAT_NO_UPDATE=1 boat "$@"; }
+case "$rebuild" in
+  default | rebuild-boat) command -v boat >/dev/null || fail "the rebuild uses Boat sandboxes and needs boat on the PATH; or pass --rebuild-local" ;;
+esac
+case "$rebuild" in
+  default | rebuild-local) docker info >/dev/null 2>&1 || fail "the rebuild needs Docker running on this Mac; or pass --rebuild-boat" ;;
+esac
 
 # The scripts and files in here run and get signed with the release key, so
 # nobody else may write to it.
@@ -78,11 +110,12 @@ case "$(openssl version)" in
   "OpenSSL "[3-9]*) ;;
   *) fail "needs OpenSSL 3 or later first on the PATH, not $(openssl version)" ;;
 esac
-[ "$(gh release view "$tag" --repo "$repo" --json isDraft --jq .isDraft)" = true ] \
-  || fail "$tag is not a draft release in $repo"
+is_draft="$(gh release view "$tag" --repo "$repo" --json isDraft --jq .isDraft)" \
+  || fail "$tag has no release in $repo"
+$verify_only || [ "$is_draft" = true ] || fail "$tag is not a draft release in $repo"
 
 step "Downloading the draft and the tagged source into $work"
-rm -rf "$work/draft" "$work/src" "$work/ci-unsigned" "$work/ci-windows" "$work/mine" "$work/unzipped" "$work/rebuilt" "$work/rebuild.sh" "$work/THIRD-PARTY-NOTICES.txt"
+rm -rf "$work/draft" "$work/src" "$work/ci-unsigned" "$work/ci-windows" "$work/mine" "$work/unzipped" "$work/rebuilt" "$work"/rebuild-* "$work"/rebuilt-* "$work/THIRD-PARTY-NOTICES.txt"
 gh release download "$tag" --repo "$repo" --dir "$work/draft"
 # Not `clone --branch`: it would take a branch named like the tag over the tag.
 git clone -q --no-checkout "https://github.com/$repo.git" "$work/src"
@@ -153,9 +186,21 @@ else
 fi
 
 step "Linux"
-if $skip_rebuild; then
+if [ "$rebuild" = skip-rebuild ]; then
   echo "Skipped the rebuild (--skip-rebuild)."
 else
+  # Deleted on every way out of this script, and only the ones it made.
+  sandboxes=()
+  delete_sandboxes() {
+    for id in ${sandboxes[@]+"${sandboxes[@]}"}; do
+      run_boat delete "$id" --yes >/dev/null || echo "Couldn't delete Boat sandbox $id; delete it with: boat delete $id" >&2
+    done
+  }
+  trap delete_sandboxes EXIT
+  trap 'exit 130' INT TERM
+  platforms=()
+  pids=()
+  started=$SECONDS
   # The same image and rustup-init as release.yml and docs/releasing.md,
   # once per architecture. The image is release.yml's
   # ubuntu:22.04@sha256:0a9887931b0e38af2e3487ed39e29436b0535c4f3f52e57745baaf79d1898956,
@@ -169,7 +214,7 @@ else
     read -r platform deb_arch arch rustup_sha256 image_digest <<<"$build"
     image="ubuntu@sha256:$image_digest"
     linux="keyseal-helper-$version-$platform"
-    cat >"$work/rebuild.sh" <<SCRIPT
+    cat >"$work/rebuild-$platform.sh" <<SCRIPT
 set -e
 apt-get update -qq && apt-get install -y -qq --no-install-recommends build-essential ca-certificates curl file git \\
   pkg-config libasound2-dev libfontconfig-dev libvulkan1 libwayland-dev libx11-xcb-dev libxkbcommon-x11-dev \\
@@ -195,19 +240,72 @@ sha256sum "\$binary"
 SCRIPT
     # Streamed in rather than mounted: nothing in the container can change
     # the scripts and files this script runs and signs afterwards.
-    inputs=(src rebuild.sh "draft/$linux.tar.gz" "draft/keyseal_${version}_$deb_arch.deb" "draft/$linux.AppImage")
-    container="docker run -i --rm --platform linux/$deb_arch $image sh -c 'mkdir /w && tar -xf - -C /w && sh /w/rebuild.sh'"
-    if [ -n "$rebuild_host" ]; then
-      echo "Rebuilding $platform on $rebuild_host."
-      rebuilt="$(tar -C "$work" -cf - "${inputs[@]}" | ssh "$rebuild_host" "$container" | tail -1)" \
-        || fail "the $platform rebuild or its packages on $rebuild_host"
-    else
-      rebuilt="$(tar -C "$work" -cf - "${inputs[@]}" | sh -c "$container" | tail -1)" \
-        || fail "the $platform rebuild or its packages"
-    fi
-    [ "${rebuilt%% *}" = "$(unsigned_hash "$linux")" ] || fail "the $platform rebuild differs from the release"
+    inputs=(src "rebuild-$platform.sh" "draft/$linux.tar.gz" "draft/keyseal_${version}_$deb_arch.deb" "draft/$linux.AppImage")
+    container="docker run -i --rm --platform linux/$deb_arch $image sh -c 'mkdir /w && tar -xf - -C /w && sh /w/rebuild-$platform.sh'"
+    log="$work/rebuild-$platform.log"
+    case "$rebuild:$platform" in
+      default:linux-x64 | rebuild-boat:*)
+        # No stored secrets, no snapshot of what it held, and gone after
+        # the TTL if this script can't delete it.
+        created="$(run_boat new --no-env --no-snapshots --type large --ttl 7200 \
+          --name "keyseal-rebuild-$version-$platform" --json)" || true
+        sandbox="$(jq -r 'select(.event == "created") | .id' <<<"$created")"
+        [ -z "$sandbox" ] || sandboxes+=("$sandbox")
+        jq -e 'select(.event == "ready")' <<<"$created" >/dev/null || fail "starting a Boat sandbox for $platform"
+        # Boat machines are x86_64. arm64 runs under QEMU user emulation,
+        # registered from Ubuntu's own packages, not a third-party image.
+        # apt reads from /dev/null, not the inputs on stdin.
+        if [ "$deb_arch" = arm64 ]; then
+          container="sudo -n DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends qemu-user-static binfmt-support </dev/null >/dev/null && $container"
+          container="sudo -n apt-get update -qq </dev/null >/dev/null && $container"
+        fi
+        where="in Boat sandbox $sandbox"
+        remote=(run_boat ssh "$sandbox")
+        ;;
+      rebuild-host:*)
+        where="on $rebuild_host"
+        remote=(ssh "$rebuild_host")
+        ;;
+      default:linux-arm64 | rebuild-local:*)
+        # Native on Apple silicon.
+        where="in local Docker"
+        remote=(sh -c)
+        ;;
+    esac
+    echo "Rebuilding $platform $where; its output goes to $log."
+    # Both at once; each reports when it ends.
+    (
+      if tar -C "$work" -cf - "${inputs[@]}" | "${remote[@]}" "$container" 2>"$log" | tail -1 >"$work/rebuilt-$platform"; then
+        echo "The $platform rebuild finished after $(((SECONDS - started) / 60)) minutes."
+      else
+        echo "The $platform rebuild failed after $(((SECONDS - started) / 60)) minutes. The end of $log:" >&2
+        tail -20 "$log" >&2
+        exit 1
+      fi
+    ) &
+    platforms+=("$platform")
+    pids+=("$!")
+  done
+  failed=""
+  for i in "${!pids[@]}"; do
+    wait "${pids[$i]}" || failed="$failed ${platforms[$i]}"
+  done
+  [ -z "$failed" ] || fail "the rebuild or its packages:$failed"
+  for platform in "${platforms[@]}"; do
+    rebuilt="$(cat "$work/rebuilt-$platform")"
+    [ "${rebuilt%% *}" = "$(unsigned_hash "keyseal-helper-$version-$platform")" ] \
+      || fail "the $platform rebuild differs from the release"
     echo "The $platform rebuild equals the release binary, and the tarball, deb and AppImage hold it."
   done
+fi
+
+if $verify_only; then
+  # A published release carries the signatures its publish run accepted.
+  for file in keyseal-update.json SHA256SUMS; do
+    [ ! -f "$draft/$file.sig" ] || "$src/helper/packaging/verify-signatures.sh" "$draft/$file" "$draft/$file.sig"
+  done
+  step "Every check passed; nothing signed (--verify-only)"
+  exit 0
 fi
 
 step "Signing with \"$key\""

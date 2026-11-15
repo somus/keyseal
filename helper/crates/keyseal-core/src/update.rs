@@ -17,6 +17,8 @@ use base64::engine::general_purpose::STANDARD;
 use ed25519_dalek::{Signature, VerifyingKey};
 use semver::Version;
 use serde::Deserialize;
+use time::OffsetDateTime;
+use time::format_description::well_known::Rfc3339;
 use ureq::Agent;
 
 use crate::token::sha256_hex;
@@ -86,9 +88,38 @@ static NOTICE: Mutex<Option<String>> = Mutex::new(None);
 pub struct UpdateManifest {
     pub format: u64,
     pub version: String,
+    pub expires: Expiry,
     /// Keyed by platform id: `macos-universal`, `windows-x64`, `linux-x64`,
     /// `linux-arm64`.
     pub platforms: BTreeMap<String, PlatformFile>,
+}
+
+/// The manifest's `expires`: an RFC 3339 timestamp, as written and as
+/// the time it names.
+#[derive(Debug, Deserialize)]
+#[serde(try_from = "String")]
+pub struct Expiry {
+    pub text: String,
+    at: OffsetDateTime,
+}
+
+impl TryFrom<String> for Expiry {
+    type Error = time::error::Parse;
+
+    fn try_from(text: String) -> Result<Self, Self::Error> {
+        let at = OffsetDateTime::parse(&text, &Rfc3339)?;
+        Ok(Self { text, at })
+    }
+}
+
+impl Expiry {
+    /// Whether `now` is at or after the expiry.
+    fn passed(&self, now: SystemTime) -> bool {
+        let now = now
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |age| age.as_nanos());
+        i128::try_from(now).unwrap_or(i128::MAX) >= self.at.unix_timestamp_nanos()
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -174,14 +205,10 @@ pub fn verify_threshold(
 /// What a verified manifest offers this platform: its version and file, or
 /// `None` when it isn't newer than `current` or has no build for `platform`.
 fn newer(
-    manifest: &[u8],
-    signatures: &[u8],
-    keys: &[[u8; 32]],
-    threshold: usize,
+    mut manifest: UpdateManifest,
     platform: &str,
     current: &str,
 ) -> Result<Option<(String, PlatformFile)>, String> {
-    let mut manifest = verify_threshold(manifest, signatures, keys, threshold)?;
     let offered = Version::parse(&manifest.version)
         .map_err(|e| format!("The update manifest's version is invalid: {e}"))?;
     let current = Version::parse(current).map_err(|e| e.to_string())?;
@@ -252,9 +279,11 @@ fn fetch(agent: &Agent, url: &str, limit: u64, deadline: Instant) -> Result<Vec<
 /// Reads the manifest at `base`, and if it offers a newer build for
 /// `platform`, downloads it, checks it and stages it in `dir`; with
 /// `download` false it stages only the manifest, for the next launch to
-/// say there is an update. The version staged, if any. The check is
-/// recorded once the manifest verifies, so one that fails runs again
-/// after the next job.
+/// say there is an update. The version staged, if any. A manifest whose
+/// expiry has passed at `now` is refused, whatever it offers. The check is
+/// recorded once the manifest verifies, expired or not, so one that fails
+/// to fetch or verify runs again after the next job.
+#[expect(clippy::too_many_arguments, reason = "one check's inputs")]
 fn check_and_stage(
     base: &str,
     dir: &Path,
@@ -263,6 +292,7 @@ fn check_and_stage(
     platform: &str,
     current: &str,
     download: bool,
+    now: SystemTime,
 ) -> Result<Option<String>, String> {
     // Releases are served over https; a redirect to plain http is refused,
     // although the signed manifest and hashes would catch tampering anyway.
@@ -282,9 +312,20 @@ fn check_and_stage(
         MAX_MANIFEST,
         deadline,
     )?;
-    let offer = newer(&manifest, &signatures, keys, threshold, platform, current)?;
+    let verified = verify_threshold(&manifest, &signatures, keys, threshold)?;
     let config = dir.parent().ok_or("The update folder has no parent.")?;
-    record_check(&config.join(STAMP), SystemTime::now());
+    if verified.expires.passed(now) {
+        // An old manifest replayed to hide a newer release, or no release
+        // for too long. Asked again tomorrow, not after every job.
+        record_check(&config.join(STAMP), now);
+        return Err(format!(
+            "The update manifest expired on {}. Look for the latest release at {}.",
+            verified.expires.text,
+            RELEASES.trim_end_matches("/download")
+        ));
+    }
+    let offer = newer(verified, platform, current)?;
+    record_check(&config.join(STAMP), now);
     let Some((version, file)) = offer else {
         return Ok(None);
     };
@@ -353,9 +394,11 @@ fn apply_staged(
                 .map_err(|e| format!("The staged update is incomplete: {e}"))
         };
         let (manifest, signatures) = (read(MANIFEST)?, read(SIGNATURES)?);
-        let Some((version, file)) =
-            newer(&manifest, &signatures, keys, threshold, platform, current)?
-        else {
+        // The expiry isn't checked: it was fresh when this release was
+        // staged, and a launch after it passed still installs a release
+        // that was current then.
+        let verified = verify_threshold(&manifest, &signatures, keys, threshold)?;
+        let Some((version, file)) = newer(verified, platform, current)? else {
             return Ok(None);
         };
         let config = dir.parent().ok_or("The staged update has no folder.")?;
@@ -667,11 +710,13 @@ fn check(forced: bool) -> Result<Option<String>, String> {
         platform,
         crate::VERSION,
         replaces_itself(),
+        now,
     )
 }
 
 /// `keyseal update verify <manifest> <signatures>`: what the release
 /// workflow and maintainers run before publishing, with the pinned keys.
+/// An expired manifest fails: published, it would stop updates.
 pub fn verify_files(manifest: &str, signatures: &str) -> Result<(), String> {
     let read = |path: &str| std::fs::read(path).map_err(|e| format!("{path}: {e}"));
     let verified = verify_threshold(
@@ -680,10 +725,17 @@ pub fn verify_files(manifest: &str, signatures: &str) -> Result<(), String> {
         RELEASE_KEYS,
         THRESHOLD,
     )?;
+    if verified.expires.passed(SystemTime::now()) {
+        return Err(format!(
+            "The update manifest expired on {}.",
+            verified.expires.text
+        ));
+    }
     println!(
-        "KeySeal {} verified with {THRESHOLD} of {} keys.",
+        "KeySeal {} verified with {THRESHOLD} of {} keys, expires {}.",
         verified.version,
-        RELEASE_KEYS.len()
+        RELEASE_KEYS.len(),
+        verified.expires.text
     );
     for (platform, file) in &verified.platforms {
         println!("{platform}  {}  {}", file.sha256, file.file);
@@ -706,7 +758,7 @@ mod tests {
     #[cfg(unix)]
     static NOTICES: Mutex<()> = Mutex::new(());
 
-    const MANIFEST_BYTES: &[u8] = br#"{"format":1,"version":"1.4.0","platforms":{"macos-universal":{"file":"keyseal-helper-1.4.0-macos-universal.zip","sha256":"00"}}}"#;
+    const MANIFEST_BYTES: &[u8] = br#"{"format":1,"version":"1.4.0","expires":"2100-01-01T00:00:00Z","platforms":{"macos-universal":{"file":"keyseal-helper-1.4.0-macos-universal.zip","sha256":"00"}}}"#;
 
     fn signing_key(seed: u8) -> SigningKey {
         SigningKey::from_bytes(&[seed; 32])
@@ -729,17 +781,26 @@ mod tests {
         serde_json::to_vec(&json!({ "signatures": entries })).unwrap()
     }
 
+    /// An expiry no test reaches.
+    const FRESH: &str = "2100-01-01T00:00:00Z";
+    /// An expiry, and the time it names.
+    const EXPIRES: &str = "2030-03-17T17:46:40Z";
+    const EXPIRY: Duration = Duration::from_secs(1_900_000_000);
+
     /// A manifest offering `asset` as `file` for platform `test-x64`,
-    /// listing `listed` as its hash, and its signatures by `keys`.
+    /// listing `listed` as its hash and expiring at `expires`, and its
+    /// signatures by `keys`.
     fn release(
         version: &str,
         file: &str,
         listed: &str,
+        expires: &str,
         keys: &[&SigningKey],
     ) -> (Vec<u8>, Vec<u8>) {
         let manifest = serde_json::to_vec(&json!({
             "format": 1,
             "version": version,
+            "expires": expires,
             "platforms": { "test-x64": { "file": file, "sha256": listed } },
         }))
         .unwrap();
@@ -837,7 +898,8 @@ mod tests {
         let signed = signatures(&[(&a, MANIFEST_BYTES)]);
         assert!(verify_threshold(MANIFEST_BYTES, &signed, &[public(&a)], 0).is_err());
 
-        let format_2 = br#"{"format":2,"version":"2.0.0","platforms":{}}"#;
+        let format_2 =
+            br#"{"format":2,"version":"2.0.0","expires":"2100-01-01T00:00:00Z","platforms":{}}"#;
         let signed = signatures(&[(&a, format_2)]);
         assert!(
             verify_threshold(format_2, &signed, &[public(&a)], 1)
@@ -851,8 +913,12 @@ mod tests {
         let a = signing_key(1);
         let keys = [public(&a)];
         let offer = |version: &str, file: &str, platform: &str| {
-            let (manifest, signed) = release(version, file, "00", &[&a]);
-            newer(&manifest, &signed, &keys, 1, platform, "1.2.3")
+            let (manifest, signed) = release(version, file, "00", FRESH, &[&a]);
+            newer(
+                verify_threshold(&manifest, &signed, &keys, 1)?,
+                platform,
+                "1.2.3",
+            )
         };
         let (version, file) = offer("1.10.0", "keyseal-1.10.0", "test-x64")
             .unwrap()
@@ -905,7 +971,7 @@ mod tests {
         let build = b"new build".to_vec();
         let hash = sha256_hex(&build);
         let host = |version: &str, asset: &[u8], key: &SigningKey| {
-            let (manifest, signed) = release(version, "keyseal-new", &hash, &[key]);
+            let (manifest, signed) = release(version, "keyseal-new", &hash, FRESH, &[key]);
             serve(HashMap::from([
                 (MANIFEST.to_owned(), manifest),
                 (SIGNATURES.to_owned(), signed),
@@ -917,47 +983,189 @@ mod tests {
 
         // A check that fails is tried again after the next job.
         let offline = serve(HashMap::new());
-        assert!(check_and_stage(&offline, &dir, &keys, 1, "test-x64", "1.0.0", true).is_err());
+        assert!(
+            check_and_stage(
+                &offline,
+                &dir,
+                &keys,
+                1,
+                "test-x64",
+                "1.0.0",
+                true,
+                SystemTime::now()
+            )
+            .is_err()
+        );
         assert!(!stamp.exists());
 
         let base = host("1.1.0", &build, &a);
-        let staged = check_and_stage(&base, &dir, &keys, 1, "test-x64", "1.0.0", true).unwrap();
+        let staged = check_and_stage(
+            &base,
+            &dir,
+            &keys,
+            1,
+            "test-x64",
+            "1.0.0",
+            true,
+            SystemTime::now(),
+        )
+        .unwrap();
         assert_eq!(staged.as_deref(), Some("1.1.0"));
         assert_eq!(std::fs::read(dir.join("keyseal-new")).unwrap(), build);
         assert!(dir.join(MANIFEST).is_file() && dir.join(SIGNATURES).is_file());
         assert!(!check_due(&stamp, SystemTime::now()));
 
         assert!(
-            check_and_stage(&base, &dir, &keys, 1, "test-x64", "1.1.0", true)
-                .unwrap()
-                .is_none()
+            check_and_stage(
+                &base,
+                &dir,
+                &keys,
+                1,
+                "test-x64",
+                "1.1.0",
+                true,
+                SystemTime::now()
+            )
+            .unwrap()
+            .is_none()
         );
         let tampered = host("1.1.0", b"other build", &a);
-        let error =
-            check_and_stage(&tampered, &dir, &keys, 1, "test-x64", "1.0.0", true).unwrap_err();
+        let error = check_and_stage(
+            &tampered,
+            &dir,
+            &keys,
+            1,
+            "test-x64",
+            "1.0.0",
+            true,
+            SystemTime::now(),
+        )
+        .unwrap_err();
         assert!(error.contains("doesn't match"), "{error}");
         let forged = host("1.1.0", &build, &stranger);
-        assert!(check_and_stage(&forged, &dir, &keys, 1, "test-x64", "1.0.0", true).is_err());
+        assert!(
+            check_and_stage(
+                &forged,
+                &dir,
+                &keys,
+                1,
+                "test-x64",
+                "1.0.0",
+                true,
+                SystemTime::now()
+            )
+            .is_err()
+        );
 
         // A helper that doesn't replace itself (a deb or tarball install)
         // stages only the manifest.
         std::fs::remove_dir_all(&dir).unwrap();
-        let staged = check_and_stage(&base, &dir, &keys, 1, "test-x64", "1.0.0", false).unwrap();
+        let staged = check_and_stage(
+            &base,
+            &dir,
+            &keys,
+            1,
+            "test-x64",
+            "1.0.0",
+            false,
+            SystemTime::now(),
+        )
+        .unwrap();
         assert_eq!(staged.as_deref(), Some("1.1.0"));
         assert!(dir.join(MANIFEST).is_file() && !dir.join("keyseal-new").exists());
 
         // A build left for the user to install isn't downloaded again.
         std::fs::remove_dir_all(&dir).unwrap();
         std::fs::write(kept(dir.parent().unwrap(), "1.1.0"), &build).unwrap();
-        let error = check_and_stage(&base, &dir, &keys, 1, "test-x64", "1.0.0", true).unwrap_err();
+        let error = check_and_stage(
+            &base,
+            &dir,
+            &keys,
+            1,
+            "test-x64",
+            "1.0.0",
+            true,
+            SystemTime::now(),
+        )
+        .unwrap_err();
         assert!(error.contains("already downloaded"), "{error}");
         assert!(!dir.exists());
         let _ = std::fs::remove_dir_all(dir.parent().unwrap());
     }
 
+    #[test]
+    fn refuses_a_manifest_without_a_valid_expiry() {
+        let a = signing_key(1);
+        let refused = |manifest: &[u8]| {
+            let signed = signatures(&[(&a, manifest)]);
+            verify_threshold(manifest, &signed, &[public(&a)], 1).unwrap_err()
+        };
+        let missing = br#"{"format":1,"version":"1.4.0","platforms":{}}"#;
+        let error = refused(missing);
+        assert!(
+            error.contains("malformed") && error.contains("expires"),
+            "{error}"
+        );
+        for expires in ["2030-13-01T00:00:00Z", "2030-01-01", "tomorrow", ""] {
+            let manifest = serde_json::to_vec(&json!({
+                "format": 1,
+                "version": "1.4.0",
+                "expires": expires,
+                "platforms": {},
+            }))
+            .unwrap();
+            assert!(refused(&manifest).contains("malformed"), "{expires}");
+        }
+        let manifest = br#"{"format":1,"version":"1.4.0","expires":1900000000,"platforms":{}}"#;
+        assert!(refused(manifest).contains("malformed"));
+    }
+
+    /// A manifest past its expiry stages nothing, even for a helper on the
+    /// version it offers, and the check isn't asked again until tomorrow.
+    #[test]
+    fn refuses_an_expired_manifest_when_fetching() {
+        let a = signing_key(1);
+        let keys = [public(&a)];
+        let build = b"new build".to_vec();
+        let (manifest, signed) =
+            release("1.1.0", "keyseal-new", &sha256_hex(&build), EXPIRES, &[&a]);
+        let base = serve(HashMap::from([
+            (MANIFEST.to_owned(), manifest),
+            (SIGNATURES.to_owned(), signed),
+            ("keyseal-new".to_owned(), build.clone()),
+        ]));
+        let dir = temp_dir("expired").join(STAGED);
+        let stamp = dir.parent().unwrap().join(STAMP);
+        let expiry = UNIX_EPOCH + EXPIRY;
+        let stage = |current: &str, now: SystemTime| {
+            check_and_stage(&base, &dir, &keys, 1, "test-x64", current, true, now)
+        };
+
+        for current in ["1.0.0", "1.1.0"] {
+            let later = expiry + Duration::from_secs(60);
+            for now in [expiry, later] {
+                let _ = std::fs::remove_file(&stamp);
+                let error = stage(current, now).unwrap_err();
+                assert_eq!(
+                    error,
+                    format!(
+                        "The update manifest expired on {EXPIRES}. Look for the latest release at https://github.com/somus/keyseal/releases/latest."
+                    )
+                );
+                assert!(!dir.exists());
+                assert!(!check_due(&stamp, now));
+            }
+        }
+
+        let before = expiry - Duration::from_secs(1);
+        assert_eq!(stage("1.0.0", before).unwrap().as_deref(), Some("1.1.0"));
+        assert_eq!(std::fs::read(dir.join("keyseal-new")).unwrap(), build);
+        let _ = std::fs::remove_dir_all(dir.parent().unwrap());
+    }
+
     /// Stages `asset` as release 1.1.0 in `dir`, as `check_and_stage` would.
     fn stage(dir: &Path, asset: &[u8], listed: &str, key: &SigningKey) {
-        let (manifest, signed) = release("1.1.0", "keyseal-new", listed, &[key]);
+        let (manifest, signed) = release("1.1.0", "keyseal-new", listed, FRESH, &[key]);
         std::fs::create_dir_all(dir).unwrap();
         std::fs::write(dir.join(MANIFEST), manifest).unwrap();
         std::fs::write(dir.join(SIGNATURES), signed).unwrap();
@@ -1038,6 +1246,32 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// A release staged while its manifest was fresh installs on a launch
+    /// after the expiry.
+    #[test]
+    fn applies_a_staged_build_whose_manifest_has_expired() {
+        let a = signing_key(1);
+        let root = temp_dir("apply-expired");
+        let dir = root.join(STAGED);
+        let (exe, asset) = installed(&root);
+        let (manifest, signed) = release(
+            "1.1.0",
+            "keyseal-new",
+            &sha256_hex(&asset),
+            "2020-01-01T00:00:00Z",
+            &[&a],
+        );
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(MANIFEST), manifest).unwrap();
+        std::fs::write(dir.join(SIGNATURES), signed).unwrap();
+        std::fs::write(dir.join("keyseal-new"), &asset).unwrap();
+        let applied =
+            apply_staged(&dir, &exe, true, &[public(&a)], 1, "test-x64", "1.0.0").unwrap();
+        assert_eq!(applied.as_deref(), Some("1.1.0"));
+        assert_eq!(std::fs::read(&exe).unwrap(), b"new build");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// The all-zero key decodes to a point of order 4, for which a
     /// signature with the identity as R and s = 0 passes a cofactorless
     /// check for about one message in four. Strict verification refuses
@@ -1055,6 +1289,7 @@ mod tests {
             let manifest = serde_json::to_vec(&json!({
                 "format": 1,
                 "version": format!("9.{minor}.0"),
+                "expires": FRESH,
                 "platforms": {},
             }))
             .unwrap();

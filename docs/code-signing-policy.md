@@ -77,7 +77,9 @@ change to this file and, for release keys, to `RELEASE_KEYS` in
 ## Threshold
 
 The helper accepts a manifest only when signatures from `THRESHOLD`
-distinct pinned keys verify (spec section 13). The release workflow holds
+distinct pinned keys verify (spec section 13), and refuses one past the
+signed `expires` date, 180 days after the tagged commit
+(`docs/releasing.md`). The release workflow holds
 `SHA256SUMS` to the same rule (`helper/packaging/verify-signatures.sh`).
 
 - Today there is one maintainer, so the threshold is 1 of N, N being that

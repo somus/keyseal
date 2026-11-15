@@ -140,6 +140,17 @@ revocation are described in `docs/code-signing-policy.md`.
 7. Installed helpers find the release within a day, or at once after a
    server refuses them with `426`.
 
+### Manifest expiry
+
+`keyseal-update.json` carries an `expires` date 180 days after the tagged
+commit (`make-manifest.sh`), inside what the release keys sign, so an old
+manifest can't be replayed for long to hide a newer release. Each helper
+release renews it; nothing else does. Once it passes, helpers refuse the
+manifest, write why to `keyseal.log` (and `keyseal update` prints it), keep
+working, and stop updating. A patch release restores updates. Publish
+within the 180 days: `keyseal update verify` fails on an expired manifest,
+so the publish run does too.
+
 ### Reproducing a release
 
 Check out the tag and run the same script CI ran. The pinned Rust toolchain

@@ -39,6 +39,8 @@ semver = "1.0.28"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 sha2 = "0.11.1"
+# The update manifest's RFC 3339 expiry.
+time = { version = "0.3.55", default-features = false, features = ["parsing"] }
 # The resolver hook used for the origin checks is in ureq::unversioned, outside semver.
 ureq = { version = "=3.5.2", features = ["json", "platform-verifier"] }
 url = "2.5.8"

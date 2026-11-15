@@ -53,15 +53,19 @@ the unsigned binaries you build in step 2.
    with `draft/SHA256SUMS-unsigned` (see "Reproducing a release" in
    `docs/releasing.md`). Don't sign if any differ.
 3. Check that `keyseal-update.json` and `SHA256SUMS` describe the draft's
-   assets, and nothing else:
+   assets, and nothing else. Run `make-manifest.sh` from a checkout of the
+   tag: the manifest's `expires` comes from the commit it runs in.
 
    ```sh
    helper/packaging/make-manifest.sh <v> draft mine
    cmp mine/keyseal-update.json draft/keyseal-update.json
    cmp mine/SHA256SUMS draft/SHA256SUMS
    ls draft                     # the files SHA256SUMS lists, and SHA256SUMS
-   jq . draft/keyseal-update.json # version, file names, hashes
+   jq . draft/keyseal-update.json # version, expires, file names, hashes
    ```
+
+   `expires` must be about 180 days from now. Helpers refuse the manifest
+   after it, so don't sign one that is already close.
 
 4. Check that every asset holds the binaries you rebuilt. Don't sign if any
    check fails.

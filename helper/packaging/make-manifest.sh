@@ -6,14 +6,22 @@
 #
 # <assets dir> must hold every asset in `assets` below except
 # keyseal-update.json; both files go to <out dir>, by default <assets dir>.
-# The output is fixed bytes for the same assets (the manifest is one line
-# of JSON, members in a fixed order), so anyone with the draft's assets
-# produces the same files and can check what they sign.
+# The manifest expires `valid_days` after the committer time of the commit
+# this script is checked out at, the tagged commit in a release. The output
+# is fixed bytes for the same assets and the same commit (the manifest is
+# one line of JSON, members in a fixed order), so anyone with the draft's
+# assets and a checkout of the tag produces the same files and can check
+# what they sign.
 set -euo pipefail
 
 version="$1"
 dir="$2"
 out="${3:-$dir}"
+# Helpers refuse the manifest after this, so a release more than this old
+# stops updates until the next one (docs/releasing.md).
+valid_days=180
+committed="$(git -C "$(dirname "$0")" log -1 --format=%ct)"
+[[ "$committed" =~ ^[0-9]+$ ]] || { echo "No commit time from git." >&2; exit 1; }
 hash() { sha256sum "$1" | cut -d' ' -f1; }
 mac="keyseal-helper-$version-macos-universal.zip"
 win="keyseal-helper-$version-windows-x64.exe"
@@ -60,11 +68,12 @@ linux_sha="$(hash "$dir/$linux")"
 linux_arm_sha="$(hash "$dir/$linux_arm")"
 mkdir -p "$out"
 jq -cn --arg version "$version" \
+  --argjson expires "$((committed + valid_days * 24 * 60 * 60))" \
   --arg mac "$mac" --arg mac_sha "$mac_sha" \
   --arg win "$win" --arg win_sha "$win_sha" \
   --arg linux "$linux" --arg linux_sha "$linux_sha" \
   --arg linux_arm "$linux_arm" --arg linux_arm_sha "$linux_arm_sha" \
-  '{format: 1, version: $version, platforms: {
+  '{format: 1, version: $version, expires: ($expires | todate), platforms: {
      "macos-universal": {file: $mac, sha256: $mac_sha},
      "windows-x64": {file: $win, sha256: $win_sha},
      "linux-x64": {file: $linux, sha256: $linux_sha},

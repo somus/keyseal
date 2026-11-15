@@ -11,7 +11,7 @@ use gpui_kit::{
 };
 use keyseal_core::modules;
 
-use super::widgets::{alert, button_bar, icon_tile, window_frame};
+use super::widgets::{ScrollArea, alert, button_bar, icon_tile, scrolling, window_frame};
 use super::{CONTEXT, Cancel, Submit};
 use crate::{native, strings};
 
@@ -22,6 +22,8 @@ pub(super) struct MessageWindow {
     no_driver: bool,
     pub(super) reply: Option<mpsc::Sender<()>>,
     focus: FocusHandle,
+    /// Shows a scrollbar while the message is longer than the window.
+    scroll: ScrollArea,
 }
 
 impl MessageWindow {
@@ -40,6 +42,7 @@ impl MessageWindow {
             message: message.into(),
             reply,
             focus,
+            scroll: ScrollArea::default(),
         }
     }
 
@@ -60,36 +63,41 @@ impl Render for MessageWindow {
             .on_action(cx.listener(|this, _: &Submit, window, _| this.close(window)))
             .on_action(cx.listener(|this, _: &Cancel, window, _| this.close(window)))
             .child(
-                v_flex()
-                    .id("error")
-                    .role(Role::Alert)
-                    .aria_label(self.message.clone())
-                    .flex_1()
-                    .overflow_y_scroll()
-                    .px_6()
-                    .pt_5()
-                    .pb_2()
-                    .child(alert(
-                        icon_tile(tile, tint, cx),
-                        div()
-                            .text_lg()
-                            .font_weight(native::look().heading_weight)
-                            .child(self.heading),
-                        v_flex().gap_2().text_sm().child(self.message.clone()).when(
-                            self.no_driver,
-                            |this| {
-                                this.child(
-                                    div()
-                                        .id("doctor-hint")
-                                        .aria_label(strings::DOCTOR_HINT)
-                                        .text_color(cx.theme().muted_foreground)
-                                        .child(strings::DOCTOR_HINT)
-                                        .test_support(),
-                                )
-                            },
-                        ),
-                    ))
-                    .test_support(),
+                scrolling(
+                    v_flex()
+                        .id("error")
+                        .role(Role::Alert)
+                        .aria_label(self.message.clone())
+                        .flex_1()
+                        .overflow_y_scroll()
+                        .track_scroll(&self.scroll)
+                        .px_6()
+                        .pt_5()
+                        .pb_2()
+                        .child(alert(
+                            icon_tile(tile, tint, cx),
+                            div()
+                                .text_lg()
+                                .font_weight(native::look().heading_weight)
+                                .child(self.heading),
+                            v_flex().gap_2().text_sm().child(self.message.clone()).when(
+                                self.no_driver,
+                                |this| {
+                                    this.child(
+                                        div()
+                                            .id("doctor-hint")
+                                            .aria_label(strings::DOCTOR_HINT)
+                                            .text_color(cx.theme().muted_foreground)
+                                            .child(strings::DOCTOR_HINT)
+                                            .test_support(),
+                                    )
+                                },
+                            ),
+                        ))
+                        .test_support(),
+                    &self.scroll,
+                )
+                .flex_1(),
             )
             .child(button_bar(
                 self.no_driver.then(|| {
@@ -111,12 +119,39 @@ mod tests {
     use std::sync::mpsc;
 
     use gpui_kit::test::TestWindowExt;
-    use gpui_kit::{AppContext, TestAppContext};
+    use gpui_kit::{AppContext, TestAppContext, VisualTestContext};
 
     use crate::views::testing::{certificate, job, log, open_windows, probe, setup, temp_dir};
 
     use crate::views::open_settings;
     use crate::{Request, Stage, strings};
+
+    /// The scrollbar covers the message and not the buttons below it, so it
+    /// is measured against the message alone.
+    #[gpui_kit::test]
+    fn the_scrollbar_covers_the_message_only(cx: &mut TestAppContext) {
+        let mut windows = setup(cx);
+        cx.update(|cx| {
+            windows.handle(
+                Request::Message {
+                    heading: strings::ERROR_HEADING,
+                    message: "The token was removed.".into(),
+                    reply: mpsc::channel().0,
+                },
+                cx,
+            )
+        });
+        let handle = open_windows(cx)[0];
+        let message = cx
+            .update_window(handle, |_, window, cx| {
+                window.render_frame(cx);
+                window.find("error").bounds()
+            })
+            .unwrap();
+        let scrollbar =
+            VisualTestContext::from_window(handle, cx).debug_bounds("scrollbar-overlay");
+        assert_eq!(scrollbar, Some(message));
+    }
 
     #[gpui_kit::test]
     fn error_window_replaces_the_job_window(cx: &mut TestAppContext) {

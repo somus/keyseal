@@ -1,16 +1,19 @@
 //! The pieces the windows share: the frame, icons, groups and rows, the
 //! button bar, and the delay before a confirming button responds.
 
+use std::ops::Deref;
 use std::sync::Arc;
 use std::time::Duration;
 
 use gpui_kit::component::button::Button;
+use gpui_kit::component::scroll::{ScrollableElement, ScrollbarHandle};
 use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::{ActiveTheme, Icon, Sizable, h_flex, v_flex};
 use gpui_kit::{
-    AnyElement, App, Context, Div, FocusHandle, Hsla, InteractiveElement, IntoElement,
-    ParentElement, RenderImage, Role, SharedString, StatefulInteractiveElement, Styled,
-    Subscription, Task, TestSupportExt, Window, div, img, prelude::FluentBuilder, px, rems,
+    AnyElement, App, Bounds, Context, Div, FocusHandle, Hsla, InteractiveElement, IntoElement,
+    ParentElement, Pixels, Point, RenderImage, Role, ScrollHandle, SharedString, Size,
+    StatefulInteractiveElement, Styled, Subscription, Task, TestSupportExt, Window, div, img,
+    prelude::FluentBuilder, px, rems,
 };
 
 use crate::{native, strings};
@@ -369,4 +372,55 @@ impl InputDelay {
             });
         })
     }
+}
+
+/// The scroll handle of an area that shows a scrollbar while it holds more
+/// than fits. An area whose content fits can still come out a pixel short of
+/// it once the layout is rounded to whole pixels; that is no reason for a
+/// scrollbar.
+#[derive(Clone, Default)]
+pub(super) struct ScrollArea(ScrollHandle);
+
+impl Deref for ScrollArea {
+    type Target = ScrollHandle;
+
+    fn deref(&self) -> &ScrollHandle {
+        &self.0
+    }
+}
+
+impl ScrollbarHandle for ScrollArea {
+    fn viewport_bounds(&self) -> Bounds<Pixels> {
+        self.0.bounds()
+    }
+
+    fn offset(&self) -> Point<Pixels> {
+        self.0.offset()
+    }
+
+    fn set_offset(&self, offset: Point<Pixels>) {
+        self.0.set_offset(offset);
+    }
+
+    fn content_size(&self) -> Size<Pixels> {
+        let mut size = self.0.bounds().size;
+        if self.0.max_offset().y > px(2.) {
+            size.height += self.0.max_offset().y;
+        }
+        size
+    }
+}
+
+/// `area`, which scrolls with `scroll`, under its scrollbar. The scrollbar is
+/// drawn in a wrapper the size of the area. Inside the area it would scroll
+/// away with the content and count toward its height, and around more than
+/// the area, such as the buttons below it, it would be measured against that
+/// and stay hidden while less than their height is out of view.
+#[track_caller]
+pub(super) fn scrolling(area: impl IntoElement, scroll: &ScrollArea) -> Div {
+    v_flex()
+        .relative()
+        .min_h(px(0.))
+        .child(area)
+        .vertical_scrollbar(scroll)
 }

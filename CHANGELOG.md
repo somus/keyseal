@@ -19,6 +19,13 @@ lines under the new version with the release date.
 
 ### [Unreleased][helper-unreleased]
 
+#### Changed
+
+- A list longer than its window, such as the certificates on a token that
+  holds many, shows a scrollbar, so it is clear there are more rows below.
+  The same goes for a batch's documents, a long message and Settings. When
+  everything fits, there is no scrollbar.
+
 ### [0.5.0][helper-0.5.0] - 2026-11-14
 
 #### Added

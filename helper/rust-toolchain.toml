@@ -1,6 +1,6 @@
 # Release builds must be reproducible, so every build uses this exact
-# toolchain. GPUI needs 1.93 or later; checks.yml pins the same version.
-# Bump both deliberately, in their own commit.
+# toolchain. GPUI needs 1.93 or later. CI and the release builds install
+# it from this file. Bump it deliberately, in its own commit.
 [toolchain]
 channel = "1.100.0"
 components = ["clippy", "rustfmt"]

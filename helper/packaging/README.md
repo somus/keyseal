@@ -7,6 +7,7 @@ The scripts that build, package, check and sign a helper release. The release wo
 Build:
 
 - `build-release.sh`: the unsigned release binary for one platform, reproducibly, with `BUILDINFO`; for macOS also the x86_64 token worker.
+- `linux/build-in-container.sh`: the Linux release build inside the pinned Ubuntu 22.04 container, its packages and toolchain first, for the release run and the maintainers' rebuild.
 - `third-party-notices.sh`: `THIRD-PARTY-NOTICES.txt` with cargo-about, from `about.toml` and `third-party-notices.hbs`.
 
 Package:
@@ -28,7 +29,8 @@ Sign:
 - `new-key.sh`: makes a release or catalogue key and prints the public half to pin.
 - `sign-file.sh`: signs a file with such a key.
 - `macos/notarize.sh`: notarizes and staples the app or disk image.
-- `release.sh`: checks a draft release, signs it and publishes it, on a maintainer's Mac.
+- `sign-release.sh`: checks a draft release, signs it and publishes it, on a maintainer's Mac.
+- `release-common.sh`: what `sign-release.sh` and `scripts/release.sh` share, the preflight for the rebuild and Bitwarden and the notification, sourced by both.
 
 ## macOS: the token worker
 

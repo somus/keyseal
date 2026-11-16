@@ -87,7 +87,7 @@ jobs:
 
   # The third-party notices every package ships, made once so all of them
   # hold the same file. Maintainers make it again before signing
-  # (release.sh).
+  # (sign-release.sh).
   notices:
     needs: check
     runs-on: ubuntu-24.04
@@ -173,49 +173,34 @@ jobs:
     strategy:
       matrix:
         include:
-          # rustup-init, appimagetool and the AppImage runtime for each
-          # architecture, pinned by hash.
+          # appimagetool and the AppImage runtime for each architecture,
+          # pinned by hash.
           - platform: linux-x64
             runner: ubuntu-24.04
             arch: x86_64
-            rustup: 5be191e8c70a5007074254cb74d78dbfdd25cd5a61c27de7b8e5410122ec24f4
             appimagetool: ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0
             runtime: 2fca8b443c92510f1483a883f60061ad09b46b978b2631c807cd873a47ec260d
           - platform: linux-arm64
             runner: ubuntu-24.04-arm
             arch: aarch64
-            rustup: a9c168dbea81a84671c6b7a5c1795cb0eb699020110d107ddfca427bd797e697
             appimagetool: f0837e7448a0c1e4e650a93bb3e85802546e60654ef287576f46c71c126a9158
             runtime: 00cbdfcf917cc6c0ff6d3347d59e0ca1f7f45a6df1a428a0d6d8a78664d87444
     runs-on: ${{ matrix.runner }}
     # By digest, so maintainers reproduce with the same image
-    # (docs/releasing.md).
+    # (docs/releasing.md). sign-release.sh names this index's image for each
+    # architecture by its own digest; change both together.
     container: ubuntu:22.04@sha256:0a9887931b0e38af2e3487ed39e29436b0535c4f3f52e57745baaf79d1898956
     steps:
-      # GPUI's Linux build dependencies, as in checks.yml, plus the
-      # pkg-config the runner images have and the container lacks. Versions
-      # are whatever jammy serves today; BUILDINFO records the C toolchain.
+      # git for the checkout to be a repository, whose commit the build
+      # reads; build-in-container.sh installs the rest.
       - run: |
           apt-get update
-          apt-get install -y --no-install-recommends build-essential ca-certificates curl file git \
-            pkg-config libasound2-dev libfontconfig-dev libvulkan1 libwayland-dev libx11-xcb-dev libxkbcommon-x11-dev
+          apt-get install -y --no-install-recommends ca-certificates git
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - run: |
-          # The checkout belongs to another user than the container's root.
-          git config --global --add safe.directory "$GITHUB_WORKSPACE"
-          # rustup-init pinned by version and hash; it installs the
-          # toolchain rust-toolchain.toml pins.
-          curl --proto '=https' --tlsv1.2 -fsSLo rustup-init \
-            "https://static.rust-lang.org/rustup/archive/1.29.2/${{ matrix.arch }}-unknown-linux-gnu/rustup-init"
-          echo "${{ matrix.rustup }}  rustup-init" | sha256sum -c -
-          chmod +x rustup-init
-          ./rustup-init -y --profile minimal --default-toolchain none
-          rm rustup-init
-          echo "$HOME/.cargo/bin" >>"$GITHUB_PATH"
-      - working-directory: helper
-        run: rustup toolchain install
+      # The packages, the pinned rustup-init and toolchain, then
+      # build-release.sh, as maintainers rebuild it.
       - id: build
-        run: echo "binary=$(helper/packaging/build-release.sh ${{ matrix.platform }} dist)" >>"$GITHUB_OUTPUT"
+        run: echo "binary=$(helper/packaging/linux/build-in-container.sh ${{ matrix.platform }} dist)" >>"$GITHUB_OUTPUT"
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: third-party-notices
@@ -353,15 +338,9 @@ jobs:
             cp "artifacts/unsigned-$platform/"keyseal-helper-*.AppImage "artifacts/unsigned-$platform/"keyseal-helper-*.tar.gz \
               "artifacts/unsigned-$platform/"keyseal_* dist/
           done
-          # The downloads again without the version, for links to
-          # releases/latest/download/<name> (make-manifest.sh lists them).
-          cp "dist/keyseal-helper-$version-macos-universal.dmg" dist/keyseal-macos-universal.dmg
-          cp "dist/keyseal-helper-$version-windows-x64.zip" dist/keyseal-windows-x64.zip
-          cp "dist/keyseal-helper-$version-linux-x64.AppImage" dist/keyseal-linux-x64.AppImage
-          cp "dist/keyseal_${version}_amd64.deb" dist/keyseal_amd64.deb
-          cp "dist/keyseal-helper-$version-linux-arm64.AppImage" dist/keyseal-linux-arm64.AppImage
-          cp "dist/keyseal_${version}_arm64.deb" dist/keyseal_arm64.deb
-          helper/packaging/make-manifest.sh "$version" dist
+          # --copy adds the downloads again without the version, for links
+          # to releases/latest/download/<name>.
+          helper/packaging/make-manifest.sh --copy "$version" dist
           cat dist/SHA256SUMS-unsigned dist/SHA256SUMS dist/keyseal-update.json
       # Build provenance for every asset, checked with gh attestation verify
       # (docs/releasing.md). The signatures maintainers add later aren't
@@ -404,10 +383,10 @@ jobs:
           git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
           git show origin/main:helper/packaging/check-release-commit.sh >"$RUNNER_TEMP/check-release-commit.sh"
           bash "$RUNNER_TEMP/check-release-commit.sh"
-      # Building the helper needs GPUI's packages, as in checks.yml.
+      # Building the helper needs GPUI's packages.
       - run: |
           sudo apt-get update
-          sudo apt-get install -y libasound2-dev libfontconfig-dev libvulkan1 libwayland-dev libx11-xcb-dev libxkbcommon-x11-dev
+          xargs -a helper/linux-build-packages.txt sudo apt-get install -y
       - working-directory: helper
         run: rustup toolchain install
       - name: Download the draft
@@ -433,14 +412,6 @@ jobs:
           # what make-manifest.sh makes of them.
           diff <(cut -c67- dist/SHA256SUMS | sort) \
             <(find dist -type f ! -name SHA256SUMS -printf '%P\n' | sort)
-          # The downloads again without the version, for links to
-          # releases/latest/download/<name> (make-manifest.sh lists them).
-          cp "dist/keyseal-helper-$version-macos-universal.dmg" dist/keyseal-macos-universal.dmg
-          cp "dist/keyseal-helper-$version-windows-x64.zip" dist/keyseal-windows-x64.zip
-          cp "dist/keyseal-helper-$version-linux-x64.AppImage" dist/keyseal-linux-x64.AppImage
-          cp "dist/keyseal_${version}_amd64.deb" dist/keyseal_amd64.deb
-          cp "dist/keyseal-helper-$version-linux-arm64.AppImage" dist/keyseal-linux-arm64.AppImage
-          cp "dist/keyseal_${version}_arm64.deb" dist/keyseal_arm64.deb
           helper/packaging/make-manifest.sh "$version" dist expected
           cmp expected/keyseal-update.json dist/keyseal-update.json
           cmp expected/SHA256SUMS dist/SHA256SUMS

@@ -83,7 +83,7 @@ change to this file and, for release keys, to `RELEASE_KEYS` in
 A maintainer makes their two release keys once, on a machine with OpenSSL
 3 or later (`brew install openssl@3` on macOS, whose own `openssl` is
 LibreSSL), `jq`, `xxd` and the Bitwarden CLI logged in to their vault.
-`helper/packaging/release.sh` signs with the Bitwarden item named
+`helper/packaging/sign-release.sh` signs with the Bitwarden item named
 "KeySeal release key" unless `KEYSEAL_RELEASE_KEY` names another.
 
 ```sh
@@ -160,7 +160,7 @@ downloaded file to the run and commit that built it; the command is in
 ## Before signing: reproducibility
 
 A maintainer signs a manifest and `SHA256SUMS` only after
-`helper/packaging/release.sh` passes on the draft. It requires the tagged
+`helper/packaging/sign-release.sh` passes on the draft. It requires the tagged
 commit to be on `main`, to pin `main`'s keys and to be the commit the
 release run built, and remakes `keyseal-update.json` and `SHA256SUMS` from
 the assets. Per platform it checks:

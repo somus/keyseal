@@ -20,7 +20,7 @@ Each component's README covers its internals: [helper](../helper/README.md), [se
 
 - Rust via rustup (the toolchain file picks the version), Bun 1.4, Python 3.12+ with uv, and Docker for the end-to-end test.
 - For the helper's token tests: SoftHSM 2, OpenSC (`pkcs11-tool`) and OpenSSL. On macOS, `brew install softhsm opensc openssl@3`; on Debian and Ubuntu, `apt install softhsm2 opensc`.
-- On Linux, GPUI's build dependencies: `libasound2-dev libfontconfig-dev libvulkan1 libwayland-dev libx11-xcb-dev libxkbcommon-x11-dev`.
+- On Linux, GPUI's build dependencies, the packages in `helper/linux-build-packages.txt`; on Debian and Ubuntu, `xargs -a helper/linux-build-packages.txt sudo apt-get install -y`.
 
 ## Checks
 

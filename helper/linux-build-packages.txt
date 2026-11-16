@@ -1,0 +1,6 @@
+libasound2-dev
+libfontconfig-dev
+libvulkan1
+libwayland-dev
+libx11-xcb-dev
+libxkbcommon-x11-dev

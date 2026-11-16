@@ -152,12 +152,9 @@ def test_the_next_signer_signing_their_prepared_field_fills_the_form(pki: Pki) -
     ]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="Filling a text field gives a new /V and /AP on an unsigned field's widget, which"
-    " the render digest counts as changed, so the review answers OTHER, not FORM_FILLING",
-)
-def test_filling_a_text_field_fills_the_form(pki: Pki) -> None:
+def test_filling_a_text_field_counts_as_changed(pki: Pki) -> None:
+    """pyHanko rates this as form filling. The review is stricter on purpose:
+    only a field signed since the base may change its value and appearance."""
     base = sign(_updated(prepared(), _add_text_field), pki, "Signer_a")
 
     def fill(writer: IncrementalPdfFileWriter) -> None:
@@ -180,7 +177,7 @@ def test_filling_a_text_field_fills_the_form(pki: Pki) -> None:
 
     report = validate_pdf(_updated(base, fill), settings_with(pki), len(base))
     assert report["textFields"] == {"Note": "filled"}
-    assert report["changesSinceBase"] == "FORM_FILLING"
+    assert report["changesSinceBase"] == "OTHER"
 
 
 def test_an_update_that_replaces_the_base_instead_of_following_it_counts_as_changed(

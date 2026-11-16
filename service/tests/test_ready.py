@@ -10,12 +10,11 @@ from typing import Any
 import pytest
 from pyhanko.sign import timestamps
 
-from keyseal_service import app as app_module, timestamping
+from keyseal_service import timestamping
 from keyseal_service.timestamping import TimestampAuthorities
-from keyseal_service.validate import ValidationSettings
+from keyseal_service.trust import ValidationSettings
 
-from .conftest import Pki, client_for
-from .test_timestamping import DIGEST, Down, Silent
+from .conftest import DIGEST, Down, Pki, Silent, client_for, client_with_tsas
 
 
 class Counting(timestamps.TimeStamper):
@@ -34,9 +33,11 @@ class Counting(timestamps.TimeStamper):
 
 
 def _client(monkeypatch: pytest.MonkeyPatch, *stampers: timestamps.TimeStamper) -> Any:
-    by_url = {f"https://tsa{i}.example/secret-path": s for i, s in enumerate(stampers)}
-    monkeypatch.setattr(app_module.timestamps, "HTTPTimeStamper", lambda url, **_: by_url[url])
-    return client_for(ValidationSettings([]), tuple(by_url))
+    return client_with_tsas(
+        monkeypatch,
+        ValidationSettings([]),
+        {f"https://tsa{i}.example/secret-path": s for i, s in enumerate(stampers)},
+    )
 
 
 def test_ready_needs_no_token_and_is_ready_with_timestamps_off() -> None:

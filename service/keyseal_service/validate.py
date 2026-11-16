@@ -8,256 +8,52 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import hmac
 import io
 import logging
-import ssl
-from collections.abc import AsyncIterator, Collection
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
-from dataclasses import dataclass, field, replace
+from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
-from functools import cache
-from pathlib import Path
-from typing import Any, Literal
+from typing import Any, TypeVar
 
-from asn1crypto import algos, keys, pem, x509
-from cryptography.exceptions import InvalidSignature
-from pyhanko.pdf_utils import generic
+from asn1crypto import x509
 from pyhanko.pdf_utils.form_tools import enumerate_fields_in
-from pyhanko.pdf_utils.misc import PdfReadError
 from pyhanko.pdf_utils.reader import PdfFileReader
-from pyhanko.sign.diff_analysis import (
-    DEFAULT_DIFF_POLICY,
-    FormUpdatingRule,
-    GenericFieldModificationRule,
-    SigFieldCreationRule,
-    SigFieldModificationRule,
-    StandardDiffPolicy,
-    SuspiciousModification,
-)
-from pyhanko.sign.diff_analysis.constants import ACROFORM_EXEMPT_STRICT_COMPARISON
 from pyhanko.sign.fields import FieldMDPSpec
 from pyhanko.sign.validation import (
     EmbeddedPdfSignature,
     async_validate_pdf_signature,
     async_validate_pdf_timestamp,
 )
-from pyhanko.sign.validation.settings import KeyUsageConstraints
 from pyhanko.sign.validation.status import PdfSignatureStatus, SignatureCoverageLevel
 from pyhanko_certvalidator import CertificateValidator, ValidationContext
-from pyhanko_certvalidator.authority import AuthorityWithCert
-from pyhanko_certvalidator.fetchers.api import FetcherBackend
 from pyhanko_certvalidator.path import ValidationPath
-from pyhanko_certvalidator.sig_validate import (
-    DEFAULT_VALIDATION_CONTEXT,
-    DefaultSignatureValidator,
-    SignatureValidationContext,
-)
 from pyhanko_certvalidator.validate import async_validate_path
+
+from .base_review import DIFF_POLICY, changes_since, signature_fields
+from .trust import DEFAULT_KEY_USAGE, KeyUsage, ValidationSettings, key_usage_constraints
 
 log = logging.getLogger(__name__)
 
-CERT_SUFFIXES = {".pem", ".cer", ".crt", ".der"}
-
-#: The key usage a signer's certificate must assert: nonRepudiation, or with
-#: "digitalSignature" either digitalSignature or nonRepudiation. A certificate
-#: without a KeyUsage extension asserts neither.
-KeyUsage = Literal["nonRepudiation", "digitalSignature"]
-DEFAULT_KEY_USAGE: KeyUsage = "nonRepudiation"
+T = TypeVar("T")
 
 
-def key_usage_constraints(key_usage: KeyUsage) -> KeyUsageConstraints:
-    if key_usage == "digitalSignature":
-        return KeyUsageConstraints(key_usage={"digital_signature", "non_repudiation"})
-    return KeyUsageConstraints(key_usage={"non_repudiation"})
-
-
-#: pyHanko's default policy, except that a non-signature field's existing
-#: appearance stream can't be rewritten in place. pyHanko (0.37, 0.38) counts
-#: every such stream written before the signed revision as rewritten, so a
-#: signature that locks a filled text field would fail once anyone else
-#: fills or signs later. A changed appearance must be a new stream instead.
-#: The first signature also turns /SigFlags from 1 to 3 (append only), which
-#: the review from the copy a signer was given has to allow.
-DIFF_POLICY = StandardDiffPolicy(
-    global_rules=DEFAULT_DIFF_POLICY.global_rules,
-    form_rule=FormUpdatingRule(
-        field_rules=[
-            SigFieldCreationRule(),
-            SigFieldModificationRule(),
-            GenericFieldModificationRule(allow_in_place_appearance_stream_changes=False),
-        ],
-        ignored_acroform_keys=ACROFORM_EXEMPT_STRICT_COMPARISON | {"/SigFlags"},
-    ),
-)
-
-
-def load_trust_roots(directory: Path | None) -> list[x509.Certificate]:
-    """Every certificate in the directory, PEM or DER; unreadable files are logged and skipped."""
-    if directory is None or not directory.is_dir():
-        return []
-    roots: list[x509.Certificate] = []
-    for path in sorted(directory.iterdir()):
-        if path.suffix.lower() not in CERT_SUFFIXES:
-            continue
-        data = path.read_bytes()
-        try:
-            if pem.detect(data):
-                for _, _, der in pem.unarmor(data, multiple=True):
-                    roots.append(x509.Certificate.load(der))
-            else:
-                roots.append(x509.Certificate.load(data))
-        except Exception:  # noqa: BLE001 - a bad file must not stop the service
-            log.warning("trust root unreadable: %s", path.name)
-    return roots
-
-
-@cache
-def system_trust_roots() -> tuple[x509.Certificate, ...]:
-    """The platform's trusted roots as OpenSSL finds them by default
-    (`SSL_CERT_FILE`, or the image's ca-certificates bundle), read once."""
-    context = ssl.create_default_context()
-    return tuple(x509.Certificate.load(der) for der in context.get_ca_certs(binary_form=True))
-
-
-def split_trust_roots(
-    certs: list[x509.Certificate],
-) -> tuple[list[x509.Certificate], list[x509.Certificate]]:
-    """Self-signed certificates are roots; the rest are intermediates."""
-    roots = [c for c in certs if c.self_signed != "no"]
-    return roots, [c for c in certs if c.self_signed == "no"]
-
-
-#: DER of the SHA-2 AlgorithmIdentifiers with the parameters left out.
-_SHA2_WITHOUT_NULL = {
-    "sha256": bytes.fromhex("300b0609608648016503040201"),
-    "sha384": bytes.fromhex("300b0609608648016503040202"),
-    "sha512": bytes.fromhex("300b0609608648016503040203"),
-}
-
-
-def _pkcs1_without_null(
-    signature: bytes,
-    signed_data: bytes,
-    public_key_info: keys.PublicKeyInfo,
-    signature_algorithm: algos.SignedDigestAlgorithm,
-    context: SignatureValidationContext,
-) -> bool:
-    """Whether an RSA PKCS#1 v1.5 signature is valid with the DigestInfo's
-    hash parameters left out instead of NULL.
-
-    RFC 8017 (9.2) requires the NULL, but the Income Tax Department's signing
-    software omits it and Acrobat accepts that. The recovered block must equal,
-    byte for byte, the one encoding that differs from the standard by the
-    missing NULL, so nothing in it is parsed and no other variant passes.
-    """
+async def _without_fetching_on_timeout(
+    check: Callable[[ValidationSettings], Awaitable[T]],
+    settings: ValidationSettings,
+    subject: str,
+) -> T:
+    """`check` with `settings`, run again without fetching when a revocation
+    fetch times out. pyHanko's soft-fail covers a responder that refuses the
+    connection but not one that never answers, as Indian CAs' OCSP servers
+    do outside India. Either way the revocation data is unavailable."""
     try:
-        if signature_algorithm.signature_algo != "rsassa_pkcs1v15" or context.prehashed:
-            return False
-        try:
-            hash_algo = signature_algorithm.hash_algo
-        except ValueError:
-            hash_algo = context.contextual_md_algorithm
-        identifier = _SHA2_WITHOUT_NULL.get(hash_algo or "")
-        if identifier is None or public_key_info.algorithm != "rsa":
-            return False
-        key = public_key_info["public_key"].parsed
-        n, e = key["modulus"].native, key["public_exponent"].native
-    except (KeyError, ValueError):
-        return False
-    # OpenSSL's own limits, which refuse such a key before this fallback runs:
-    # past them, pow() in Python takes seconds to hours on the event loop.
-    if n.bit_length() > 16384 or e.bit_length() > 64:
-        return False
-    size = (n.bit_length() + 7) // 8
-    value = int.from_bytes(signature, "big")
-    if len(signature) != size or value >= n:
-        return False
-    digest = hashlib.new(hash_algo, signed_data).digest()
-    body = identifier + bytes([0x04, len(digest)]) + digest
-    digest_info = bytes([0x30, len(body)]) + body
-    padding = size - 3 - len(digest_info)
-    if padding < 8:
-        return False
-    expected = b"\x00\x01" + b"\xff" * padding + b"\x00" + digest_info
-    return hmac.compare_digest(pow(value, e, n).to_bytes(size, "big"), expected)
-
-
-class _SignatureValidator(DefaultSignatureValidator):
-    """pyHanko's check, which also accepts the DigestInfo without NULL
-    parameters that the Income Tax Department's signatures carry."""
-
-    def validate_signature(
-        self,
-        signature: bytes,
-        signed_data: bytes,
-        public_key_info: keys.PublicKeyInfo,
-        signature_algorithm: algos.SignedDigestAlgorithm,
-        context: SignatureValidationContext = DEFAULT_VALIDATION_CONTEXT,
-    ) -> None:
-        try:
-            super().validate_signature(
-                signature, signed_data, public_key_info, signature_algorithm, context
-            )
-        except InvalidSignature:
-            if not _pkcs1_without_null(
-                signature, signed_data, public_key_info, signature_algorithm, context
-            ):
-                raise
-
-
-SIGNATURE_VALIDATOR = _SignatureValidator()
-
-
-@dataclass(frozen=True)
-class ValidationSettings:
-    trust_roots: list[x509.Certificate]
-    allow_fetching: bool = False
-    #: CA certificates between a signer and a root, for building paths when a
-    #: PDF doesn't carry them. Never trust anchors.
-    intermediates: list[x509.Certificate] = field(default_factory=list)
-    #: A public-only fetcher (`fetching.public_fetch_session`), which the app
-    #: opens for each request. Fetching is refused without it: pyHanko's own
-    #: would follow certificate URLs to private addresses.
-    fetcher_backend: FetcherBackend | None = None
-
-    def context(
-        self,
-        moment: datetime | None = None,
-        known: ValidationContext | None = None,
-        revocation_mode: str = "soft-fail",
-    ) -> ValidationContext:
-        if self.allow_fetching and self.fetcher_backend is None:
-            raise RuntimeError("Certificate fetching requires a public fetch session")
-        # The system's roots (the TSA's DigiCert chain, Adobe-trusted CAs)
-        # plus the configured ones (the CCA India roots behind every DSC),
-        # passed explicitly: pyHanko's fallback to the system's is deprecated.
-        # At a past `moment`, revocation data issued since still counts, so a
-        # certificate revoked before then is refused and one revoked after
-        # isn't. The CRLs and OCSP responses a `known` context holds carry
-        # over, so a revocation it found still counts if a fetch fails now.
-        return ValidationContext(
-            trust_roots=[*system_trust_roots(), *self.trust_roots],
-            other_certs=self.intermediates,
-            signature_validator=SIGNATURE_VALIDATOR,
-            allow_fetching=self.allow_fetching,
-            fetcher_backend=self.fetcher_backend,
-            revocation_mode=revocation_mode,
-            moment=moment,
-            retroactive_revinfo=moment is not None,
-            crls=known.crls if known is not None else None,
-            ocsps=known.ocsps if known is not None else None,
-        )
-
-    def is_configured_root(self, path: ValidationPath | None) -> bool:
-        """Whether a validated path ends in a configured root, not a system one:
-        a public CA's certificate in a signer's name is no DSC."""
-        if path is None:
-            return False
-        anchor = path.trust_anchor.authority
-        return isinstance(anchor, AuthorityWithCert) and any(
-            anchor.certificate.sha256 == root.sha256 for root in self.trust_roots
-        )
+        return await check(settings)
+    except TimeoutError:
+        if not settings.allow_fetching:
+            raise
+        log.warning("Revocation fetch timed out for %s; checking without fetching", subject)
+        return await check(replace(settings, allow_fetching=False))
 
 
 async def _revocation_checked(
@@ -308,23 +104,23 @@ async def _certificate_trusted(
     if cert.ca:
         log.info("Certificate refused: a CA certificate")
         return False, False
+    # Built outside the try, so settings that can't build one raise rather
+    # than count as untrusted.
     context = settings.context()
+
+    async def validated_path(
+        checking: ValidationSettings,
+    ) -> tuple[ValidationPath, ValidationContext]:
+        used = context if checking is settings else checking.context()
+        path = await CertificateValidator(
+            cert, intermediate_certs=chain, validation_context=used
+        ).async_validate_path()
+        return path, used
+
     try:
-        try:
-            path = await CertificateValidator(
-                cert, intermediate_certs=chain, validation_context=context
-            ).async_validate_path()
-        except TimeoutError:
-            # As for signatures: a revocation responder that never answers,
-            # as Indian CAs' do outside India, leaves the data unavailable,
-            # so check without fetching.
-            if not settings.allow_fetching:
-                raise
-            log.warning("Revocation fetch timed out for a certificate; checking without fetching")
-            context = replace(settings, allow_fetching=False).context()
-            path = await CertificateValidator(
-                cert, intermediate_certs=chain, validation_context=context
-            ).async_validate_path()
+        path, context = await _without_fetching_on_timeout(
+            validated_path, settings, "a certificate"
+        )
         key_usage_constraints(key_usage).validate(cert)
     except Exception as error:  # noqa: BLE001 - any path failure means untrusted
         log.info("Certificate refused: %s: %s", type(error).__name__, error)
@@ -448,6 +244,39 @@ def _certificate_facts(cert: x509.Certificate) -> dict[str, Any]:
     }
 
 
+@dataclass(frozen=True, kw_only=True)
+class SignatureReport:
+    """One signature in a validation report, its keys in the order the JSON
+    has them. The defaults are what a signature that couldn't be checked
+    reports, with `error` naming why; the JSON leaves `error` out without one."""
+
+    issuer: str = ""
+    notAfter: str | None = None
+    notBefore: str | None = None
+    serial: str = ""
+    sha256Fingerprint: str = ""
+    signerName: str | None = None
+    subject: str = ""
+    certifies: bool
+    coversWholeRevision: bool = False
+    fieldName: str
+    intact: bool = False
+    locks: list[dict[str, Any]]
+    modificationLevel: str | None = None
+    revocationChecked: bool = False
+    signingTime: str | None = None
+    timestamped: bool = False
+    timestampValid: bool | None = None
+    trusted: bool = False
+    error: str | None = None
+
+    def as_json(self) -> dict[str, Any]:
+        report = asdict(self)
+        if self.error is None:
+            del report["error"]
+        return report
+
+
 def _text_fields(reader: PdfFileReader) -> dict[str, str]:
     """Every text field's value in the latest revision; empty when unset."""
     try:
@@ -462,8 +291,6 @@ def _text_fields(reader: PdfFileReader) -> dict[str, str]:
     }
 
 
-#: Deeper field trees than this count as malformed.
-MAX_FIELD_DEPTH = 64
 #: Signatures and document timestamps one validation checks, or one
 #: finalisation adds revocation data for. Each is checked against every
 #: revision after it, so the work grows with the square.
@@ -490,178 +317,6 @@ async def within_budget(work: str) -> AsyncIterator[None]:
         raise ValidationLimitError(
             f"{work} took longer than {VALIDATION_BUDGET_SECONDS} seconds"
         ) from error
-
-
-def _field_chain(widget: generic.DictionaryObject) -> list[generic.DictionaryObject]:
-    """The widget and its ancestors up the field tree. A /Parent that loops,
-    or a tree deeper than MAX_FIELD_DEPTH, is malformed and stops the walk,
-    so a crafted PDF can't keep the service busy forever."""
-    chain: list[generic.DictionaryObject] = []
-    seen: set[int] = set()
-    node: generic.DictionaryObject | None = widget
-    while node is not None and id(node) not in seen:
-        if len(chain) == MAX_FIELD_DEPTH:
-            raise PdfReadError("Field tree too deep")
-        seen.add(id(node))
-        chain.append(node)
-        node = node["/Parent"] if "/Parent" in node else None
-    if node is not None:
-        raise PdfReadError("Field tree loops")
-    return chain
-
-
-def _field_name(widget: generic.DictionaryObject) -> str:
-    """The fully qualified name of the field a widget belongs to."""
-    parts = [str(node["/T"]) for node in _field_chain(widget) if "/T" in node]
-    return ".".join(reversed(parts))
-
-
-#: A field's links to the page and form tree, which the walk doesn't follow.
-TREE_KEYS = {"/P", "/Parent", "/Kids"}
-#: What signing a prepared signature field changes on it.
-SIGNING_KEYS = {"/V", "/AP"}
-
-
-def _digest_object(
-    obj: generic.PdfObject,
-    digest: Any,
-    path: frozenset[tuple[int, int]],
-    digests: dict[tuple[int, int], bytes],
-) -> None:
-    """Feeds an object's resolved content to the digest, whatever objects hold
-    it. Each indirect object is resolved once, its digest kept in `digests`:
-    expanded again wherever it is shared, objects that each refer twice to the
-    next would take exponential time."""
-    if isinstance(obj, generic.IndirectObject):
-        ref = (obj.idnum, obj.generation)
-        if ref in path:
-            digest.update(b"<cycle>")
-            return
-        if ref not in digests:
-            inner = hashlib.sha256()
-            _digest_object(obj.get_object(), inner, path | {ref}, digests)
-            digests[ref] = inner.digest()
-        digest.update(digests[ref])
-    elif isinstance(obj, generic.DictionaryObject):
-        digest.update(b"<<")
-        for key in sorted(obj):
-            digest.update(repr(key).encode())
-            _digest_object(obj.raw_get(key), digest, path, digests)
-        digest.update(b">>")
-        if isinstance(obj, generic.StreamObject):
-            digest.update(b"stream")
-            digest.update(obj.encoded_data)
-    elif isinstance(obj, generic.ArrayObject):
-        digest.update(b"[")
-        for index in range(len(obj)):
-            _digest_object(obj.raw_get(index), digest, path, digests)
-        digest.update(b"]")
-    else:
-        digest.update(f"{type(obj).__name__}:{obj!r};".encode())
-
-
-def _rendering(
-    widget: generic.DictionaryObject,
-    signed: bool,
-    digests: dict[tuple[int, int], bytes],
-) -> str:
-    """A digest of everything about a widget and its field that decides how it
-    shows: flags, rect, appearance streams and their resources, /MK, /DA, /Ff
-    and the rest. A field signed since may change only its value and appearance."""
-    digest = hashlib.sha256()
-    skipped = TREE_KEYS | (SIGNING_KEYS if signed else set())
-    for node in _field_chain(widget):
-        for key in sorted(k for k in node if k not in skipped):
-            digest.update(repr(key).encode())
-            _digest_object(node.raw_get(key), digest, frozenset(), digests)
-        digest.update(b"|")
-    return digest.hexdigest()
-
-
-def _widgets(
-    reader: PdfFileReader, signed: Collection[str] = ()
-) -> list[tuple[str, int, tuple[float, ...], str]]:
-    """Every form field widget on a page: field name, 0-based page, /Rect
-    (normalised) and a digest of how it renders (`signed` fields aside)."""
-    found: list[tuple[str, int, tuple[float, ...], str]] = []
-    digests: dict[tuple[int, int], bytes] = {}
-    for index in range(int(reader.root["/Pages"]["/Count"])):
-        page = reader.find_page_for_modification(index)[0].get_object()
-        for ref in page["/Annots"] if "/Annots" in page else ():
-            annot = ref.get_object()
-            if "/Subtype" not in annot or annot["/Subtype"] != "/Widget":
-                continue
-            x1, y1, x2, y2 = (float(v) for v in annot["/Rect"])
-            rect = (min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2))
-            name = _field_name(annot)
-            found.append((name, index, rect, _rendering(annot, name in signed, digests)))
-    return found
-
-
-def _signature_fields(reader: PdfFileReader, signed_only: bool = False) -> set[str]:
-    try:
-        fields = reader.root["/AcroForm"]["/Fields"]
-    except KeyError:
-        return set()
-    return {
-        name
-        for name, value, _ in enumerate_fields_in(
-            fields, refs_seen=set(), target_field_type="/Sig"
-        )
-        if value is not None or not signed_only
-    }
-
-
-def _signed_fields(reader: PdfFileReader) -> set[str]:
-    return _signature_fields(reader, signed_only=True)
-
-
-def _changes_since(reader: PdfFileReader, data: bytes, base_length: int) -> str:
-    """The most the revisions appended to the first `base_length` bytes change.
-
-    pyHanko only judges changes made after a signature, so a first signer could
-    otherwise rewrite the text in the revision their signature covers. It also
-    counts a new signature field's widget, and a new appearance, flags or
-    look for an unsigned field's widget, as form filling, so the widgets must
-    be the ones the base had, each rendering as it did (a field signed since
-    may change only its value and appearance).
-    """
-    try:
-        base = PdfFileReader(io.BytesIO(data[:base_length]), strict=False)
-        last = base.xrefs.total_revisions - 1
-        # The appended update must build on the base's last revision.
-        if reader.xrefs.get_startxref_for_revision(
-            last
-        ) != base.xrefs.get_startxref_for_revision(last):
-            return "OTHER"
-        result = DIFF_POLICY.review_file(reader, last)
-        signed_since = _signed_fields(reader) - _signed_fields(base)
-        before = sorted(_widgets(base, signed_since))
-        after = sorted(_widgets(reader, signed_since))
-        # Asked to, a viewer redraws every field from its value and /DR.
-        redraw_before, redraw_after = (
-            str(r.root["/AcroForm"].get("/NeedAppearances", False))
-            for r in (base, reader)
-        )
-    except Exception:  # noqa: BLE001 - unreadable counts as changed
-        return "OTHER"
-    if (
-        isinstance(result, SuspiciousModification)
-        or before != after
-        or redraw_before != redraw_after
-    ):
-        return "OTHER"
-    return result.modification_level.name
-
-
-def validate_pdf(
-    data: bytes,
-    settings: ValidationSettings,
-    base_length: int | None = None,
-    key_usage: KeyUsage = DEFAULT_KEY_USAGE,
-) -> dict[str, Any]:
-    """Synchronous form of `validate_pdf_async`, for scripts and tests."""
-    return asyncio.run(validate_pdf_async(data, settings, base_length, key_usage))
 
 
 async def validate_pdf_async(
@@ -738,46 +393,21 @@ async def _validate_pdf(
                 )
             continue
         try:
-            try:
-                status, trusted, revocation_checked = await _check_signature(
-                    sig, settings, key_usage
-                )
-            except TimeoutError:
-                # pyHanko's soft-fail covers a responder that refuses the
-                # connection but not one that never answers, as Indian CAs'
-                # OCSP servers do outside India. Either way the revocation
-                # data is unavailable, so check without fetching.
-                if not settings.allow_fetching:
-                    raise
-                log.warning("Revocation fetch timed out for %s; checking without fetching", sig.field_name)
-                status, trusted, revocation_checked = await _check_signature(
-                    sig, replace(settings, allow_fetching=False), key_usage
-                )
+            status, trusted, revocation_checked = await _without_fetching_on_timeout(
+                lambda checking: _check_signature(sig, checking, key_usage),
+                settings,
+                sig.field_name,
+            )
         except Exception as error:  # noqa: BLE001 - report, don't crash
             log.exception("Checking the signature in %s failed", sig.field_name)
             all_good = False
             signatures.append(
-                {
-                    "certifies": _certifies(reader, sig),
-                    "coversWholeRevision": False,
-                    "fieldName": sig.field_name,
-                    "intact": False,
-                    "issuer": "",
-                    "locks": _locks(sig),
-                    "modificationLevel": None,
-                    "notAfter": None,
-                    "notBefore": None,
-                    "revocationChecked": False,
-                    "serial": "",
-                    "sha256Fingerprint": "",
-                    "signerName": None,
-                    "signingTime": None,
-                    "subject": "",
-                    "timestamped": False,
-                    "timestampValid": None,
-                    "trusted": False,
-                    "error": type(error).__name__,
-                }
+                SignatureReport(
+                    certifies=_certifies(reader, sig),
+                    fieldName=sig.field_name,
+                    locks=_locks(sig),
+                    error=type(error).__name__,
+                ).as_json()
             )
             continue
         covers = status.coverage is not None and (
@@ -790,24 +420,24 @@ async def _validate_pdf(
         if not (intact and covers and docmdp_ok and timestamp_valid is not False):
             all_good = False
         signatures.append(
-            {
+            SignatureReport(
                 **_certificate_facts(status.signing_cert),
-                "certifies": _certifies(reader, sig),
-                "coversWholeRevision": covers,
-                "fieldName": sig.field_name,
-                "intact": intact,
-                "locks": _locks(sig),
-                "modificationLevel": (
+                certifies=_certifies(reader, sig),
+                coversWholeRevision=covers,
+                fieldName=sig.field_name,
+                intact=intact,
+                locks=_locks(sig),
+                modificationLevel=(
                     status.modification_level.name
                     if status.modification_level is not None
                     else None
                 ),
-                "revocationChecked": revocation_checked,
-                "signingTime": _iso(status.signer_reported_dt),
-                "timestamped": ts is not None,
-                "timestampValid": timestamp_valid,
-                "trusted": trusted,
-            }
+                revocationChecked=revocation_checked,
+                signingTime=_iso(status.signer_reported_dt),
+                timestamped=ts is not None,
+                timestampValid=timestamp_valid,
+                trusted=trusted,
+            ).as_json()
         )
 
     report: dict[str, Any] = {
@@ -821,10 +451,10 @@ async def _validate_pdf(
     if document_timestamps:
         report["documentTimestamps"] = document_timestamps
     if base_length is not None:
-        report["changesSinceBase"] = _changes_since(reader, data, base_length)
+        report["changesSinceBase"] = changes_since(reader, data, base_length)
         try:
             base = PdfFileReader(io.BytesIO(data[:base_length]), strict=False)
-            report["baseSignatureFields"] = sorted(_signature_fields(base))
+            report["baseSignatureFields"] = sorted(signature_fields(base))
         except Exception:  # noqa: BLE001 - unreadable counts as changed
             report["changesSinceBase"] = "OTHER"
     return report

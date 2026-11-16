@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import hashlib
 import logging
 from datetime import UTC, datetime
 from typing import Any
@@ -13,35 +12,33 @@ import pytest
 from pyhanko.sign import timestamps
 from pyhanko.sign.timestamps.common_utils import TimestampRequestError
 
-from keyseal_service import app as app_module, timestamping
+from keyseal_service import timestamping
 from keyseal_service.remote_sign import TIMESTAMP_MISMATCH, RemoteSignError
-from keyseal_service.timestamping import TimestampAuthorities, TimestampUnavailableError
-from keyseal_service.validate import ValidationSettings, validate_pdf
+from keyseal_service.timestamping import (
+    TSA_TIMEOUT_SECONDS,
+    TimestampAuthorities,
+    TimestampUnavailableError,
+)
+from keyseal_service.trust import ValidationSettings
 
-from .conftest import AUTH, Pki, blank_pdf, client_for, misstamping, sign
-from .test_remote_sign import _start_with, b64, token_sign
+from .conftest import (
+    AUTH,
+    DIGEST,
+    Down,
+    Pki,
+    Silent,
+    _start_with,
+    b64,
+    blank_pdf,
+    client_with_tsas,
+    misstamping,
+    sign,
+    token_sign,
+    validate_pdf,
+)
 
-DIGEST = hashlib.sha256(b"document").digest()
 #: Nothing listens on the discard port, so a real request is refused at once.
 REFUSED = "http://127.0.0.1:9"
-
-
-class Down(timestamps.TimeStamper):
-    """A TSA that answers with an error, counting the requests."""
-
-    def __init__(self, error: Exception | None = None) -> None:
-        super().__init__()
-        self.error = error or TimestampRequestError("Timestamp server refused our request")
-        self.requests = 0
-
-    async def async_timestamp(self, message_digest: bytes, md_algorithm: str) -> Any:
-        self.requests += 1
-        raise self.error
-
-
-class Silent(timestamps.TimeStamper):
-    async def async_timestamp(self, message_digest: bytes, md_algorithm: str) -> Any:
-        await asyncio.sleep(60)
 
 
 def _stamp(authorities: TimestampAuthorities) -> Any:
@@ -167,15 +164,18 @@ def test_the_list_stops_at_its_budget(pki: Pki, monkeypatch: pytest.MonkeyPatch)
 def _with_tsas(pki: Pki, monkeypatch: pytest.MonkeyPatch, *urls: str) -> Any:
     """A client whose TSA list is `urls`: REFUSED is a real request that is
     refused, any other a local TSA under the test root."""
-    real = timestamps.HTTPTimeStamper
-    monkeypatch.setattr(
-        app_module.timestamps,
-        "HTTPTimeStamper",
-        lambda url, **kw: (
-            real(url, **kw) if url.startswith(REFUSED) else pki.timestamper(datetime.now(UTC))
-        ),
+    return client_with_tsas(
+        monkeypatch,
+        ValidationSettings(trust_roots=[pki.ca_asn1]),
+        {
+            url: (
+                timestamps.HTTPTimeStamper(url, timeout=TSA_TIMEOUT_SECONDS)
+                if url.startswith(REFUSED)
+                else pki.timestamper(datetime.now(UTC))
+            )
+            for url in urls
+        },
     )
-    return client_for(ValidationSettings(trust_roots=[pki.ca_asn1]), urls)
 
 
 def _finish(client: Any, pki: Pki) -> Any:

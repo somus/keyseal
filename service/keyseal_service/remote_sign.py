@@ -10,10 +10,7 @@
 3. `finish`: given the state and the signature value, build the CMS with a
    signature timestamp from the TSA (PAdES B-T) and write it into the PDF.
 
-`finalize` makes a fully signed PDF long-term verifiable (PAdES
-B-LTA): revocation data for every signature and a document timestamp.
-`retimestamp` adds another document timestamp before the last one's
-certificate expires.
+Long-term validation of the signed PDF is in `ltv`.
 """
 
 from __future__ import annotations
@@ -32,15 +29,12 @@ from pyhanko.pdf_utils.reader import PdfFileReader
 from pyhanko.sign import fields, signers, timestamps
 from pyhanko.sign.signers.pdf_byterange import PreparedByteRangeDigest
 from pyhanko.sign.signers.pdf_signer import PdfTBSDocument
-from pyhanko.sign.validation import async_add_validation_info
 from pyhanko.sign.validation.errors import TSTDigestNotAvailableError
 from pyhanko.sign.validation.generic_cms import extract_tst_data_iter, message_imprint_checker
-from pyhanko_certvalidator import ValidationContext
 from pyhanko.stamp import BaseStampStyle
 from pyhanko_certvalidator.registry import SimpleCertificateStore
 
-from . import validate
-from .prepare import ENCRYPTED, unsignable
+from .prepare import unsignable
 
 #: Room for the CMS: the signature, the certificate chain and the TSA token.
 #: An Indian DSC chain with a TSA token already needs about 13 KB.
@@ -305,7 +299,12 @@ async def finish(
 def _check_timestamp_imprint(signer_info: cms.SignerInfo) -> None:
     """Refuses a signature timestamp whose message imprint isn't the digest
     of the signature value. pyHanko checks the TSA's status and nonce when it
-    embeds the token but only logs a wrong imprint."""
+    embeds the token but only logs a wrong imprint.
+
+    `timestamping` checks the imprint first, so that a wrong one moves on to
+    the next authority; this second check is deliberate defence in depth
+    against the library requesting the wrong digest, and backs the README's
+    promise that `/sign/finish` refuses such a token."""
     expected = message_imprint_checker(signer_info)
     tokens = list(extract_tst_data_iter(signer_info, signed=False))
     if not tokens:
@@ -359,57 +358,3 @@ def _verify_signature(
         raise RemoteSignError(
             "The signature doesn't match the certificate: was the right token used?"
         ) from error
-
-
-async def finalize(
-    pdf: bytes,
-    timestamper: timestamps.TimeStamper,
-    validation_context: ValidationContext,
-) -> bytes:
-    """Adds revocation data for every signature and a document timestamp (B-LTA).
-
-    Each signature's data is its own incremental update, written over a fresh
-    parse of the PDF, so the work grows with the square of the signatures:
-    a PDF with more than `validate.MAX_SIGNATURES`, or a run past the
-    validation budget, raises `ValidationLimitError`."""
-    buf = io.BytesIO(pdf)
-    reader = PdfFileReader(io.BytesIO(pdf))
-    if reader.encrypted:
-        raise RemoteSignError(ENCRYPTED)
-    count = len(reader.embedded_signatures)
-    if count > validate.MAX_SIGNATURES:
-        raise validate.ValidationLimitError(f"More than {validate.MAX_SIGNATURES} signatures")
-    async with validate.within_budget("Finalising"):
-        for index in range(count):
-            reader = PdfFileReader(buf)
-            sig = reader.embedded_signatures[index]
-            out = io.BytesIO()
-            await async_add_validation_info(sig, validation_context, output=out)
-            buf = io.BytesIO(out.getvalue())
-        writer = IncrementalPdfFileWriter(buf)
-        out = io.BytesIO()
-        await signers.PdfTimeStamper(timestamper).async_timestamp_pdf(
-            writer,
-            md_algorithm=MD,
-            validation_context=validation_context,
-            output=out,
-        )
-    return out.getvalue()
-
-
-async def retimestamp(
-    pdf: bytes,
-    timestamper: timestamps.TimeStamper,
-    validation_context: ValidationContext,
-) -> bytes:
-    """Adds revocation data for the last timestamp and a new document
-    timestamp; a run past the validation budget raises `ValidationLimitError`."""
-    reader = PdfFileReader(io.BytesIO(pdf))
-    if reader.encrypted:
-        raise RemoteSignError(ENCRYPTED)
-    out = io.BytesIO()
-    async with validate.within_budget("Timestamping"):
-        await signers.PdfTimeStamper(timestamper).async_update_archival_timestamp_chain(
-            reader, validation_context, output=out
-        )
-    return out.getvalue()

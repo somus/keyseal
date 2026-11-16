@@ -1,5 +1,5 @@
 """Revocation data and issuer certificates fetched once, reused by later
-requests until their nextUpdate. The wire is in memory, as in test_fetching."""
+requests until their nextUpdate. The wire is in memory (`conftest.network`)."""
 
 from __future__ import annotations
 
@@ -18,14 +18,12 @@ from cryptography.x509.oid import AuthorityInformationAccessOID
 from fastapi.testclient import TestClient
 
 from keyseal_service import fetch_cache
-from keyseal_service.app import create_app
 from keyseal_service.fetch_cache import CachingFetcherBackend, FetchCache
 from keyseal_service.fetching import public_fetch_session
-from keyseal_service.settings import Settings
-from keyseal_service.validate import ValidationSettings, certificate_trusted
+from keyseal_service.trust import ValidationSettings
+from keyseal_service.validate import certificate_trusted
 
-from .conftest import AUTH, TOKEN, Pki, _asn1, _name, blank_pdf, sign
-from .test_fetching import network  # noqa: F401 - the in-memory wire
+from .conftest import AUTH, Pki, _asn1, _name, blank_pdf, client_for, sign
 
 CRL_URL = "http://crl.invalid/test-root.crl"
 OCSP_URL = "http://ocsp.example/"
@@ -33,8 +31,7 @@ ISSUER_URL = "http://ca.example/issuer"
 
 
 def _client(pki: Pki) -> TestClient:
-    validation = ValidationSettings(trust_roots=[pki.ca_asn1], allow_fetching=True)
-    return TestClient(create_app(Settings(token=TOKEN, tsa_urls=(), validation=validation)))
+    return client_for(ValidationSettings(trust_roots=[pki.ca_asn1], allow_fetching=True))
 
 
 def _check(client: TestClient, cert: x509.Certificate) -> dict[str, Any]:

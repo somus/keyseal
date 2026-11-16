@@ -15,83 +15,13 @@ import pytest
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.x509.oid import AuthorityInformationAccessOID
-from fastapi.testclient import TestClient
 from pyhanko_certvalidator.fetchers.aiohttp_fetchers import AIOHttpFetcherBackend
 
 from keyseal_service import fetching
-from keyseal_service.app import create_app
 from keyseal_service.fetching import ResponseTooLarge, public_fetch_session, public_socket
-from keyseal_service.settings import Settings
-from keyseal_service.validate import ValidationSettings
+from keyseal_service.trust import ValidationSettings
 
-from .conftest import AUTH, TOKEN, Pki, _name
-
-PUBLIC_IP = "93.184.216.34"
-
-
-@pytest.fixture
-def network(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
-    """aiohttp's URL, redirect and DNS handling against an in-memory transport."""
-    state: dict[str, Any] = {
-        "requests": [],
-        "resolved": [],
-        "connected": [],
-        "answers": [PUBLIC_IP],
-        "responses": {},
-    }
-
-    async def resolve(self: Any, host: str, port: int = 0, family: int = socket.AF_INET) -> Any:
-        state["resolved"].append(host)
-        return [
-            {
-                "hostname": host,
-                "host": ip,
-                "port": port,
-                "family": socket.AF_INET6 if ":" in ip else socket.AF_INET,
-                "proto": socket.IPPROTO_TCP,
-                "flags": socket.AI_NUMERICHOST,
-            }
-            for ip in state["answers"]
-        ]
-
-    async def connect(self: Any, *_: Any, addr_infos: Any, req: Any, **__: Any) -> Any:
-        # Runs the connector's socket check too, but never connects that socket.
-        if self._socket_factory:
-            self._socket_factory(addr_infos[0]).close()
-        state["connected"].append(addr_infos[0][4][0])
-        protocol = self._factory()
-        status, headers, body = state["responses"].get(str(req.url), (200, {}, b"synthetic"))
-        head = f"HTTP/1.1 {status} Test\r\nContent-Length: {len(body)}\r\nConnection: close\r\n"
-        head += "".join(f"{key}: {value}\r\n" for key, value in headers.items())
-        response = (head + "\r\n").encode() + body
-
-        class Transport(asyncio.Transport):
-            closed = False
-            sent = False
-
-            def is_closing(self) -> bool:
-                return self.closed
-
-            def close(self) -> None:
-                self.closed = True
-
-            def write(self, data: Any) -> None:
-                if not self.sent:
-                    self.sent = True
-                    state["requests"].append(str(req.url))
-                    asyncio.get_running_loop().call_soon(protocol.data_received, response)
-
-            def get_extra_info(self, name: str, default: Any = None) -> Any:
-                return default
-
-        transport = Transport()
-        protocol.connection_made(transport)
-        return transport, protocol
-
-    monkeypatch.setattr(aiohttp.resolver.DefaultResolver, "resolve", resolve)
-    monkeypatch.setattr(aiohttp.TCPConnector, "_wrap_create_connection", connect)
-    return state
-
+from .conftest import AUTH, PUBLIC_IP, Pki, _name, client_for
 
 def certificate_with_issuer_url(pki: Pki, url: str) -> str:
     """A signer certificate whose issuer, by its AIA extension, is at `url`."""
@@ -127,8 +57,7 @@ def certificate_with_issuer_url(pki: Pki, url: str) -> str:
 def check_certificate(pki: Pki, url: str, allow_fetching: bool = True) -> dict[str, Any]:
     """POST /certificate, which opens a public fetch session for the request."""
     validation = ValidationSettings(trust_roots=[], allow_fetching=allow_fetching)
-    app = create_app(Settings(token=TOKEN, tsa_urls=(), validation=validation))
-    with TestClient(app) as client:
+    with client_for(validation) as client:
         response = client.post(
             "/certificate",
             headers=AUTH,
@@ -289,8 +218,7 @@ def test_a_crl_past_the_cap_leaves_revocation_unchecked(
     if oversized:
         monkeypatch.setattr(fetching, "MAX_CRL_BYTES", len(crl) - 1)
     validation = ValidationSettings(trust_roots=[pki.ca_asn1], allow_fetching=True)
-    app = create_app(Settings(token=TOKEN, tsa_urls=(), validation=validation))
-    with TestClient(app) as client:
+    with client_for(validation) as client:
         response = client.post(
             "/certificate",
             headers=AUTH,

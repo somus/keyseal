@@ -8,9 +8,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from .validate import ValidationSettings, load_trust_roots, split_trust_roots
+from .trust import ValidationSettings, trust_settings
 
-TRUST = Path(__file__).resolve().parent / "trust"
 DEFAULT_TSA_URL = "http://timestamp.digicert.com"
 MIN_TOKEN_CHARS = 32
 MIN_DISTINCT_CHARS = 10
@@ -19,10 +18,6 @@ LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
 
 
 class WeakTokenError(ValueError):
-    pass
-
-
-class TrustRootsError(ValueError):
     pass
 
 
@@ -61,40 +56,6 @@ def check_token(token: str) -> None:
         raise WeakTokenError(
             f"SIGNING_SERVICE_TOKEN has fewer than {MIN_DISTINCT_CHARS} distinct characters"
         )
-
-
-def trust_settings(
-    roots_dir: Path | None, allow_fetching: bool, extra_roots_dir: Path | None = None
-) -> ValidationSettings:
-    """The bundled CCA India roots and intermediates, or every certificate in
-    `roots_dir`, where self-signed ones are roots and the rest intermediates,
-    plus every certificate in `extra_roots_dir`, split the same way."""
-    if roots_dir is None:
-        roots = load_trust_roots(TRUST / "roots")
-        intermediates = load_trust_roots(TRUST / "intermediates")
-    else:
-        roots, intermediates = split_trust_roots(load_trust_roots(roots_dir))
-        # A mistyped directory would otherwise start a service that trusts
-        # nobody and reports every signature as untrusted.
-        if not roots:
-            raise TrustRootsError(f"SIGNING_TRUST_ROOTS_DIR {roots_dir} holds no readable root")
-    if extra_roots_dir is not None:
-        try:
-            extra = load_trust_roots(extra_roots_dir)
-        except OSError as error:
-            raise TrustRootsError(
-                f"SIGNING_EXTRA_TRUST_ROOTS_DIR {extra_roots_dir} is unreadable"
-            ) from error
-        if not extra:
-            raise TrustRootsError(
-                f"SIGNING_EXTRA_TRUST_ROOTS_DIR {extra_roots_dir} holds no readable certificate"
-            )
-        extra_roots, extra_intermediates = split_trust_roots(extra)
-        roots = roots + extra_roots
-        intermediates = intermediates + extra_intermediates
-    return ValidationSettings(
-        trust_roots=roots, intermediates=intermediates, allow_fetching=allow_fetching
-    )
 
 
 @dataclass(frozen=True)

@@ -11,12 +11,9 @@ from fastapi.testclient import TestClient
 from pyhanko_certvalidator import CertificateValidator
 
 from keyseal_service.app import create_app
-from keyseal_service.settings import TRUST, Settings, WeakTokenError, check_token
-from keyseal_service.validate import (
-    ValidationSettings,
-    certificate_trusted,
-    load_trust_roots,
-)
+from keyseal_service.settings import Settings, WeakTokenError, check_token
+from keyseal_service.trust import TRUST, ValidationSettings, load_trust_roots
+from keyseal_service.validate import certificate_trusted
 
 from .conftest import TOKEN, Pki, _asn1
 

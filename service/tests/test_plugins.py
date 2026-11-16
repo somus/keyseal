@@ -12,10 +12,9 @@ from pyhanko.stamp import TextStampStyle
 
 from keyseal_service import app as app_module
 from keyseal_service.settings import Settings
-from keyseal_service.validate import ValidationSettings
+from keyseal_service.trust import ValidationSettings
 
-from .conftest import AUTH, Pki, client_for
-from .test_remote_sign import b64, ca_b64, cert_b64, prepared, token_sign
+from .conftest import AUTH, Pki, b64, ca_b64, cert_b64, client_for, prepared, token_sign
 
 
 def plain_style() -> TextStampStyle:

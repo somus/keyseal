@@ -1,12 +1,10 @@
 from __future__ import annotations
 
 import asyncio
-import io
 import os
 import subprocess
 import sys
 import threading
-from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -14,39 +12,28 @@ from typing import Any
 
 import pytest
 from cryptography.hazmat.primitives import serialization
-from pyhanko.pdf_utils import generic
-from pyhanko.pdf_utils.incremental_writer import IncrementalPdfFileWriter
-from pyhanko.pdf_utils.reader import PdfFileReader
-from pyhanko.sign.validation.dss import DocumentSecurityStore
-from pyhanko_certvalidator import ValidationContext
 from pyhanko_certvalidator.fetchers.aiohttp_fetchers import AIOHttpFetcherBackend
 
 from keyseal_service import app as app_module
-from fastapi.testclient import TestClient
 
-from keyseal_service import remote_sign, validate
-from keyseal_service.app import MAX_BODY_BYTES
+from keyseal_service import trust, validate
 from keyseal_service.fetching import public_fetch_session
-from keyseal_service.validate import ValidationSettings, load_trust_roots, validate_pdf
+from keyseal_service.trust import ValidationSettings, load_trust_roots
 
-from .conftest import AUTH, TOKEN, Pki, _asn1, blank_pdf, client_for, misstamping, sign
-from .test_remote_sign import b64, prepared
-
-
-def settings_with(pki: Pki) -> ValidationSettings:
-    return ValidationSettings(trust_roots=[pki.ca_asn1])
-
-
-def with_crl(monkeypatch: pytest.MonkeyPatch, crl: bytes, historical: bool = True) -> None:
-    """Every validation context holds `crl`, or with `historical` off only
-    those checking at the present."""
-
-    def context(**kwargs: Any) -> ValidationContext:
-        if historical or kwargs.get("moment") is None:
-            kwargs["crls"] = [*(kwargs.get("crls") or []), crl]
-        return ValidationContext(**kwargs)
-
-    monkeypatch.setattr(validate, "ValidationContext", context)
+from .conftest import (
+    AUTH,
+    Pki,
+    _asn1,
+    b64,
+    blank_pdf,
+    client_for,
+    misstamping,
+    settings_with,
+    sign,
+    unanswered,
+    validate_pdf,
+    with_crl,
+)
 
 
 def test_unsigned_pdf_has_no_signatures(pki: Pki) -> None:
@@ -232,71 +219,70 @@ def test_garbage_is_reported_not_raised(pki: Pki) -> None:
     assert "message" in report
 
 
+SIGNATURE_KEYS = [
+    "issuer",
+    "notAfter",
+    "notBefore",
+    "serial",
+    "sha256Fingerprint",
+    "signerName",
+    "subject",
+    "certifies",
+    "coversWholeRevision",
+    "fieldName",
+    "intact",
+    "locks",
+    "modificationLevel",
+    "revocationChecked",
+    "signingTime",
+    "timestamped",
+    "timestampValid",
+    "trusted",
+]
+
+
+def test_a_signature_reports_the_same_keys_checked_or_not(
+    pki: Pki, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    signed = sign(blank_pdf(), pki)
+    [checked] = validate_pdf(signed, settings_with(pki))["signatures"]
+    assert list(checked) == SIGNATURE_KEYS
+
+    async def broken(*_: Any) -> Any:
+        raise ValueError("unreadable signature")
+
+    monkeypatch.setattr(validate, "_check_signature", broken)
+    [unchecked] = validate_pdf(signed, settings_with(pki))["signatures"]
+    assert unchecked == {
+        "issuer": "",
+        "notAfter": None,
+        "notBefore": None,
+        "serial": "",
+        "sha256Fingerprint": "",
+        "signerName": None,
+        "subject": "",
+        "certifies": False,
+        "coversWholeRevision": False,
+        "fieldName": "Signature1",
+        "intact": False,
+        "locks": [],
+        "modificationLevel": None,
+        "revocationChecked": False,
+        "signingTime": None,
+        "timestamped": False,
+        "timestampValid": None,
+        "trusted": False,
+        "error": "ValueError",
+    }
+    assert list(unchecked) == [*SIGNATURE_KEYS, "error"]
+
+
 def test_trust_roots_load_from_a_directory(pki: Pki, tmp_path: Path) -> None:
     pki.write_ca(tmp_path)
     (tmp_path / "notes.txt").write_text("ignored")
     (tmp_path / "broken.pem").write_text("-----BEGIN CERTIFICATE-----\nnope\n")
     roots = load_trust_roots(tmp_path)
     assert len(roots) == 1
-
-
-def test_api_requires_the_token(pki: Pki) -> None:
-    client = client_for(settings_with(pki))
-    assert client.get("/health").json()["ok"] is True
-    assert client.post("/validate", content=blank_pdf()).status_code == 401
-    response = client.post(
-        "/validate",
-        content=sign(blank_pdf(), pki),
-        headers={**AUTH, "Content-Type": "application/pdf"},
-    )
-    assert response.status_code == 200
-    assert response.json()["status"] == "valid"
-
-
-def test_prepare_adds_empty_fields_that_signers_fill(pki: Pki) -> None:
-    import base64
-
-    from keyseal_service.prepare import FieldRequest, prepare_fields
-
-    prepared = prepare_fields(
-        blank_pdf(),
-        [
-            FieldRequest(name="Signer_a", page=-1, box=(300, 600, 547, 672)),
-            FieldRequest(name="Signer_b", page=-1, box=(300, 470, 547, 542)),
-        ],
-    )
-    assert prepared.startswith(blank_pdf()[:8])
-    # An unsigned prepared PDF has fields but no signatures yet.
-    assert validate_pdf(prepared, settings_with(pki))["status"] == "no_signatures"
-    # Each signer signs their own field, one incremental update at a time.
-    first = sign(prepared, pki, "Signer_a")
-    assert first.startswith(prepared)
-    second = sign(first, pki, "Signer_b")
-    assert second.startswith(first)
-    report = validate_pdf(second, settings_with(pki))
-    assert report["status"] == "valid"
-    assert [s["fieldName"] for s in report["signatures"]] == ["Signer_a", "Signer_b"]
-
-    client = client_for(settings_with(pki))
-    response = client.post(
-        "/prepare",
-        json={
-            "fields": [{"box": [300, 600, 547, 672], "name": "Signer_a", "page": -1}],
-            "pdf": base64.b64encode(blank_pdf()).decode(),
-        },
-        headers=AUTH,
-    )
-    assert response.status_code == 200
-    assert response.headers["content-type"] == "application/pdf"
-    bad = client.post(
-        "/prepare",
-        json={
-            "fields": [{"box": [0, 0, 10, 10], "name": "x", "page": 9}],
-            "pdf": base64.b64encode(blank_pdf()).decode(),
-        },
-        headers=AUTH,
-    )
-    assert bad.status_code == 422
 
 
 def test_a_system_root_or_unknown_ca_is_not_a_configured_root(pki: Pki) -> None:
@@ -425,7 +411,7 @@ def _check(pki: Pki, signature: bytes, data: bytes) -> None:
             serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo
         )
     )
-    validate.SIGNATURE_VALIDATOR.validate_signature(
+    trust.SIGNATURE_VALIDATOR.validate_signature(
         signature,
         data,
         spki,
@@ -474,7 +460,7 @@ def test_an_oversized_rsa_key_never_reaches_the_exponentiation(
     def refuse(*_: object) -> int:
         raise AssertionError("pow() ran on an oversized key")
 
-    monkeypatch.setattr(validate, "pow", refuse, raising=False)
+    monkeypatch.setattr(trust, "pow", refuse, raising=False)
     algorithm = algos.SignedDigestAlgorithm({"algorithm": "sha256_rsa"})
     for n, e in [((1 << 20000) | 1, 65537), ((1 << 4095) | 1, (1 << 4000) | 1)]:
         spki = keys.PublicKeyInfo(
@@ -484,7 +470,7 @@ def test_an_oversized_rsa_key_never_reaches_the_exponentiation(
             }
         )
         signature = b"\x01" * ((n.bit_length() + 7) // 8)
-        assert not validate._pkcs1_without_null(
+        assert not trust._pkcs1_without_null(
             signature, b"data", spki, algorithm, DEFAULT_VALIDATION_CONTEXT
         )
 
@@ -546,7 +532,7 @@ def test_intermediates_complete_a_chain_the_pdf_leaves_out(tmp_path: Path) -> No
 def test_shipped_intermediates_chain_to_the_shipped_root() -> None:
     from cryptography import x509 as cx509
 
-    from keyseal_service.settings import TRUST as here
+    from keyseal_service.trust import TRUST as here
 
     def load(path: Path) -> cx509.Certificate:
         data = path.read_bytes()
@@ -561,255 +547,6 @@ def test_shipped_intermediates_chain_to_the_shipped_root() -> None:
     sub.verify_directly_issued_by(ca)
 
 
-def _with_looping_widget(pdf: bytes) -> bytes:
-    """`pdf` with a widget whose /Parent is itself appended as a revision."""
-    import io
-
-    from pyhanko.pdf_utils import generic
-    from pyhanko.pdf_utils.incremental_writer import IncrementalPdfFileWriter
-
-    writer = IncrementalPdfFileWriter(io.BytesIO(pdf))
-    page = writer.find_page_for_modification(0)[0].get_object()
-    widget = generic.DictionaryObject(
-        {
-            generic.NameObject("/Type"): generic.NameObject("/Annot"),
-            generic.NameObject("/Subtype"): generic.NameObject("/Widget"),
-            generic.NameObject("/Rect"): generic.ArrayObject(
-                [generic.NumberObject(n) for n in (0, 0, 10, 10)]
-            ),
-            generic.NameObject("/T"): generic.TextStringObject("loop"),
-        }
-    )
-    ref = writer.add_object(widget)
-    widget[generic.NameObject("/Parent")] = ref
-    annots = list(page["/Annots"]) if "/Annots" in page else []
-    page[generic.NameObject("/Annots")] = generic.ArrayObject([*annots, ref])
-    writer.update_container(page)
-    out = io.BytesIO()
-    writer.write(out)
-    return out.getvalue()
-
-
-def test_a_looping_field_tree_counts_as_changed_instead_of_hanging(pki: Pki) -> None:
-    from pyhanko.pdf_utils import generic
-    from pyhanko.pdf_utils.misc import PdfReadError
-
-    looping = generic.DictionaryObject({generic.NameObject("/T"): generic.TextStringObject("a")})
-    looping[generic.NameObject("/Parent")] = looping
-    with pytest.raises(PdfReadError):
-        validate._field_name(looping)
-    deep = generic.DictionaryObject()
-    for _ in range(validate.MAX_FIELD_DEPTH + 1):
-        deep = generic.DictionaryObject({generic.NameObject("/Parent"): deep})
-    with pytest.raises(PdfReadError):
-        validate._field_name(deep)
-
-    base = sign(blank_pdf(), pki)
-    report = validate_pdf(_with_looping_widget(base), settings_with(pki), len(base))
-    assert report["changesSinceBase"] == "OTHER"
-
-
-def test_a_widget_sharing_objects_is_digested_once_per_object(pki: Pki) -> None:
-    import io
-
-    from pyhanko.pdf_utils import generic
-    from pyhanko.pdf_utils.incremental_writer import IncrementalPdfFileWriter
-
-    base = sign(blank_pdf(), pki)
-    writer = IncrementalPdfFileWriter(io.BytesIO(base))
-    # Each array refers twice to the next: 2**60 paths, 60 objects.
-    node = writer.add_object(generic.ArrayObject())
-    for _ in range(60):
-        node = writer.add_object(generic.ArrayObject([node, node]))
-    widget = generic.DictionaryObject(
-        {
-            generic.NameObject("/Type"): generic.NameObject("/Annot"),
-            generic.NameObject("/Subtype"): generic.NameObject("/Widget"),
-            generic.NameObject("/Rect"): generic.ArrayObject(
-                [generic.NumberObject(n) for n in (0, 0, 10, 10)]
-            ),
-            generic.NameObject("/T"): generic.TextStringObject("shared"),
-            generic.NameObject("/MK"): node,
-        }
-    )
-    page = writer.find_page_for_modification(0)[0].get_object()
-    annots = list(page["/Annots"]) if "/Annots" in page else []
-    page[generic.NameObject("/Annots")] = generic.ArrayObject([*annots, writer.add_object(widget)])
-    writer.update_container(page)
-    out = io.BytesIO()
-    writer.write(out)
-
-    report = validate_pdf(out.getvalue(), settings_with(pki), len(base))
-    assert report["changesSinceBase"] == "OTHER"
-
-
-# ── What changed since the copy a signer was given ──────────────────────────
-
-
-def _updated(pdf: bytes, change: Callable[[IncrementalPdfFileWriter], None]) -> bytes:
-    """`pdf` with one incremental update that `change` makes."""
-    writer = IncrementalPdfFileWriter(io.BytesIO(pdf))
-    change(writer)
-    out = io.BytesIO()
-    writer.write(out)
-    return out.getvalue()
-
-
-def _field(writer: IncrementalPdfFileWriter, name: str) -> generic.DictionaryObject:
-    for ref in writer.root["/AcroForm"]["/Fields"]:
-        field = ref.get_object()
-        if str(field["/T"]) == name:
-            return field
-    raise KeyError(name)
-
-
-def _add_text_field(writer: IncrementalPdfFileWriter) -> None:
-    """Adds an empty text field `Note`, its own widget, to the first page."""
-    page_ref = writer.find_page_for_modification(0)[0]
-    page = page_ref.get_object()
-    field = writer.add_object(
-        generic.DictionaryObject(
-            {
-                generic.NameObject("/Type"): generic.NameObject("/Annot"),
-                generic.NameObject("/Subtype"): generic.NameObject("/Widget"),
-                generic.NameObject("/FT"): generic.NameObject("/Tx"),
-                generic.NameObject("/T"): generic.TextStringObject("Note"),
-                generic.NameObject("/F"): generic.NumberObject(4),
-                generic.NameObject("/P"): page_ref,
-                generic.NameObject("/Rect"): generic.ArrayObject(
-                    [generic.NumberObject(n) for n in (50, 50, 250, 80)]
-                ),
-            }
-        )
-    )
-    annots = list(page["/Annots"]) if "/Annots" in page else []
-    page[generic.NameObject("/Annots")] = generic.ArrayObject([*annots, field])
-    writer.update_container(page)
-    fields = writer.root["/AcroForm"]["/Fields"]
-    fields.append(field)
-    writer.update_container(fields)
-
-
-def test_the_copy_a_signer_was_given_changes_nothing(pki: Pki) -> None:
-    base = sign(prepared(), pki, "Signer_a")
-    report = validate_pdf(base, settings_with(pki), len(base))
-    assert report["changesSinceBase"] == "NONE"
-    assert report["baseSignatureFields"] == ["Signer_a", "Signer_b"]
-
-
-def test_the_first_signer_signing_their_prepared_field_fills_the_form(pki: Pki) -> None:
-    base = prepared()
-    report = validate_pdf(sign(base, pki, "Signer_a"), settings_with(pki), len(base))
-    assert report["changesSinceBase"] == "FORM_FILLING"
-
-
-def test_the_next_signer_signing_their_prepared_field_fills_the_form(pki: Pki) -> None:
-    base = sign(prepared(), pki, "Signer_a")
-    report = validate_pdf(sign(base, pki, "Signer_b"), settings_with(pki), len(base))
-    assert report["changesSinceBase"] == "FORM_FILLING"
-    assert [(s["fieldName"], s["certifies"], s["locks"]) for s in report["signatures"]] == [
-        ("Signer_a", False, []),
-        ("Signer_b", False, []),
-    ]
-
-
-def test_filling_a_text_field_counts_as_changed(pki: Pki) -> None:
-    """pyHanko rates this as form filling. The review is stricter on purpose:
-    only a field signed since the base may change its value and appearance."""
-    base = sign(_updated(prepared(), _add_text_field), pki, "Signer_a")
-
-    def fill(writer: IncrementalPdfFileWriter) -> None:
-        field = _field(writer, "Note")
-        appearance = generic.StreamObject(
-            {
-                generic.NameObject("/Type"): generic.NameObject("/XObject"),
-                generic.NameObject("/Subtype"): generic.NameObject("/Form"),
-                generic.NameObject("/BBox"): generic.ArrayObject(
-                    [generic.NumberObject(n) for n in (0, 0, 200, 30)]
-                ),
-            },
-            stream_data=b"",
-        )
-        field[generic.NameObject("/V")] = generic.TextStringObject("filled")
-        field[generic.NameObject("/AP")] = generic.DictionaryObject(
-            {generic.NameObject("/N"): writer.add_object(appearance)}
-        )
-        writer.update_container(field)
-
-    report = validate_pdf(_updated(base, fill), settings_with(pki), len(base))
-    assert report["textFields"] == {"Note": "filled"}
-    assert report["changesSinceBase"] == "OTHER"
-
-
-def test_an_update_that_replaces_the_base_instead_of_following_it_counts_as_changed(
-    pki: Pki,
-) -> None:
-    base = sign(prepared(), pki, "Signer_a")
-    signed = sign(base, pki, "Signer_b")
-    xrefs = PdfFileReader(io.BytesIO(base)).xrefs
-    # The next signer's update points back past the base's last revision,
-    # dropping the first signature from the document.
-    old = f"/Prev {xrefs.get_startxref_for_revision(2)}".encode()
-    new = f"/Prev {xrefs.get_startxref_for_revision(1)}".encode().ljust(len(old))
-    update = signed[len(base) :]
-    assert update.count(old) == 1
-    report = validate_pdf(base + update.replace(old, new), settings_with(pki), len(base))
-    assert [s["fieldName"] for s in report["signatures"]] == ["Signer_b"]
-    assert report["changesSinceBase"] == "OTHER"
-
-
-#: pyHanko refuses most of these itself, but counts new flags on a text
-#: field's widget as form filling, which only the render digest catches.
-@pytest.mark.parametrize("name", ["Signer_b", "Note"])
-@pytest.mark.parametrize(
-    ("key", "value"),
-    [
-        (
-            "/MK",
-            generic.DictionaryObject(
-                {
-                    generic.NameObject("/BC"): generic.ArrayObject(
-                        [generic.NumberObject(n) for n in (1, 0, 0)]
-                    )
-                }
-            ),
-        ),
-        # Hidden as well as printed.
-        ("/F", generic.NumberObject(6)),
-    ],
-)
-def test_a_new_look_for_an_unsigned_field_counts_as_changed(
-    pki: Pki, name: str, key: str, value: generic.PdfObject
-) -> None:
-    base = sign(_updated(prepared(), _add_text_field), pki, "Signer_a")
-
-    def restyle(writer: IncrementalPdfFileWriter) -> None:
-        field = _field(writer, name)
-        field[generic.NameObject(key)] = value
-        writer.update_container(field)
-
-    report = validate_pdf(_updated(base, restyle), settings_with(pki), len(base))
-    assert report["changesSinceBase"] == "OTHER"
-
-
-def test_asking_viewers_to_redraw_the_fields_counts_as_changed(pki: Pki) -> None:
-    base = sign(prepared(), pki, "Signer_a")
-
-    def redraw(writer: IncrementalPdfFileWriter) -> None:
-        acroform = writer.root["/AcroForm"]
-        acroform[generic.NameObject("/NeedAppearances")] = generic.BooleanObject(True)
-        writer.update_container(acroform)
-
-    report = validate_pdf(_updated(base, redraw), settings_with(pki), len(base))
-    assert report["changesSinceBase"] == "OTHER"
-
-
-def test_a_new_signature_field_counts_as_changed(pki: Pki) -> None:
-    base = sign(prepared(), pki, "Signer_a")
-    report = validate_pdf(sign(base, pki, "Signer_c"), settings_with(pki), len(base))
-    assert report["changesSinceBase"] == "OTHER"
-
-
 def test_any_parser_failure_is_reported_not_raised(pki: Pki, monkeypatch: pytest.MonkeyPatch) -> None:
     def explode(*_: object, **__: object) -> None:
         raise AttributeError("read_data")
@@ -818,31 +555,6 @@ def test_any_parser_failure_is_reported_not_raised(pki: Pki, monkeypatch: pytest
     report = validate_pdf(sign(blank_pdf(), pki), settings_with(pki))
     assert report["status"] == "invalid"
     assert report["message"] == "Not a readable PDF: AttributeError"
-
-
-def test_the_token_needs_the_bearer_scheme_and_bodies_a_size(pki: Pki) -> None:
-    client = client_for(settings_with(pki))
-    for header in (TOKEN, f"Basic {TOKEN}", f"Bearer{TOKEN}"):
-        response = client.post("/validate", content=blank_pdf(), headers={"Authorization": header})
-        assert response.status_code == 401, header
-    too_big = client.post(
-        "/validate",
-        content=b"",
-        headers={**AUTH, "Content-Length": str(MAX_BODY_BYTES + 1)},
-    )
-    assert too_big.status_code == 413
-    nan = client.post(
-        "/prepare",
-        headers=AUTH,
-        json={"pdf": b64(blank_pdf()), "fields": [{"name": "a", "page": 0, "box": [0, 0, "NaN", 1]}]},
-    )
-    assert nan.status_code == 422
-    huge = client.post(
-        "/prepare",
-        headers=AUTH,
-        json={"pdf": b64(blank_pdf()), "fields": [{"name": "a", "page": 0, "box": [0, 0, 1e300, 1]}]},
-    )
-    assert huge.status_code == 422
 
 
 def test_a_validation_does_not_hold_up_other_requests(
@@ -907,25 +619,6 @@ def test_a_validation_past_its_budget_is_refused_and_stops(
     assert stopped.is_set()
 
 
-def _unanswered(stopped: threading.Event) -> Any:
-    async def unanswered(*_: Any, **__: Any) -> Any:
-        try:
-            await asyncio.sleep(60)
-        finally:
-            stopped.set()
-
-    return unanswered
-
-
-def _with_local_tsa(pki: Pki, monkeypatch: pytest.MonkeyPatch) -> TestClient:
-    monkeypatch.setattr(
-        app_module.timestamps,
-        "HTTPTimeStamper",
-        lambda _url, **_: pki.timestamper(datetime.now(UTC)),
-    )
-    return client_for(settings_with(pki), ("https://tsa.invalid",))
-
-
 def test_a_certificate_check_past_its_budget_stops_and_may_be_retried(
     pki: Pki, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -935,7 +628,7 @@ def test_a_certificate_check_past_its_budget_stops_and_may_be_retried(
         def __init__(self, *_: Any, **__: Any) -> None:
             pass
 
-        async_validate_path = _unanswered(stopped)
+        async_validate_path = unanswered(stopped)
 
     monkeypatch.setattr(validate, "CertificateValidator", UnansweredValidator)
     monkeypatch.setattr(validate, "VALIDATION_BUDGET_SECONDS", 0.1)
@@ -950,81 +643,11 @@ def test_a_certificate_check_past_its_budget_stops_and_may_be_retried(
     assert stopped.is_set()
 
 
-@pytest.mark.parametrize(
-    ("path", "slow", "message"),
-    [
-        (
-            "/finalize",
-            (remote_sign, "async_add_validation_info"),
-            "Finalising took longer than 0.1 seconds",
-        ),
-        (
-            "/retimestamp",
-            (remote_sign.signers.PdfTimeStamper, "async_update_archival_timestamp_chain"),
-            "Timestamping took longer than 0.1 seconds",
-        ),
-    ],
-)
-def test_long_term_validation_past_its_budget_is_refused_and_stops(
-    pki: Pki, monkeypatch: pytest.MonkeyPatch, path: str, slow: tuple[Any, str], message: str
-) -> None:
-    stopped = threading.Event()
-    monkeypatch.setattr(*slow, _unanswered(stopped))
-    monkeypatch.setattr(validate, "VALIDATION_BUDGET_SECONDS", 0.1)
-    with _with_local_tsa(pki, monkeypatch) as client:
-        response = client.post(path, content=sign(blank_pdf(), pki), headers=AUTH)
-    assert response.status_code == 422
-    assert response.json() == {"detail": message}
-    assert stopped.is_set()
-
-
-def test_finalising_a_pdf_with_too_many_signatures_is_refused(
-    pki: Pki, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    twice = sign(sign(blank_pdf(), pki, "Signer1"), pki, "Signer2")
-    monkeypatch.setattr(validate, "MAX_SIGNATURES", 1)
-    with _with_local_tsa(pki, monkeypatch) as client:
-        response = client.post("/finalize", content=twice, headers=AUTH)
-    assert response.status_code == 422
-    assert response.json() == {"detail": "More than 1 signatures"}
-
-
-def test_long_term_archive_finalises_and_retimestamps_offline(
-    pki: Pki, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    # The test root's CRL stands in for a fetch; the TSA is a local one under the same root.
-    with_crl(monkeypatch, pki.crl())
-    signed = sign(blank_pdf(), pki, timestamper=pki.timestamper(datetime.now(UTC)))
-    with _with_local_tsa(pki, monkeypatch) as client:
-        finalised = client.post("/finalize", content=signed, headers=AUTH)
-        assert finalised.status_code == 200
-        archived = client.post("/retimestamp", content=finalised.content, headers=AUTH)
-        assert archived.status_code == 200
-    assert finalised.content.startswith(signed)
-    assert archived.content.startswith(finalised.content)
-
-    reader = PdfFileReader(io.BytesIO(archived.content))
-    dss = DocumentSecurityStore.read_dss(reader)
-    assert len(dss.crls) >= 1
-    assert len(dss.certs) >= 2  # the signer's root and the TSA's certificate
-
-    report = validate_pdf(archived.content, settings_with(pki))
-    assert report["status"] == "valid"
-    [signature] = report["signatures"]
-    assert signature["trusted"] is True
-    assert signature["timestampValid"] is True
-    assert signature["revocationChecked"] is True
-    assert [(t["intact"], t["trusted"]) for t in report["documentTimestamps"]] == [
-        (True, True),
-        (True, True),
-    ]
-
-
 def test_system_roots_come_from_openssl_without_oscrypto(pki: Pki, tmp_path: Path) -> None:
     bundle = pki.write_ca(tmp_path)
     script = (
         "import sys\n"
-        "from keyseal_service.validate import ValidationSettings, system_trust_roots\n"
+        "from keyseal_service.trust import ValidationSettings, system_trust_roots\n"
         "ValidationSettings(trust_roots=[]).context()\n"
         "print([root.sha256.hex() for root in system_trust_roots()])\n"
         "print('oscrypto' in sys.modules)\n"

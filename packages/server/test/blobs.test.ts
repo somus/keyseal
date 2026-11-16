@@ -1,11 +1,6 @@
 import { expect, test } from "bun:test";
 
-import {
-  blobJobId,
-  pdfKey,
-  stateBlobKey,
-  stateKey,
-} from "../src/blobs.js";
+import { blobJobId, pdfKey, stateBlobKey, stateKey } from "../src/blobs.js";
 
 // Integrators' stores already hold keys in this layout, and `sweep` parses
 // it: a change here strands their blobs.

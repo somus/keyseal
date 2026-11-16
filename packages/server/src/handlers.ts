@@ -463,10 +463,7 @@ export function createHandlers({
         return json({});
       });
     }
-    return json(
-      { message: UPGRADE_MESSAGE, minVersion: minimum },
-      426
-    );
+    return json({ message: UPGRADE_MESSAGE, minVersion: minimum }, 426);
   }
 
   /** Protocol section 8.1: the checks run in the order of its status list. */

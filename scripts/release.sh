@@ -12,7 +12,7 @@
 #   its version) isn't on GitHub gets the tag, once checks.yml and e2e.yml
 #   have passed on the commit's push to main (scripts/ci/ci-passed.sh).
 # - A helper whose release is missing or still a draft goes through
-#   helper/packaging/release.sh, which gets the rebuild flags and the
+#   helper/packaging/sign-release.sh, which gets the rebuild flags and the
 #   Bitwarden session, and nothing else here sees that session.
 # - server-v waits for that helper release to be published and latest, since
 #   a server version can require the helper released with it.
@@ -22,7 +22,7 @@
 # that one password. --dry-run prints the plan and changes nothing.
 #
 # Needs gh, jq and git, and for a helper release what
-# helper/packaging/release.sh needs.
+# helper/packaging/sign-release.sh needs.
 set -euo pipefail
 
 usage() {
@@ -45,17 +45,11 @@ done
 bw_session="${BW_SESSION:-}"
 unset BW_SESSION
 
-step() { printf '\n== %s\n' "$*"; }
-fail() { echo "FAILED: $*" >&2; exit 1; }
+# shellcheck source=../helper/packaging/release-common.sh
+. "$(dirname "$0")/../helper/packaging/release-common.sh"
 outcome="The release failed; see the terminal."
-# Rung on every way out, for a maintainer who has walked away.
-notify() {
-  $dry_run && return
-  printf '\a'
-  osascript -e 'on run argv' -e 'display notification (item 1 of argv) with title "KeySeal release"' -e 'end run' \
-    "$outcome" >/dev/null 2>&1 || true
-}
-trap notify EXIT
+# Rung on every way out.
+trap '$dry_run || notify "$outcome"' EXIT
 trap 'exit 130' INT TERM
 
 step "Preflight"
@@ -135,21 +129,9 @@ fi
 if $helper_due; then
   # Checked before anything waits, so a missing tool fails now and not an
   # hour in.
-  command -v bw >/dev/null || fail "needs bw on the PATH for the helper release"
-  case "${rebuild_flags[*]:-}" in
-    "" | --rebuild-boat)
-      command -v boat >/dev/null && BOAT_NO_UPDATE=1 boat status >/dev/null 2>&1 \
-        || fail "the Linux rebuild uses Boat sandboxes and needs a signed-in boat; or pass --rebuild-local"
-      ;;
-  esac
-  case "${rebuild_flags[*]:-}" in
-    "" | --rebuild-local) docker info >/dev/null 2>&1 || fail "the Linux rebuild needs Docker running on this Mac; or pass --rebuild-boat" ;;
-  esac
-  if [ -z "$bw_session" ]; then
-    [ "$(bw status | jq -r .status)" != unauthenticated ] || fail "Bitwarden isn't logged in: bw login"
-    bw_session="$(bw unlock --raw)" || fail "unlocking Bitwarden"
-  fi
-  [ "$(BW_SESSION="$bw_session" bw status | jq -r .status)" = unlocked ] || fail "Bitwarden didn't unlock"
+  rebuild="${rebuild_flags[0]:---default}"
+  check_rebuild "${rebuild#--}"
+  unlock_bitwarden
 fi
 
 # Waits for one of the run's results; the URL goes with it either way.
@@ -208,7 +190,7 @@ fi
 if $helper_due; then
   step "Releasing $helper_tag"
   BW_SESSION="$bw_session" KEYSEAL_NO_NOTIFY=1 \
-    helper/packaging/release.sh "$helper_version" ${rebuild_flags[@]+"${rebuild_flags[@]}"}
+    helper/packaging/sign-release.sh "$helper_version" ${rebuild_flags[@]+"${rebuild_flags[@]}"}
   # Not when KEYSEAL_SIGN_ONLY=1 stopped it after signing.
   [ "$(release_state "$helper_tag")" = published ] \
     && [ "$(gh api "repos/$repo/releases/latest" --jq .tag_name)" = "$helper_tag" ] \

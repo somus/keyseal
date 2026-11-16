@@ -3,7 +3,7 @@
 # maintainer's Mac (docs/releasing.md). scripts/release.sh runs it; it also
 # runs on its own:
 #
-#   helper/packaging/release.sh <version> [--verify-only]
+#   helper/packaging/sign-release.sh <version> [--verify-only]
 #     [--rebuild-boat | --rebuild-local | --rebuild-host <ssh host> | --skip-rebuild]
 #
 # 1. Downloads the draft and clones its tag, and requires the tagged commit
@@ -16,7 +16,8 @@
 #    (compare-bundle.sh), with their Developer ID or ad-hoc signature. The
 #    zip and the app must hold the third-party notices this script makes
 #    from the tagged source (third-party-notices.sh).
-# 3. Rebuilds the Linux binaries in the pinned container and requires each
+# 3. Rebuilds the Linux binaries in the pinned container with this
+#    checkout's linux/build-in-container.sh and requires each
 #    to equal SHA256SUMS-unsigned and the binary in the tarball, deb and
 #    AppImage (unpacked, never run). The source and the Linux packages are
 #    streamed into a throwaway container, which gets no access to the work
@@ -90,11 +91,9 @@ unset BW_SESSION
 
 tag="helper-v$version"
 here="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=release-common.sh
+. "$here/release-common.sh"
 key="${KEYSEAL_RELEASE_KEY:-KeySeal release key}"
-step() { printf '\n== %s\n' "$*"; }
-fail() { echo "FAILED: $*" >&2; exit 1; }
-# Boat's CLI from the PATH, kept from updating itself mid-release.
-run_boat() { BOAT_NO_UPDATE=1 boat "$@"; }
 # Deleted on every way out of this script, and only the ones it made.
 sandboxes=()
 outcome="$tag: the release failed; see the terminal."
@@ -102,12 +101,7 @@ on_exit() {
   for id in ${sandboxes[@]+"${sandboxes[@]}"}; do
     run_boat delete "$id" --yes >/dev/null || echo "Couldn't delete Boat sandbox $id; delete it with: boat delete $id" >&2
   done
-  # For a maintainer who has walked away.
-  if [ "${KEYSEAL_NO_NOTIFY:-}" != 1 ]; then
-    printf '\a'
-    osascript -e 'on run argv' -e 'display notification (item 1 of argv) with title "KeySeal release"' -e 'end run' \
-      "$outcome" >/dev/null 2>&1 || true
-  fi
+  [ "${KEYSEAL_NO_NOTIFY:-}" = 1 ] || notify "$outcome"
 }
 trap on_exit EXIT
 trap 'exit 130' INT TERM
@@ -121,23 +115,8 @@ case "$(openssl version)" in
   *) fail "needs OpenSSL 3 or later first on the PATH, not $(openssl version)" ;;
 esac
 gh auth status >/dev/null 2>&1 || fail "gh isn't signed in: gh auth login"
-case "$rebuild" in
-  default | rebuild-boat)
-    command -v boat >/dev/null && run_boat status >/dev/null 2>&1 \
-      || fail "the rebuild uses Boat sandboxes and needs a signed-in boat on the PATH; or pass --rebuild-local"
-    ;;
-esac
-case "$rebuild" in
-  default | rebuild-local) docker info >/dev/null 2>&1 || fail "the rebuild needs Docker running on this Mac; or pass --rebuild-boat" ;;
-esac
-if ! $verify_only; then
-  command -v bw >/dev/null || fail "needs bw on the PATH"
-  if [ -z "$bw_session" ]; then
-    [ "$(bw status | jq -r .status)" != unauthenticated ] || fail "Bitwarden isn't logged in: bw login"
-    bw_session="$(bw unlock --raw)" || fail "unlocking Bitwarden"
-  fi
-  [ "$(BW_SESSION="$bw_session" bw status | jq -r .status)" = unlocked ] || fail "Bitwarden is locked"
-fi
+check_rebuild "$rebuild"
+$verify_only || unlock_bitwarden
 repo="$(gh repo view --json nameWithOwner --jq .nameWithOwner)"
 signer="$(gh api user --jq .login)"
 
@@ -196,7 +175,7 @@ done
 $verify_only || [ "$is_draft" = true ] || fail "$tag is not a draft release in $repo"
 
 step "Downloading the draft and the tagged source into $work"
-rm -rf "$work/draft" "$work/src" "$work/ci-unsigned" "$work/ci-windows" "$work/mine" "$work/unzipped" "$work/rebuilt" "$work"/rebuild-* "$work"/rebuilt-* "$work/THIRD-PARTY-NOTICES.txt"
+rm -rf "$work/draft" "$work/src" "$work/build-in-container.sh" "$work/ci-unsigned" "$work/ci-windows" "$work/mine" "$work/unzipped" "$work/rebuilt" "$work"/rebuild-* "$work"/rebuilt-* "$work/THIRD-PARTY-NOTICES.txt"
 gh release download "$tag" --repo "$repo" --dir "$work/draft"
 # Not `clone --branch`: it would take a branch named like the tag over the tag.
 git clone -q --no-checkout "https://github.com/$repo.git" "$work/src"
@@ -271,31 +250,25 @@ else
   platforms=()
   pids=()
   started=$SECONDS
-  # The same image and rustup-init as release.yml and docs/releasing.md,
-  # once per architecture. The image is release.yml's
-  # ubuntu:22.04@sha256:0a9887931b0e38af2e3487ed39e29436b0535c4f3f52e57745baaf79d1898956,
-  # by the digest of that index's image for the architecture, which some
-  # Docker stores can't keep two of under one index digest. The container
-  # gets a copy of the source in /w/src and the packages in /w/draft, and its
-  # last line is the rebuilt binary's SHA-256.
+  # The image of release.yml's build-linux job, which must stay the same:
+  # its container: names the index digest, and these are the digests of
+  # that index's image for each architecture, since some Docker stores
+  # can't keep two of them under one index digest. The container gets a
+  # copy of the source in /w/src, the packages in /w/draft and this
+  # checkout's build-in-container.sh, which builds the binary as release.yml
+  # does; its last line is the rebuilt binary's SHA-256.
+  cp "$here/linux/build-in-container.sh" "$work/build-in-container.sh"
   for build in \
-    "linux-x64 amd64 x86_64 5be191e8c70a5007074254cb74d78dbfdd25cd5a61c27de7b8e5410122ec24f4 98510ac07bb4545e389be502a8918b385c018bfe4ceeb5ac7e0375c782268b04" \
-    "linux-arm64 arm64 aarch64 a9c168dbea81a84671c6b7a5c1795cb0eb699020110d107ddfca427bd797e697 88881eb36da489f9ff8746ece8048ca16cc94f80e8cd3ae7e8335d8822631591"; do
-    read -r platform deb_arch arch rustup_sha256 image_digest <<<"$build"
+    "linux-x64 amd64 98510ac07bb4545e389be502a8918b385c018bfe4ceeb5ac7e0375c782268b04" \
+    "linux-arm64 arm64 88881eb36da489f9ff8746ece8048ca16cc94f80e8cd3ae7e8335d8822631591"; do
+    read -r platform deb_arch image_digest <<<"$build"
     image="ubuntu@sha256:$image_digest"
     linux="keyseal-helper-$version-$platform"
     cat >"$work/rebuild-$platform.sh" <<SCRIPT
 set -e
-apt-get update -qq && apt-get install -y -qq --no-install-recommends build-essential ca-certificates curl file git \\
-  pkg-config libasound2-dev libfontconfig-dev libvulkan1 libwayland-dev libx11-xcb-dev libxkbcommon-x11-dev \\
-  squashfs-tools >/dev/null
-curl -fsSLo /tmp/rustup-init https://static.rust-lang.org/rustup/archive/1.29.2/$arch-unknown-linux-gnu/rustup-init
-echo "$rustup_sha256  /tmp/rustup-init" | sha256sum -c -
-chmod +x /tmp/rustup-init && /tmp/rustup-init -y -q --profile minimal --default-toolchain none
-. "\$HOME/.cargo/env" && git config --global --add safe.directory /w/src
-cd /w/src && (cd helper && rustup toolchain install)
-helper/packaging/build-release.sh $platform /w/rebuilt >/dev/null
+cd /w/src && sh /w/build-in-container.sh $platform /w/rebuilt >/dev/null
 binary=/w/rebuilt/$linux
+apt-get install -y -qq --no-install-recommends squashfs-tools >/dev/null
 tar -xzOf /w/draft/$linux.tar.gz $linux/keyseal | cmp - "\$binary"
 dpkg-deb --fsys-tarfile /w/draft/keyseal_${version}_$deb_arch.deb | tar -xO ./usr/bin/keyseal | cmp - "\$binary"
 # The AppImage's file system starts where its runtime's ELF ends (the end of
@@ -310,7 +283,7 @@ sha256sum "\$binary"
 SCRIPT
     # Streamed in rather than mounted: nothing in the container can change
     # the scripts and files this script runs and signs afterwards.
-    inputs=(src "rebuild-$platform.sh" "draft/$linux.tar.gz" "draft/keyseal_${version}_$deb_arch.deb" "draft/$linux.AppImage")
+    inputs=(src build-in-container.sh "rebuild-$platform.sh" "draft/$linux.tar.gz" "draft/keyseal_${version}_$deb_arch.deb" "draft/$linux.AppImage")
     container="docker run -i --rm --platform linux/$deb_arch $image sh -c 'mkdir /w && tar -xf - -C /w && sh /w/rebuild-$platform.sh'"
     log="$work/rebuild-$platform.log"
     case "$rebuild:$platform" in

@@ -105,9 +105,8 @@ jobs:
         working-directory: helper
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - run: |
-          rustup toolchain install 1.100.0 --profile minimal --component clippy,rustfmt
-          rustup default 1.100.0
+      # The version and components rust-toolchain.toml pins.
+      - run: rustup toolchain install
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: helper
@@ -118,7 +117,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libasound2-dev libfontconfig-dev libvulkan1 libwayland-dev libx11-xcb-dev libxkbcommon-x11-dev
+          xargs -a linux-build-packages.txt sudo apt-get install -y
       - name: SoftHSM (Linux)
         if: runner.os == 'Linux'
         run: |

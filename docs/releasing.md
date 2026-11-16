@@ -42,7 +42,7 @@ the same way, by pushing a tag:
    draft is checked, signed and published, and a published helper is done.
    After a failure, fix the cause and run it again to carry on. The rebuild
    flags `--rebuild-boat`, `--rebuild-local`, `--rebuild-host <ssh host>`
-   and `--skip-rebuild` go through to `helper/packaging/release.sh`
+   and `--skip-rebuild` go through to `helper/packaging/sign-release.sh`
    ([Rebuild modes](#rebuild-modes)).
 
 Each workflow stops unless the tag is on `main`, matches the component's
@@ -59,7 +59,7 @@ and push the tag, for example:
 git tag server-v0.2.0 && git push origin server-v0.2.0
 ```
 
-For a helper, push its tag, then run `helper/packaging/release.sh` (step 4
+For a helper, push its tag, then run `helper/packaging/sign-release.sh` (step 4
 below), and push a `server-v` tag only after the helper release is
 published.
 
@@ -120,14 +120,14 @@ procedure.
 
    Each of these files has a build provenance attestation
    ([Checking build provenance](#checking-build-provenance)).
-4. `helper/packaging/release.sh` checks, signs and publishes on a Mac,
+4. `helper/packaging/sign-release.sh` checks, signs and publishes on a Mac,
    with Bitwarden logged in, cargo-about 0.9.3 installed
    (`cargo install --locked --features cli cargo-about@0.9.3`, once), and
    what the [rebuild mode](#rebuild-modes) needs: by default Docker running
    and the `boat` CLI signed in. `scripts/release.sh` runs it; on its own:
 
    ```sh
-   helper/packaging/release.sh 1.4.0
+   helper/packaging/sign-release.sh 1.4.0
    ```
 
    Run it from an up-to-date checkout of `main`. It asks for the Bitwarden
@@ -149,7 +149,7 @@ procedure.
    check a release:
 
    ```sh
-   helper/packaging/release.sh 1.4.0 --verify-only
+   helper/packaging/sign-release.sh 1.4.0 --verify-only
    ```
 
 5. The publish run checks the tag again, verifies both files' signatures
@@ -185,7 +185,7 @@ policy's [Before signing](code-signing-policy.md#before-signing-reproducibility)
 
 ### Signing with more than one key
 
-With a `THRESHOLD` above 1, each other maintainer runs `release.sh` with
+With a `THRESHOLD` above 1, each other maintainer runs `sign-release.sh` with
 `KEYSEAL_SIGN_ONLY=1`, which checks, signs and stops, and sends whoever
 publishes the two entries it leaves in its work directory,
 `keyseal-update.json-<login>.json` and `SHA256SUMS-<login>.json`. The
@@ -195,13 +195,13 @@ it, and runs the script, which adds theirs and combines every entry with
 `jq -cs '{signatures: .}'` into `keyseal-update.json.sig` and
 `SHA256SUMS.sig`.
 
-`release.sh` signs only with the key in Bitwarden. To sign with a backup
+`sign-release.sh` signs only with the key in Bitwarden. To sign with a backup
 key, check the draft in a directory of your own, then sign, combine,
 verify and publish by hand from it, without running the draft's helper:
 
 ```sh
 export KEYSEAL_RELEASE_DIR="$HOME/keyseal-release-1.4.0"
-helper/packaging/release.sh 1.4.0 --verify-only && cd "$KEYSEAL_RELEASE_DIR"
+helper/packaging/sign-release.sh 1.4.0 --verify-only && cd "$KEYSEAL_RELEASE_DIR"
 for file in keyseal-update.json SHA256SUMS; do
   src/helper/packaging/sign-file.sh offline /Volumes/<backup drive>/keyseal-release-backup.pem \
     "draft/$file" > "$file-<login>.json"
@@ -219,7 +219,7 @@ commit; the rule is in `spec/protocol-v1.md` section 13. Each helper
 release renews it; nothing else does. Once it passes, helpers refuse the
 manifest, write why to `keyseal.log` (and `keyseal update` prints it), keep
 working, and stop updating. A patch release restores updates. Release a
-recent commit and publish within the 180 days: `release.sh` prints the
+recent commit and publish within the 180 days: `sign-release.sh` prints the
 manifest, `expires` included, before it signs, and the publish run's
 `keyseal update verify` fails on an expired manifest.
 
@@ -240,27 +240,21 @@ what `BUILDINFO` in the draft records.
   lists and the release puts in `KeySeal.app/Contents/MacOS/` beside the
   helper.
 
-- Linux, in the same container image and rustup-init CI uses (both pinned
-  in `.github/workflows/release.yml`). For arm64, use `--platform
-  linux/arm64`, rustup-init's `aarch64-unknown-linux-gnu` build with SHA-256
-  `a9c168dbea81a84671c6b7a5c1795cb0eb699020110d107ddfca427bd797e697`, and
-  `build-release.sh linux-arm64`; a Docker that won't pull the arm64 image by
-  the index digest takes its own,
-  `ubuntu@sha256:88881eb36da489f9ff8746ece8048ca16cc94f80e8cd3ae7e8335d8822631591`.
-  On an x86_64 Linux machine, arm64 runs under QEMU user emulation once
-  `qemu-user-static` and `binfmt-support` are installed.
+- Linux, with `helper/packaging/linux/build-in-container.sh`, which
+  installs the packages, the pinned rustup-init and the toolchain and runs
+  `build-release.sh`, in the container image the `build-linux` job of
+  `.github/workflows/release.yml` names. For arm64, use `--platform
+  linux/arm64` and `linux-arm64`; a Docker that won't pull the arm64 image
+  by the index digest takes the arm64 digest in `sign-release.sh`. On an
+  x86_64 Linux machine, arm64 runs under QEMU user emulation once
+  `qemu-user-static` and `binfmt-support` are installed. A tag made before
+  the script existed doesn't hold it; `sign-release.sh --verify-only`
+  rebuilds such a tag with its own checkout's copy.
 
   ```sh
-  docker run --rm --platform linux/amd64 -v "$PWD":/src -w /src \
-    ubuntu:22.04@sha256:0a9887931b0e38af2e3487ed39e29436b0535c4f3f52e57745baaf79d1898956 sh -c '
-    apt-get update && apt-get install -y --no-install-recommends build-essential ca-certificates curl file git \
-      pkg-config libasound2-dev libfontconfig-dev libvulkan1 libwayland-dev libx11-xcb-dev libxkbcommon-x11-dev &&
-    curl -fsSLo /tmp/rustup-init https://static.rust-lang.org/rustup/archive/1.29.2/x86_64-unknown-linux-gnu/rustup-init &&
-    echo "5be191e8c70a5007074254cb74d78dbfdd25cd5a61c27de7b8e5410122ec24f4  /tmp/rustup-init" | sha256sum -c - &&
-    chmod +x /tmp/rustup-init && /tmp/rustup-init -y --profile minimal --default-toolchain none &&
-    . "$HOME/.cargo/env" && git config --global --add safe.directory /src &&
-    (cd helper && rustup toolchain install) &&
-    helper/packaging/build-release.sh linux-x64 /src/dist-repro'
+  image="$(awk '$1 == "container:" { print $2 }' .github/workflows/release.yml)"
+  docker run --rm --platform linux/amd64 -v "$PWD":/src -w /src "$image" \
+    helper/packaging/linux/build-in-container.sh linux-x64 /src/dist-repro
   ```
 
 - Windows, in Git Bash on a machine with the Visual Studio, MSVC toolset
@@ -284,7 +278,7 @@ spaces.
 
 The signed macOS app can't match byte for byte; compare its executables
 with yours using `helper/packaging/macos/compare-bundle.sh`, as
-`release.sh` does.
+`sign-release.sh` does.
 
 ### Third-party notices
 
@@ -295,7 +289,7 @@ the Linux tarball beside `keyseal`, and the deb and the AppImage under
 `usr/share/doc/keyseal`.
 The release run's `notices` job makes it once, with cargo-about 0.9.3 from
 `Cargo.lock`, offline, so the same commit gives the same file anywhere.
-`release.sh` makes it again from the tag and compares. To make it yourself,
+`sign-release.sh` makes it again from the tag and compares. To make it yourself,
 with `cargo-about` 0.9.3 on the `PATH`:
 
 ```sh
@@ -322,32 +316,35 @@ gh attestation verify keyseal-helper-1.4.0-linux-x64.AppImage --repo somus/keyse
 
 ### Toolchain upkeep
 
-- Bump `helper/rust-toolchain.toml` and the version `checks.yml` installs
-  together, in their own commit; the next release records the new version
-  in `BUILDINFO`.
+- Bump `helper/rust-toolchain.toml` in its own commit; CI and the release
+  builds install the toolchain from it, and the next release records the
+  new version in `BUILDINFO`.
 - The macOS jobs pin Xcode with `DEVELOPER_DIR` in
   `.github/workflows/release.yml`; change it when the runner image drops
   that Xcode.
 - Linux builds run in the `ubuntu:22.04` container, so the binary needs
-  glibc 2.35 or later. The container installs GPUI's build packages, the
-  same list as `checks.yml`.
+  glibc 2.35 or later. `helper/packaging/linux/build-in-container.sh`
+  installs GPUI's build packages there, written out to match
+  `helper/linux-build-packages.txt`, the list CI and the Boat snapshot
+  install from; change both together.
 - The AppImage is built with appimagetool and runtime versions pinned by
   SHA-256 in the workflow, and `build-appimage.sh` fails unless the
   AppImage starts with that runtime.
 - cargo-about is pinned by version and SHA-256 in the `notices` job of
   `.github/workflows/release.yml` (`.sha256` beside each archive on its
-  GitHub release). `release.sh` makes the notices again with the
+  GitHub release). `sign-release.sh` makes the notices again with the
   cargo-about on your `PATH` and requires the same bytes, so install the
   new version on the Mac too, and update the version named in this
   document and in the comments of `third-party-notices.sh` and
-  `release.sh`.
+  `sign-release.sh`.
 - Every action in `release.yml` is pinned by commit SHA with its version in
-  a comment, the `ubuntu:22.04` image by digest, and rustup-init by version
-  and SHA-256. Update a pin by resolving the new tag yourself
-  (`gh api repos/actions/checkout/git/ref/tags/v7.0.1`, the registry's
-  `docker-content-digest` for the image, `rustup-init.sha256` beside the
-  binary on static.rust-lang.org), and update the `docker run` command
-  above with the image and rustup-init.
+  a comment, the `ubuntu:22.04` image by digest (in `release.yml`, and per
+  architecture in `sign-release.sh`), and rustup-init by version and
+  SHA-256 in `build-in-container.sh`. Update a pin by resolving the new tag
+  yourself (`gh api repos/actions/checkout/git/ref/tags/v7.0.1`, the
+  registry's `docker-content-digest` for the image and for each
+  architecture's image in its index, `rustup-init.sha256` beside the binary
+  on static.rust-lang.org).
 - The container's apt packages are not pinned: `apt-get install` with
   exact versions breaks as soon as jammy-updates replaces one, so the build
   takes whatever jammy serves that day. A changed gcc or glibc headers can

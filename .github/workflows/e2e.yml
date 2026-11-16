@@ -52,15 +52,15 @@ jobs:
           key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
           restore-keys: bun-${{ runner.os }}-
       - run: bun install --frozen-lockfile
-      - run: |
-          rustup toolchain install 1.100.0 --profile minimal
-          rustup default 1.100.0
+      # The version rust-toolchain.toml pins; e2e.sh builds in helper/.
+      - working-directory: helper
+        run: rustup toolchain install
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: helper
       - run: |
           sudo apt-get update
-          sudo apt-get install -y softhsm2 opensc jq libasound2-dev libfontconfig-dev libvulkan1 libwayland-dev libx11-xcb-dev libxkbcommon-x11-dev
+          xargs -a helper/linux-build-packages.txt sudo apt-get install -y softhsm2 opensc jq
       - run: scripts/ci/e2e.sh
         env:
           KEYSEAL_SOFTHSM_MODULE: /usr/lib/softhsm/libsofthsm2.so

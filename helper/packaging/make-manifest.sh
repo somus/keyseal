@@ -2,10 +2,12 @@
 # Writes keyseal-update.json (spec/protocol-v1.md section 13) for the update
 # assets, then SHA256SUMS for every asset of the release:
 #
-#   helper/packaging/make-manifest.sh <version> <assets dir> [<out dir>]
+#   helper/packaging/make-manifest.sh [--copy] <version> <assets dir> [<out dir>]
 #
 # <assets dir> must hold every asset in `assets` below except
 # keyseal-update.json; both files go to <out dir>, by default <assets dir>.
+# --copy first makes the copies in `fixed` below in <assets dir>, as the
+# release run's draft job does; without it they must be there already.
 # The manifest expires `valid_days` after the committer time of the commit
 # this script is checked out at, the tagged commit in a release. The output
 # is fixed bytes for the same assets and the same commit (the manifest is
@@ -14,6 +16,11 @@
 # what they sign.
 set -euo pipefail
 
+copy=false
+if [ "$1" = --copy ]; then
+  copy=true
+  shift
+fi
 version="$1"
 dir="$2"
 out="${3:-$dir}"
@@ -55,6 +62,9 @@ assets=(
   "${fixed[@]%%=*}"
 )
 for pair in "${fixed[@]}"; do
+  if $copy; then
+    cp "$dir/${pair#*=}" "$dir/${pair%%=*}"
+  fi
   cmp "$dir/${pair%%=*}" "$dir/${pair#*=}" || {
     echo "${pair%%=*} isn't a copy of ${pair#*=}." >&2
     exit 1

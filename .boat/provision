@@ -6,8 +6,7 @@
 set -euo pipefail
 
 sudo apt-get update -q >/dev/null
-sudo DEBIAN_FRONTEND=noninteractive apt-get install -yq \
-  libasound2-dev libfontconfig-dev libvulkan1 libwayland-dev libx11-xcb-dev libxkbcommon-x11-dev \
+xargs -a helper/linux-build-packages.txt sudo DEBIAN_FRONTEND=noninteractive apt-get install -yq \
   softhsm2 opensc jq x11-apps >/dev/null
 
 bun_version=$(grep -oE '"packageManager": *"bun@[^"]+"' package.json | grep -oE '[0-9.]+')

@@ -166,6 +166,8 @@ jobs:
       # The gallery example builds only with its feature.
       - run: cargo clippy -p keyseal-ui --all-targets --features gallery -- -D warnings
       - run: cargo test
+      # The gallery's test that every view it lists opens.
+      - run: cargo test -p keyseal-ui --features gallery --lib views::gallery
       # The keychain code against a token macOS's own PIV driver exposes
       # through CryptoTokenKit: a virtual PIV card from
       # scripts/ci/virtual-piv.sh. Signing isn't covered, since it needs the

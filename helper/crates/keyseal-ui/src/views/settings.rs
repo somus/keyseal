@@ -35,7 +35,7 @@ pub(crate) fn settings_open(cx: &mut App) -> bool {
     settings_window(cx).is_some()
 }
 
-pub(crate) fn open_settings(config_dir: PathBuf, log: fn(&str), probe: Probe, cx: &mut App) {
+pub(crate) fn open_settings(config_dir: PathBuf, probe: Probe, cx: &mut App) {
     if let Some(handle) = settings_window(cx) {
         let _ = handle.update(cx, |_, window, _| window.activate_window());
         return;
@@ -44,7 +44,6 @@ pub(crate) fn open_settings(config_dir: PathBuf, log: fn(&str), probe: Probe, cx
         strings::SETTINGS_WINDOW_TITLE,
         560.,
         600.,
-        log,
         cx,
         |window, cx| cx.new(|cx| SettingsWindow::new(config_dir, probe, window, cx)),
     );
@@ -605,10 +604,11 @@ mod tests {
 
     use keyseal_core::doctor::Status;
 
-    use crate::views::testing::{log, open_windows, probe, setup, temp_dir};
+    use crate::views::testing::{open_windows, probe, setup, temp_dir};
 
     use crate::strings;
-    use crate::views::{open_settings, sample_report};
+    use crate::views::open_settings;
+    use crate::views::sample::sample_report;
 
     #[gpui_kit::test]
     fn settings_window_forgets_origins(cx: &mut TestAppContext) {
@@ -619,9 +619,9 @@ mod tests {
         store.trust(&Origin::of_url(&url, false).unwrap()).unwrap();
 
         let settings_dir = dir.clone();
-        cx.update(|cx| open_settings(settings_dir.clone(), log, probe, cx));
+        cx.update(|cx| open_settings(settings_dir.clone(), probe, cx));
         // A second request focuses the open window.
-        cx.update(|cx| open_settings(settings_dir, log, probe, cx));
+        cx.update(|cx| open_settings(settings_dir, probe, cx));
         assert_eq!(open_windows(cx).len(), 1);
         let handle = open_windows(cx)[0];
         cx.update_window(handle, |_, window, cx| {
@@ -641,7 +641,7 @@ mod tests {
     fn settings_window_shows_the_tokens_and_copies_the_report(cx: &mut TestAppContext) {
         setup(cx);
         let dir = temp_dir("tokens");
-        cx.update(|cx| open_settings(dir.clone(), log, probe, cx));
+        cx.update(|cx| open_settings(dir.clone(), probe, cx));
         let handle = open_windows(cx)[0];
         // The probe runs off the main thread; the window shows it's looking.
         cx.update_window(handle, |_, window, cx| {

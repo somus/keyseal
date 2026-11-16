@@ -6,13 +6,12 @@ use keyseal_core::protocol::Kind;
 
 use keyseal_core::doctor::{Report, Status};
 
+use crate::bridge::{Brand, Job};
+use crate::views::sample::sample_report;
 use crate::views::widgets::INPUT_DELAY;
-use crate::views::{Windows, key_bindings, sample_report};
-use crate::{Brand, Job};
+use crate::views::{Windows, key_bindings};
 
 pub(super) const DIGEST: &str = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
-
-pub(super) fn log(_: &str) {}
 
 pub(super) fn probe() -> Result<Report, String> {
     Ok(sample_report(Status::Ready))
@@ -29,7 +28,7 @@ pub(super) fn setup(cx: &mut TestAppContext) -> Windows {
         gpui_kit::init(cx);
         cx.bind_keys(key_bindings());
     });
-    Windows::new(log)
+    Windows::default()
 }
 
 pub(super) fn job() -> Job {

@@ -106,7 +106,7 @@ mod tests {
 
     use crate::views::testing::{open_windows, pass_input_delay, setup};
 
-    use crate::Request;
+    use crate::bridge::Request;
 
     #[gpui_kit::test]
     fn trust_prompt_buttons_fit_the_window(cx: &mut TestAppContext) {

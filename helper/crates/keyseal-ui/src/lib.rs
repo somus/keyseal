@@ -249,9 +249,11 @@ pub fn launch(
 /// The name of a job's thread, whose panics are logged.
 const JOB_THREAD: &str = "job";
 
-/// Runs `link` on a thread of its own; `cancelled` is set when the signer
-/// cancels the job or closes its window. A panic there shows the error
-/// window; the panic hook has logged it.
+/// Runs `link` on a thread of its own, then the steps after a job: the
+/// notice of an update left to install, the driver catalogue and the
+/// update check. `cancelled` is set when the signer cancels the job or
+/// closes its window. A panic in the job shows the error window; the panic
+/// hook has logged it.
 fn start_job(
     link: String,
     cancelled: Arc<AtomicBool>,
@@ -264,13 +266,23 @@ fn start_job(
             events: events.clone(),
             cancelled,
         };
-        let code = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| job(&link, &mut ui)))
-            .unwrap_or_else(|_| {
-                ui.show_error(keyseal_core::flow::INTERNAL_ERROR);
-                1
-            });
+        let code =
+            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| job(&link, &mut ui))) {
+                Ok(code) => {
+                    // An update this helper couldn't install over itself.
+                    if let Some(notice) = keyseal_core::update::take_notice() {
+                        ui.show_info(&notice);
+                    }
+                    code
+                }
+                Err(_) => {
+                    ui.show_error(keyseal_core::flow::INTERNAL_ERROR);
+                    1
+                }
+            };
         // The daily catalogue and update checks run once the job is over
-        // and its windows are gone, never before or during it.
+        // and its windows are gone, never before or during it. A headless
+        // run does none of these steps.
         let _ = events.unbounded_send(Event::Finished);
         if let Some(Err(message)) = keyseal_core::catalogue::refresh() {
             log(&format!("Driver catalogue update failed: {message}"));

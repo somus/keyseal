@@ -221,6 +221,16 @@ pub enum Outcome {
     Enrolled,
 }
 
+impl Outcome {
+    /// What the job did, as the log and the terminal say it.
+    pub fn text(&self) -> &'static str {
+        match self {
+            Self::Signed => "Signed.",
+            Self::Enrolled => "Certificate enrolled.",
+        }
+    }
+}
+
 /// Finds where the key is, for a job that asks for `KeyUsage`.
 type Open<'a> = &'a dyn Fn(KeyUsage, BeforeStore) -> Result<Found, Failure>;
 

@@ -10,7 +10,8 @@ rust-version = "1.93"
 futures.workspace = true
 gpui-kit.workspace = true
 keyseal-core = { path = "../keyseal-core" }
-url.workspace = true
+# The gallery's sample trusted sites.
+url = { workspace = true, optional = true }
 zeroize.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
@@ -25,7 +26,7 @@ raw-window-handle = "0.6.2"
 [features]
 # `cargo run -p keyseal-ui --example gallery --features gallery -- <view>`
 # opens one window with sample data, for screenshots.
-gallery = []
+gallery = ["dep:url"]
 
 [[example]]
 name = "gallery"
@@ -33,3 +34,4 @@ required-features = ["gallery"]
 
 [dev-dependencies]
 gpui-kit = { workspace = true, features = ["test-support"] }
+url.workspace = true

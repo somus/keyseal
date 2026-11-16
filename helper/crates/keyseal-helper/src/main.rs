@@ -64,8 +64,10 @@ fn main() -> ExitCode {
         ["doctor", "--forget", origin] => forget(origin),
         ["install"] => install::install(),
         ["uninstall"] => install::uninstall(),
-        ["update"] => update::check_now(),
-        ["update", "verify", manifest, signatures] => update::verify_files(manifest, signatures),
+        ["update"] => update::check_now().map(|text| println!("{text}")),
+        ["update", "verify", manifest, signatures] => {
+            update::verify_files(manifest, signatures).map(|text| println!("{text}"))
+        }
         // How Windows and Linux hand over a link.
         [link] if link.starts_with("keyseal:") => return run_updated(link),
         // How macOS hands over a link: an Apple Event to the app, read here
@@ -362,64 +364,51 @@ impl Ui for Headless {
 /// With several tokens each is named first, and the PIN isn't tried: it
 /// belongs to one of them, and a wrong PIN counts against the others.
 fn list() -> Result<(), String> {
-    let mut index = 0;
-    loop {
-        let mut names = Vec::new();
-        let backend =
-            backend::open_backend(KeyUsage::DigitalSignature, &mut || Ok(()), &mut |_, _| {})
-                .and_then(|found| {
-                    found.open(|tokens| {
-                        names = tokens
-                            .iter()
-                            .map(|token| {
-                                TokenSummary::of(token, KeyUsage::DigitalSignature).to_string()
-                            })
-                            .collect();
-                        Ok(index)
-                    })
-                })
-                .map_err(|failure| failure.message)?;
-        let token = backend.token();
-        if let Some(name) = names.get(index) {
-            println!("{name}:");
-        }
-        let mut certificates = token.certificates(false)?;
-        if certificates.is_empty()
-            && names.is_empty()
-            && let Some(pin) = env_var("KEYSEAL_PIN").map(Zeroizing::new)
-        {
-            token.login(pin).map_err(|e| e.to_string())?;
-            certificates = token.certificates(false)?;
-        }
-        if certificates.is_empty() {
-            println!(
-                "{}",
-                if names.is_empty() {
-                    "No certificates are visible on the token. Set KEYSEAL_PIN to look after login."
-                } else {
-                    "No certificates are visible on this token. To look after login, set KEYSEAL_PIN with only this token plugged in."
-                }
-            );
-        }
-        for certificate in certificates {
-            let role = if certificate::is_signing_certificate(&certificate.der, KeyUsage::default())
+    backend::open_each(
+        KeyUsage::DigitalSignature,
+        &mut |_, _| {},
+        &mut |name, backend| {
+            let backend = backend?;
+            let token = backend.token();
+            if let Some(name) = &name {
+                println!("{name}:");
+            }
+            let mut certificates = token.certificates(false)?;
+            if certificates.is_empty()
+                && name.is_none()
+                && let Some(pin) = env_var("KEYSEAL_PIN").map(Zeroizing::new)
             {
-                "signing"
-            } else {
-                "other"
-            };
-            println!(
-                "{}  {role:7}  {}",
-                certificate.sha256,
-                certificate::subject(&certificate.der)
-            );
-        }
-        token.close();
-        index += 1;
-        if index >= names.len() {
-            return Ok(());
-        }
-    }
+                token.login(pin).map_err(|e| e.to_string())?;
+                certificates = token.certificates(false)?;
+            }
+            if certificates.is_empty() {
+                println!(
+                    "{}",
+                    if name.is_none() {
+                        "No certificates are visible on the token. Set KEYSEAL_PIN to look after login."
+                    } else {
+                        "No certificates are visible on this token. To look after login, set KEYSEAL_PIN with only this token plugged in."
+                    }
+                );
+            }
+            for certificate in certificates {
+                let role = if certificate::is_signing_certificate(&certificate.der, KeyUsage::default())
+                {
+                    "signing"
+                } else {
+                    "other"
+                };
+                println!(
+                    "{}  {role:7}  {}",
+                    certificate.sha256,
+                    certificate::subject(&certificate.der)
+                );
+            }
+            token.close();
+            Ok(())
+        },
+    )
+    .map_err(|error| Failure::from(error).message)
 }
 
 /// `keyseal doctor`: what the helper sees, as text or with `json` as the

@@ -230,7 +230,7 @@ type Open<'a> = &'a dyn Fn(KeyUsage, BeforeStore) -> Result<Found, Failure>;
 /// is sent or has timed out.
 pub fn run(link: &str, ui: &mut dyn Ui, env: &Environment) -> Result<Outcome, Failure> {
     run_with(link, ui, env, &|usage, before_store| {
-        open_backend(usage, before_store, &mut |_, _| {})
+        open_backend(usage, before_store, &mut |_, _| {}).map_err(Failure::from)
     })
 }
 
@@ -347,12 +347,7 @@ fn sign(
     open: Open,
 ) -> Result<Outcome, Failure> {
     show_step(ui, view, Step::OpeningToken)?;
-    let mut chosen = None;
-    let backend = open(key_usage(job), &mut || Ok(()))?.open(|tokens| {
-        let index = choose_token(ui, view, job, tokens)?;
-        chosen = Some(TokenSummary::of(&tokens[index], key_usage(job)).label);
-        Ok(index)
-    })?;
+    let (backend, chosen) = open_chosen(open(key_usage(job), &mut || Ok(()))?, ui, view, job)?;
     let token = backend.token();
     // Cancelling once the token is open logs out, as declining the digests
     // does.
@@ -432,12 +427,7 @@ fn enrol(
             Err(Failure::job_cancelled(view.kind))
         }
     })?;
-    let mut chosen = None;
-    let backend = found.open(|tokens| {
-        let index = choose_token(ui, view, job, tokens)?;
-        chosen = Some(TokenSummary::of(&tokens[index], key_usage(job)).label);
-        Ok(index)
-    })?;
+    let (backend, chosen) = open_chosen(found, ui, view, job)?;
     let token = backend.token();
     let certificate = match &backend {
         Backend::Pkcs11(_) => {
@@ -549,6 +539,23 @@ fn show_step(ui: &mut dyn Ui, view: &JobView, step: Step) -> Result<(), Failure>
     } else {
         Err(Failure::job_cancelled(view.kind))
     }
+}
+
+/// Opens the backend `found`, asking which token to use when there are
+/// several, and the chosen token's label when there were several.
+fn open_chosen(
+    found: Found,
+    ui: &mut dyn Ui,
+    view: &JobView,
+    job: &JobDescription,
+) -> Result<(Backend, Option<String>), Failure> {
+    let mut chosen = None;
+    let backend = found.open(|tokens| {
+        let index = choose_token(ui, view, job, tokens)?;
+        chosen = Some(TokenSummary::of(&tokens[index], key_usage(job)).label);
+        Ok(index)
+    })?;
+    Ok((backend, chosen))
 }
 
 /// The token to use among several: the only one showing the certificate

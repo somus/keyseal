@@ -9,6 +9,9 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD;
+use ed25519_dalek::{Signature, VerifyingKey};
 use sha2::{Digest, Sha256};
 use ureq::Agent;
 use ureq::tls::{RootCerts, TlsConfig};
@@ -47,6 +50,23 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// The SHA-256 of `data` as lowercase hex.
 pub fn sha256_hex(data: &[u8]) -> String {
     hex::encode(Sha256::digest(data))
+}
+
+/// The `keyId` of an Ed25519 public key, as the update and catalogue
+/// signature files name it: lowercase hex SHA-256 of its 32 raw bytes.
+pub(crate) fn key_id(key: &[u8; 32]) -> String {
+    sha256_hex(key)
+}
+
+/// Whether `signature`, base64, is the Ed25519 public key `key`'s and
+/// verifies strictly over exactly `message`.
+pub(crate) fn verifies(key: &[u8; 32], signature: &str, message: &[u8]) -> bool {
+    STANDARD
+        .decode(signature)
+        .ok()
+        .and_then(|bytes| Signature::from_slice(&bytes).ok())
+        .zip(VerifyingKey::from_bytes(key).ok())
+        .is_some_and(|(signature, key)| key.verify_strict(message, &signature).is_ok())
 }
 
 /// Where the helper keeps the trust store and manifest cache:

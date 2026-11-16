@@ -12,16 +12,13 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use base64::Engine;
-use base64::engine::general_purpose::STANDARD;
-use ed25519_dalek::{Signature, VerifyingKey};
 use semver::Version;
 use serde::Deserialize;
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 use ureq::Agent;
 
-use crate::sha256_hex;
+use crate::{key_id, sha256_hex, verifies};
 
 /// Where releases are published. The release workflow refuses to run unless
 /// this names the repository it runs in.
@@ -141,11 +138,6 @@ struct SignatureEntry {
     signature: String,
 }
 
-/// The `keyId` of a public key: lowercase hex SHA-256 of its 32 raw bytes.
-pub(crate) fn key_id(key: &[u8; 32]) -> String {
-    sha256_hex(key)
-}
-
 /// The manifest, if signatures from at least `threshold` distinct keys of
 /// `keys` verify strictly over exactly `manifest`. A `keyId` listed twice
 /// makes the file malformed; signatures from unknown keys, and ones that
@@ -173,15 +165,7 @@ fn verify_threshold(
         let Some(key) = keys.iter().find(|key| key_id(key) == entry.key_id) else {
             continue;
         };
-        let Ok(bytes) = STANDARD.decode(&entry.signature) else {
-            continue;
-        };
-        let (Ok(signature), Ok(verifying)) =
-            (Signature::from_slice(&bytes), VerifyingKey::from_bytes(key))
-        else {
-            continue;
-        };
-        if verifying.verify_strict(manifest, &signature).is_ok() {
+        if verifies(key, &entry.signature, manifest) {
             verified.insert(*key);
         }
     }
@@ -681,16 +665,15 @@ pub fn after_job() -> Result<(), String> {
     check(forced).map(|_| ())
 }
 
-/// `keyseal update`: checks now.
-pub fn check_now() -> Result<(), String> {
-    match check(true)? {
+/// `keyseal update`: checks now, and says what it found.
+pub fn check_now() -> Result<String, String> {
+    Ok(match check(true)? {
         Some(version) if replaces_itself() => {
-            println!("KeySeal {version} is downloaded and installs the next time KeySeal starts.")
+            format!("KeySeal {version} is downloaded and installs the next time KeySeal starts.")
         }
-        Some(version) => println!("{}", available(&version)),
-        None => println!("KeySeal {} is up to date.", crate::VERSION),
-    }
-    Ok(())
+        Some(version) => available(&version),
+        None => format!("KeySeal {} is up to date.", crate::VERSION),
+    })
 }
 
 fn check(forced: bool) -> Result<Option<String>, String> {
@@ -716,8 +699,9 @@ fn check(forced: bool) -> Result<Option<String>, String> {
 
 /// `keyseal update verify <manifest> <signatures>`: what the release
 /// workflow and maintainers run before publishing, with the pinned keys.
-/// An expired manifest fails: published, it would stop updates.
-pub fn verify_files(manifest: &str, signatures: &str) -> Result<(), String> {
+/// An expired manifest fails: published, it would stop updates. What it
+/// verified, as lines: the version, then each platform's file.
+pub fn verify_files(manifest: &str, signatures: &str) -> Result<String, String> {
     let read = |path: &str| std::fs::read(path).map_err(|e| format!("{path}: {e}"));
     let verified = verify_threshold(
         &read(manifest)?,
@@ -731,16 +715,16 @@ pub fn verify_files(manifest: &str, signatures: &str) -> Result<(), String> {
             verified.expires.text
         ));
     }
-    println!(
+    let mut lines = vec![format!(
         "KeySeal {} verified with {THRESHOLD} of {} keys, expires {}.",
         verified.version,
         RELEASE_KEYS.len(),
         verified.expires.text
-    );
+    )];
     for (platform, file) in &verified.platforms {
-        println!("{platform}  {}  {}", file.sha256, file.file);
+        lines.push(format!("{platform}  {}  {}", file.sha256, file.file));
     }
-    Ok(())
+    Ok(lines.join("\n"))
 }
 
 #[cfg(test)]
@@ -752,7 +736,9 @@ mod tests {
 
     use super::*;
     use crate::testing::TempDir;
-    use ed25519_dalek::{Signer, SigningKey};
+    use base64::Engine;
+    use base64::engine::general_purpose::STANDARD;
+    use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
     use serde_json::json;
 
     /// Held by the tests that read [`take_notice`], which is process-wide.

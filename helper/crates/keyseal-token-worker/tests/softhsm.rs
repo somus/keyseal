@@ -10,9 +10,12 @@
 //! builds of the worker and of libsofthsm2, it runs again with those, under
 //! Rosetta on an arm64 Mac.
 
+#[path = "../../../testing/softhsm.rs"]
+mod fixture;
+
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output, Stdio};
+use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use keyseal_core::cms::{DigestAlgorithm, SignatureAlgorithm};
@@ -21,38 +24,14 @@ use keyseal_core::worker::{self, Runner, WorkerToken};
 use serde_json::{Value, json};
 use zeroize::Zeroizing;
 
-const PIN: &str = "1234";
+use fixture::{Objects, PIN, init_token, make_certificate, softhsm_conf, write_objects};
+
 const DATA: &[u8] = b"signed attributes";
 
-fn run(command: &mut Command) -> Output {
-    let output = command.output().unwrap();
-    assert!(
-        output.status.success(),
-        "{command:?} failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    output
-}
-
-/// A SoftHSM token in `dir` with an RSA and a P-256 key, and an RSA key
-/// with CKA_ALWAYS_AUTHENTICATE, each beside a public certificate.
-fn make_token(dir: &Path, module: &str) {
-    std::fs::create_dir_all(dir.join("tokens")).unwrap();
-    std::fs::write(
-        dir.join("softhsm2.conf"),
-        format!("directories.tokendir = {}\n", dir.join("tokens").display()),
-    )
-    .unwrap();
-    run(Command::new("softhsm2-util").args([
-        "--init-token",
-        "--free",
-        "--label",
-        "worker",
-        "--pin",
-        PIN,
-        "--so-pin",
-        "5678",
-    ]));
+/// A SoftHSM token labelled `worker` in `conf`, with an RSA and a P-256 key, and an RSA key with CKA_ALWAYS_AUTHENTICATE, each
+/// beside a public, self-signed certificate.
+fn make_token(dir: &Path, conf: &Path, module: &str) {
+    init_token(conf, "worker");
     let keys: [(&str, &str, &[&str]); 3] = [
         ("rsa", "01", &["-newkey", "rsa:2048"]),
         (
@@ -63,66 +42,13 @@ fn make_token(dir: &Path, module: &str) {
         ("always", "03", &["-newkey", "rsa:2048"]),
     ];
     for (name, id, newkey) in keys {
-        run(Command::new("openssl")
-            .current_dir(dir)
-            .args(["req", "-x509", "-nodes", "-days", "1"])
-            .args(["-subj", &format!("/CN=Worker {name}")])
-            .args(newkey)
-            .args(["-keyout", &format!("{name}.pem")])
-            .args(["-outform", "DER", "-out", &format!("{name}.der")]));
-        run(Command::new("openssl").current_dir(dir).args([
-            "pkey",
-            "-in",
-            &format!("{name}.pem"),
-            "-outform",
-            "DER",
-            "-out",
-            &format!("{name}.key"),
-        ]));
-        for (file, kind) in [
-            (format!("{name}.der"), "cert"),
-            (format!("{name}.key"), "privkey"),
-        ] {
-            let mut command = Command::new("pkcs11-tool");
-            command
-                .current_dir(dir)
-                .args(["--module", module, "--login", "--pin", PIN])
-                .args(["--write-object", &file, "--type", kind, "--id", id])
-                .args(["--label", name]);
-            if kind == "privkey" {
-                command.arg("--usage-sign");
-            }
-            if kind == "privkey" && name == "always" {
-                command.arg("--always-auth");
-            }
-            run(&mut command);
-        }
+        make_certificate(dir, name, &format!("Worker {name}"), newkey, None);
+        let objects = Objects {
+            always_auth: name == "always",
+            ..Objects::default()
+        };
+        write_objects(dir, module, conf, None, name, id, objects);
     }
-}
-
-/// Checks `signature` over `data` with the certificate in `name.der`.
-fn verify(dir: &Path, name: &str, data: &[u8], signature: &[u8]) {
-    std::fs::write(dir.join("data"), data).unwrap();
-    std::fs::write(dir.join("signature"), signature).unwrap();
-    let public_key = run(Command::new("openssl").current_dir(dir).args([
-        "x509",
-        "-inform",
-        "DER",
-        "-in",
-        &format!("{name}.der"),
-        "-pubkey",
-        "-noout",
-    ]));
-    std::fs::write(dir.join("public.pem"), public_key.stdout).unwrap();
-    run(Command::new("openssl").current_dir(dir).args([
-        "dgst",
-        "-sha256",
-        "-verify",
-        "public.pem",
-        "-signature",
-        "signature",
-        "data",
-    ]));
 }
 
 /// The helper's side of the protocol through [`WorkerToken`].
@@ -168,15 +94,25 @@ fn round_trip(dir: &Path, worker: &Path, module: &Path) {
             None,
         )
     };
-    for (name, certificate, scheme) in [
-        ("always", &always, SignatureAlgorithm::RsaPkcs1v15),
-        ("rsa", &rsa, SignatureAlgorithm::RsaPkcs1v15),
-        ("p256", &p256, SignatureAlgorithm::Ecdsa),
+    for (name, certificate, scheme, scheme_name) in [
+        (
+            "always",
+            &always,
+            SignatureAlgorithm::RsaPkcs1v15,
+            "rsa-pkcs1-v1_5",
+        ),
+        (
+            "rsa",
+            &rsa,
+            SignatureAlgorithm::RsaPkcs1v15,
+            "rsa-pkcs1-v1_5",
+        ),
+        ("p256", &p256, SignatureAlgorithm::Ecdsa, "ecdsa"),
     ] {
         let signatures = sign(certificate, scheme).unwrap();
         assert_eq!(signatures.len(), documents.len());
         for (data, signature) in documents.iter().zip(&signatures) {
-            verify(dir, name, data, signature);
+            fixture::verify(dir, name, "sha256", scheme_name, data, signature);
         }
     }
     let dropped = sign(&always, SignatureAlgorithm::RsaPkcs1v15).unwrap_err();
@@ -237,10 +173,13 @@ fn worker_runs_softhsm() {
     let dir = std::env::temp_dir().join(format!("keyseal-worker-softhsm-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
+    // One config for the whole test: the workers it starts, native and
+    // x86_64, read it from the environment.
+    let conf = softhsm_conf(&dir, "tokens");
     // SAFETY: the only test in this binary, and no other thread reads the
     // environment while it is set.
-    unsafe { std::env::set_var("SOFTHSM2_CONF", dir.join("softhsm2.conf")) };
-    make_token(&dir, &module);
+    unsafe { std::env::set_var("SOFTHSM2_CONF", &conf) };
+    make_token(&dir, &conf, &module);
 
     let worker = Path::new(env!("CARGO_BIN_EXE_keyseal-token-worker"));
     round_trip(&dir, worker, Path::new(&module));

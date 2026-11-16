@@ -697,40 +697,17 @@ mod tests {
     #[test]
     fn signs_pkcs1_on_the_host_as_the_token_does() {
         use std::process::Command;
-        const PIN: &str = "1234";
+
+        use crate::testing::softhsm::{PIN, run, token_with_conf};
         let Ok(module) = std::env::var("KEYSEAL_SOFTHSM_MODULE") else {
             eprintln!("skipped: set KEYSEAL_SOFTHSM_MODULE to libsofthsm2 to run");
             return;
         };
         if std::env::var_os("KEYSEAL_PKCS1_TOKEN").is_none() {
             let dir = crate::testing::TempDir::new("pkcs1");
-            std::fs::create_dir_all(dir.join("tokens")).unwrap();
-            let conf = dir.join("softhsm2.conf");
-            std::fs::write(
-                &conf,
-                format!("directories.tokendir = {}\n", dir.join("tokens").display()),
-            )
-            .unwrap();
-            let run = |command: &mut Command| {
-                let output = command.env("SOFTHSM2_CONF", &conf).output().unwrap();
-                assert!(
-                    output.status.success(),
-                    "{command:?}: {}",
-                    String::from_utf8_lossy(&output.stderr)
-                );
-                String::from_utf8_lossy(&output.stdout).into_owned()
-            };
-            run(Command::new("softhsm2-util").args([
-                "--init-token",
-                "--free",
-                "--label",
-                "pkcs1",
-                "--pin",
-                PIN,
-                "--so-pin",
-                "5678",
-            ]));
+            let conf = token_with_conf(&dir, "pkcs1");
             run(Command::new("pkcs11-tool")
+                .env("SOFTHSM2_CONF", &conf)
                 .args(["--module", &module, "--login", "--pin", PIN])
                 .args([
                     "--keypairgen",
@@ -745,7 +722,9 @@ mod tests {
                     "--exact",
                     "token::tests::signs_pkcs1_on_the_host_as_the_token_does",
                 ])
+                .env("SOFTHSM2_CONF", &conf)
                 .env("KEYSEAL_PKCS1_TOKEN", "1"));
+            let child = String::from_utf8_lossy(&child.stdout);
             assert!(child.contains("1 passed"), "{child}");
             return;
         }

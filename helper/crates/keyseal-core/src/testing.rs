@@ -1,5 +1,5 @@
 //! Support for the unit tests: a temporary directory that cleans up after
-//! itself, and a fake driver and token.
+//! itself, a fake driver and token, and SoftHSM tokens.
 
 use std::cell::Cell;
 use std::path::{Path, PathBuf};
@@ -11,6 +11,9 @@ use crate::cms::{DigestAlgorithm, SignatureAlgorithm};
 use crate::token::{
     Driver, LoginError, PinWarning, TokenBackend, TokenCertificate, TokenError, TokenInfo,
 };
+
+#[path = "../../../testing/softhsm.rs"]
+pub(crate) mod softhsm;
 
 pub(crate) const RSA: &[u8] = include_bytes!("../tests/fixtures/rsa-non-repudiation.der");
 

@@ -1,12 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 import { nodeCertificateInspector } from "../src/index.js";
-import {
-  BRAINPOOL_SIGNATURES,
-  CERTS,
-  signWith,
-  toSignFor,
-} from "./support.js";
+import { BRAINPOOL_SIGNATURES, CERTS, signWith, toSignFor } from "./support.js";
 
 describe("node certificate inspector", () => {
   test("refuses DER with another certificate appended as PEM", () => {

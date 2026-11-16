@@ -156,17 +156,36 @@ fi
 # The tag's release run makes the draft; wait for it rather than fail. The
 # draft exists before the run has uploaded every asset, so a run still
 # going is waited for even when the draft is there.
+#
+# GitHub cancels a job no hosted runner took, as happens when macOS runners
+# are short. Such a job ran nothing, so the run's failed jobs are run again,
+# once.
+no_runner() {
+  local job
+  for job in $(gh run view "$1" --repo "$repo" --json jobs \
+    --jq '.jobs[] | select(.conclusion == "cancelled") | .databaseId'); do
+    [ "$(gh api "repos/$repo/check-runs/$job/annotations" \
+      --jq 'any(.[]; .message | startswith("The job was not acquired by Runner"))')" != true ] || return 0
+  done
+  return 1
+}
 waited=0
+reran=false
 while :; do
   run="$(gh run list --repo "$repo" --workflow release.yml --event push --branch "$tag" \
-    --json status,conclusion,url --jq '.[0] // empty')"
+    --json databaseId,status,conclusion,url --jq '.[0] // empty')"
   if [ -n "$run" ] && [ "$(jq -r .status <<<"$run")" != completed ]; then
     :
   elif is_draft="$(gh release view "$tag" --repo "$repo" --json isDraft --jq .isDraft 2>/dev/null)"; then
     break
   elif [ -n "$run" ]; then
-    [ "$(jq -r .conclusion <<<"$run")" = success ] || fail "the release run for $tag failed: $(jq -r .url <<<"$run")"
-    fail "the release run for $tag passed but made no release: $(jq -r .url <<<"$run")"
+    [ "$(jq -r .conclusion <<<"$run")" != success ] || fail "the release run for $tag passed but made no release: $(jq -r .url <<<"$run")"
+    if $verify_only || $reran || ! no_runner "$(jq -r .databaseId <<<"$run")"; then
+      fail "the release run for $tag failed: $(jq -r .url <<<"$run")"
+    fi
+    echo "GitHub had no runner for a job of the release run. Running its failed jobs again."
+    gh run rerun "$(jq -r .databaseId <<<"$run")" --repo "$repo" --failed
+    reran=true
   else
     [ "$waited" -lt 600 ] || fail "$tag has no release and no release run in $repo"
   fi

@@ -2,6 +2,8 @@
 
 A minimal integrator backend: `@keyseal/server` with the in-memory adapter, wired to a running signing service. It serves a one-page UI that creates a sign job for one or more uploaded PDFs, then opens the `keyseal://` link and watches the job with `@keyseal/browser`'s `signWithHelper`, showing a "Didn't open? Download the helper" link beside the status while the job is still pending after five seconds, and it writes each signed PDF to `./out/<reference>-<index>.pdf`, the index 0-based in the job's order. The end-to-end CI drives it headless through the same endpoints.
 
+It shows the wiring, not a production backend: its jobs live in process memory and are lost on restart, it never calls `keyseal.sweep()`, and its routes have no authentication, so anyone who can reach it can create jobs and read any job's status. [docs/integrating.md](../../docs/integrating.md) and [docs/production.md](../../docs/production.md) cover what a real integration adds.
+
 ## Run
 
 [docs/quickstart.md](../../docs/quickstart.md) runs the server and the signing service together with `docker compose up` ([compose.yaml](compose.yaml), and the server's [Dockerfile](Dockerfile), built from the repository root), and signs with a SoftHSM test token. To run the server on its own with Bun, start the signing service (see [service/README.md](../../service/README.md)), then:

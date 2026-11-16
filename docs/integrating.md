@@ -2,6 +2,8 @@
 
 This guide adds token signing to a web application. The pieces are the signing service on your private network, `@keyseal/server` in your backend, `@keyseal/browser` in your page, and the KeySeal helper on each signer's computer. [examples/reference-server](../examples/reference-server/) wires all of them together, and [quickstart.md](quickstart.md) runs it with Docker Compose and a SoftHSM test token, the quickest way to see a job end to end without a USB token.
 
+This guide is the path through an integration. The API reference for each part is in its own README: [`@keyseal/server`](../packages/server/README.md), [`@keyseal/browser`](../packages/browser/README.md) and the [signing service](../service/README.md). [production.md](production.md) covers deployment, failures and upgrades once it works.
+
 ```
  browser page ──(your API)──> your backend ──> signing service
       │                          ▲  @keyseal/server       (private network)
@@ -24,7 +26,7 @@ docker run -p 127.0.0.1:8090:8080 \
 
 It trusts the CCA India roots by default; for another PKI, set `SIGNING_TRUST_ROOTS_DIR` to a directory of its roots and intermediates, or `SIGNING_EXTRA_TRUST_ROOTS_DIR` to trust it alongside them. [service/README.md](../service/README.md) covers its routes, environment, timestamp authority and plugins (extra stamp styles and routes in a derived image).
 
-To monitor it, `GET /health` says the process is up, and `GET /ready` whether it can sign right now, which needs a timestamp authority to answer: a 503 there means signing fails until one does, while validation still works. Neither needs the token. Alert on `/ready` or show your users that signing is unavailable, but don't take the service out of rotation on it ([service/README.md](../service/README.md)).
+Where to run it, its token, its trust roots and timestamp authority, and how to monitor it are in [production.md](production.md).
 
 ## 2. Serve the job endpoint
 
@@ -33,9 +35,11 @@ Install `@keyseal/server` and create one instance for your app:
 ```ts
 import { createKeySeal, ServiceClient } from "@keyseal/server";
 
+export const service = new ServiceClient({ url: SIGNING_SERVICE_URL, token: SIGNING_SERVICE_TOKEN });
+
 export const keyseal = createKeySeal({
   adapter, // your job store, blob store and completion callback
-  service: new ServiceClient({ url: SIGNING_SERVICE_URL, token: SIGNING_SERVICE_TOKEN }),
+  service,
   origin: "https://app.example.org",
   basePath: "/api/keyseal",
   branding: {
@@ -47,7 +51,7 @@ export const keyseal = createKeySeal({
 });
 ```
 
-Route requests to `keyseal.handle(request)`; it answers the manifest at `/.well-known/keyseal.json` and the job endpoint under `basePath`, and returns 404 for anything else. The helper calls these routes directly, without your session, so they authenticate by the job token alone.
+Route requests to `keyseal.handle(request)`; it answers the manifest at `/.well-known/keyseal.json` and the job endpoint under `basePath`, and returns 404 for anything else. The helper calls these routes directly, without your session, so they authenticate by the job token alone. Every option is in the [server README](../packages/server/README.md#options).
 
 The adapter stores jobs and blobs (Postgres and S3, for example) and receives the result in `onCompleted`. Its contract, including the atomic `transition` the settle lease relies on, is in [packages/server/README.md](../packages/server/README.md). `createMemoryAdapter` is enough for tests.
 
@@ -64,7 +68,7 @@ Creating a job expires old jobs and deletes their PDFs and signing states. Run `
 - `accentColor` colours the window's top edge, the primary button, the focus ring and the selection. The button text is white or black, whichever contrasts better.
 - `translucent: false` makes the job window opaque on macOS, where it is otherwise glass. Signers can also turn glass off in the helper's Settings, and macOS's Reduce transparency turns it off for every window.
 
-Branding never appears on the first-contact prompt, and the site's name always stays the heading, so a manifest can't dress up an unknown origin.
+Branding never appears on the first-contact prompt, and the site's name always stays the heading, so a manifest can't dress up an unknown origin. The helper itself stays KeySeal: signers install the shared KeySeal app, and its name, its Settings window and its prompts outside your jobs carry no branding. A branded helper locked to your origin is a build option the project publishes only on request ([design.md](design.md#components)).
 
 ## 3. Create jobs
 
@@ -111,7 +115,7 @@ await keyseal.createSignJob({
 });
 ```
 
-The helper shows how many documents there are, with each title and its fingerprint under "Show technical details". Each PDF may be up to 25 MiB, and together at most 240 MiB. The job completes only if every document is signed: `onCompleted` receives `result.pdfs` in the order of `documents`, all at once, and a document that fails any check fails the whole job. A single document is a list of one, and its `title` defaults to the job's.
+The helper shows how many documents there are, with each title and its fingerprint under "Show technical details". The size limits are in the [server README](../packages/server/README.md#limits). The job completes only if every document is signed: `onCompleted` receives `result.pdfs` in the order of `documents`, all at once, and a document that fails any check fails the whole job. A single document is a list of one, and its `title` defaults to the job's.
 
 Where you can't pin a certificate yet, on enrolment or a signer's first job, `certificatePolicy` narrows which certificates the job accepts:
 
@@ -147,7 +151,7 @@ await keyseal.createSignJob({
 
 A certificate without a KeyUsage extension, or a CA certificate, never qualifies. The server passes the job's key usage to the signing service's certificate check in both rounds; when you validate a signed PDF yourself, pass the same value as `service.validate(pdf, base, keyUsage)`.
 
-In `onCompleted`, check the result against your own rules (for example, that the certificate is in the signer's name) and throw `JobRefused` to fail the job with a message the user sees.
+In `onCompleted`, check the result against your own rules (for example, that the certificate is in the signer's name) and throw `JobRefused` to fail the job with a message the user sees. Every way a job can fail, and what to show for each, is in [production.md](production.md#handling-failures).
 
 ## 4. Start the helper from the page
 
@@ -162,7 +166,18 @@ const status = await signWithHelper({
 });
 ```
 
-Call it straight from the click handler, since browsers want a recent user gesture before opening an app. The link opens in a hidden iframe, so if your site sends a Content-Security-Policy, add `keyseal:` to `frame-src`. Otherwise browsers block the link silently and the helper never opens. `onNotClaimed` fires when the helper hasn't picked up the job within about five seconds. That doesn't mean it isn't installed: the browser may ask whether to open KeySeal, and the first time a signer meets your site the helper asks them to trust its origin before it fetches the job (spec section 5). So show a "Didn't open? Download the helper" link beside the job's status, never a screen that only offers the install, and hide the link once the status moves past `pending`. The job stays open, so a fresh install can still pick it up. [packages/browser/README.md](../packages/browser/README.md) has the full options and a React example.
+Call `signWithHelper` straight from the click handler, since browsers want a recent user gesture before opening an app. The link opens in a hidden iframe, so if your site sends a Content-Security-Policy, add `keyseal:` to `frame-src`. Otherwise browsers block the link silently and the helper never opens. `onNotClaimed` fires when the helper hasn't picked up the job within about five seconds. That doesn't mean it isn't installed: the browser may ask whether to open KeySeal, and the first time a signer meets your site the helper asks them to trust its origin before it fetches the job (spec section 5). So show a "Didn't open? Download the helper" link beside the job's status, never a screen that only offers the install, and hide the link once the status moves past `pending`. The job stays open, so a fresh install can still pick it up. [packages/browser/README.md](../packages/browser/README.md) has the full options and a React example.
+
+`getStatus` asks your own API, which answers from `keyseal.status(id)` for the signed-in user's job only:
+
+```ts
+// GET /api/sign-jobs/:id, behind your session
+const status = await keyseal.status(id);
+if (!status || !(await jobBelongsTo(id, user))) {
+  return new Response(null, { status: 404 });
+}
+return Response.json(status); // { state, message?, kind, reference, expiresAt }
+```
 
 ## 5. Install the helper
 
@@ -176,16 +191,10 @@ Signers install the helper once. [signers.md](signers.md) is a guide written for
 
 `await helperDownloadFor(navigator)` from `@keyseal/browser` says which one suits the signer's platform: `macos`, `windows`, `linux-x64`, `linux-arm64` or `unsupported`. On Linux it asks Chromium's client hints for the architecture, since Chromium's user agent says x86_64 on every machine, and reads the user agent in other browsers.
 
-The helper updates itself. Raising `minHelperVersion` makes older helpers update before they can sign, so raise it only once that release exists.
+The helper updates itself. Raising `minHelperVersion` makes older helpers update before they can sign, so raise it only once that release exists ([production.md](production.md#versions-and-upgrades)).
 
 If a signer's token isn't found, opening KeySeal on its own shows Settings, where Tokens and drivers lists what it found and Copy diagnostics gives support the full report. `keyseal doctor` prints the same report in a terminal.
 
-## Before going live
+## Next
 
-- Serve the job endpoint over HTTPS on a domain name. `allowInsecureOrigin` and the helper's `KEYSEAL_ALLOW_INSECURE_ORIGINS=1` are for development only.
-- If you send a Content-Security-Policy, allow `keyseal:` in `frame-src`. Development servers often send no CSP, so this only shows up in production.
-- Try a first contact with the helper installed: leave its trust prompt open past five seconds and check that the page keeps the job's status on screen next to the download link.
-- Keep the signing service off the public internet.
-- Pin `expectedCertificateSha256` on sign jobs, and set `certificatePolicy` where you can't pin yet.
-- Pass `rateLimit` to `createKeySeal` if the job endpoint isn't rate limited at your edge.
-- Make `onCompleted` idempotent on `job.id`: a retry after a lapsed settle lease may call it again.
+[production.md](production.md) covers running this for real users: the deployment, proxies and secrets, storage and the sweep, logs and monitoring, upgrades, handling failures, and a checklist before going live.

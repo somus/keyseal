@@ -2,17 +2,19 @@
 
 A pyHanko service behind FastAPI. It prepares PDFs with empty signature fields, returns the DER SignedAttributes a token signs, embeds the returned signature with a timestamp, validates signed PDFs and adds long-term validation data. The signer's key never reaches it; only the integrator backend talks to it, over a private network.
 
-Every route except `GET /health` and `GET /ready`, plugin routes included, needs `Authorization: Bearer $SIGNING_SERVICE_TOKEN`. The token is checked before any of the body is read, and a missing or wrong one is a 401.
+This README is the service's reference: its routes, the validation report, its environment and plugins. `@keyseal/server`'s `ServiceClient` calls it ([packages/server/README.md](../packages/server/README.md#signing-service-client)), and [docs/production.md](../docs/production.md) covers running it.
+
+Every route except `GET /health` and `GET /ready`, plugin routes included, needs `Authorization: Bearer $SIGNING_SERVICE_TOKEN`. The token is checked before any of the body is read, and a missing or wrong one is a 401. An error answer is JSON with a `detail` member: a message string, or for a body that doesn't match its schema, FastAPI's list of validation errors with a 422.
 
 | Route | Does |
 |---|---|
 | `GET /health` | Liveness and the number of trust roots loaded |
 | `GET /ready` | Whether the service can sign right now (below): 200 with `{"ready": true, "checks": {"tsa": "ok"}}`, or `"off"` with timestamps turned off; 503 with `{"ready": false, "checks": {"tsa": "unreachable"}}` |
-| `POST /validate?base=<bytes>&keyUsage=<usage>` | Validation report for a PDF body; `base` adds what changed since the copy the signer was given, and `keyUsage` is the key usage a `trusted` signer's certificate asserts (below). Each signature's `timestampValid` is whether its signature timestamp is intact and matches the signature, `null` without one; a signature with an invalid timestamp makes the report `invalid` |
-| `POST /certificate` | Whether a certificate chains to a configured root and may sign (`trusted`), and whether its revocation status was checked (`revocationChecked`); optional `keyUsage` (below) |
-| `POST /prepare` | Adds empty signature fields as one incremental update |
-| `POST /sign/start` | Reserves the signature and returns `toSign`, `digestAlgorithm` (`sha256` or `sha384`), `signatureAlgorithm` (`rsa-pkcs1-v1_5`, `rsa-pss` or `ecdsa`) and an opaque `state`; optional `stampStyle`, `rsaPadding` (`pkcs1` or `pss`), `reason`, `location` and `contactInfo` |
-| `POST /sign/finish` | Builds the CMS around the token's signature and returns the signed PDF (PAdES B-T); a 503 when no timestamp authority answered, and a 422 when the only tokens it got don't stamp the digest of that signature |
+| `POST /validate?base=<bytes>&keyUsage=<usage>` | The [validation report](#validation-report) for the PDF body. `base`, a positive integer, adds what changed since the copy the signer was given, its first `base` bytes; `keyUsage` is the key usage a `trusted` signer's certificate asserts (below) |
+| `POST /certificate` | Body `{ certificate, chain?, keyUsage? }`, the certificate and up to 8 chain certificates as base64 DER. Answers `{ trusted, revocationChecked }`: whether it chains to a configured root and may sign, and whether its revocation status was checked. A certificate that can't be read or has an unsupported key is a 400 |
+| `POST /prepare` | Body `{ pdf, fields }`, the PDF in base64 and 1 to 20 fields `{ name, page, box }`: a unique `name` of 1 to 64 letters, digits or underscores, a 0-based `page` (negative counts from the last page), and `box` `[x1, y1, x2, y2]` in PDF points from the lower-left corner. Answers the PDF with those empty signature fields added as one incremental update; no fields, a repeated name, a missing page or an unreadable PDF is a 422 |
+| `POST /sign/start` | Body `{ pdf, fieldName, certificate, chain?, stampStyle?, rsaPadding?, reason?, location?, contactInfo? }`. Reserves the signature in the empty field `fieldName` and returns `toSign` (base64 DER SignedAttributes), `digestAlgorithm` (`sha256` or `sha384`), `signatureAlgorithm` (`rsa-pkcs1-v1_5`, `rsa-pss` or `ecdsa`) and an opaque `state`; `rsaPadding` is `pkcs1`, the default, or `pss`. An unknown stamp style or an unsupported key is a 400, and a PDF it can't sign is a 422 |
+| `POST /sign/finish` | Body `{ state, signature }`. Builds the CMS around the token's signature and returns the signed PDF (PAdES B-T); a 503 when no timestamp authority answered, and a 422 when the only tokens it got don't stamp the digest of that signature, or the state's MAC doesn't match |
 | `POST /finalize` | Revocation data for every signature and a document timestamp (PAdES B-LTA); a 503 when no timestamp authority answered |
 | `POST /retimestamp` | Another document timestamp before the last one's certificate expires; a 503 when no timestamp authority answered |
 
@@ -24,13 +26,83 @@ The `state` from `/sign/start` is a JSON object passed back unchanged to `/sign/
 
 The state's last member, `mac`, is an HMAC-SHA256 over the exact JSON text before it, keyed with HMAC-SHA256 of the label `keyseal-service sign state v1` under the bearer token. `/sign/finish` refuses a state whose MAC is missing or doesn't match with a 422 before reading anything in it, so no member can change, and a state from before the token was rotated is refused too.
 
-Supported keys: RSA (PKCS#1 v1.5 or PSS with MGF1 and a 32-byte salt, SHA-256) and ECDSA P-256 or brainpoolP256r1 (SHA-256) and P-384 or brainpoolP384r1 (SHA-384), with ECDSA signatures as DER `ECDSA-Sig-Value`. PDFs are limited to 25 MB.
+Supported keys: RSA (PKCS#1 v1.5 or PSS with MGF1 and a 32-byte salt, SHA-256) and ECDSA P-256 or brainpoolP256r1 (SHA-256) and P-384 or brainpoolP384r1 (SHA-384), with ECDSA signatures as DER `ECDSA-Sig-Value`. PDFs are limited to 25 MiB.
 
-Bodies are capped as they stream in, so a chunked body is held to the same limits as one with a `Content-Length`: 25 MB for the raw PDF that `/validate`, `/finalize` and `/retimestamp` take, and 60 MB plus 16 KB for a JSON body. A larger body is a 413, and a `Content-Length` that isn't a non-negative decimal number is a 400.
+Bodies are capped as they stream in, so a chunked body is held to the same limits as one with a `Content-Length`: 25 MiB for the raw PDF that `/validate`, `/finalize` and `/retimestamp` take, and 60 MiB plus 16 KiB for a JSON body. A PDF in base64 inside a JSON body may be at most 25 MiB once decoded. A larger body is a 413, and a `Content-Length` that isn't a non-negative decimal number is a 400.
 
-`/validate` and `/finalize` refuse a PDF with more than 50 signatures and document timestamps with a 422. `/validate`, `/certificate`, `/finalize` and `/retimestamp` each get 45 seconds, fetches and the TSA's answer included; that's under the 60-second request timeout `@keyseal/server` uses by default. Past it they answer 422 too, except `/certificate`, which answers 504: there the cause is a slow revocation server, and `@keyseal/server` leaves a job for the helper to retry on anything but a 400 or 422. The budget cancels the work at its next await, so a synchronous step already running, such as parsing or pyHanko's diff analysis of one signature, finishes on its worker thread first. The 25 MB and 50-signature caps bound how long that can be.
+`/validate` and `/finalize` refuse a PDF with more than 50 signatures and document timestamps with a 422. `/validate`, `/certificate`, `/finalize` and `/retimestamp` each get 45 seconds, fetches and the TSA's answer included; that's under the 60-second request timeout `@keyseal/server` uses by default. Past it they answer 422 too, except `/certificate`, which answers 504: there the cause is a slow revocation server, and `@keyseal/server` leaves a job for the helper to retry on anything but a 400 or 422. The budget cancels the work at its next await, so a synchronous step already running, such as parsing or pyHanko's diff analysis of one signature, finishes on its worker thread first. The 25 MiB and 50-signature caps bound how long that can be.
 
 A PDF no signature can be added to is a 422 that says why: an encrypted one, even when it opens without a password, on `/prepare`, `/sign/start`, `/finalize` and `/retimestamp`, and one certified with no changes allowed (DocMDP level 1) on `/prepare` and `/sign/start`. A certified PDF still takes revocation data and document timestamps, which PAdES allows.
+
+## Validation report
+
+`POST /validate` answers 200 with a report for any body, a PDF it can't read included; it refuses only a PDF with more than 50 signatures and document timestamps, or one that takes longer than 45 seconds, with a 422 (above). The report carries certificate facts and pyHanko's verdicts, never the document's text, except the form's text field values:
+
+```json
+{
+  "status": "valid",
+  "checkedAt": "2026-11-16T09:30:12.418Z",
+  "signatures": [
+    {
+      "fieldName": "Signature1",
+      "intact": true,
+      "coversWholeRevision": true,
+      "trusted": true,
+      "revocationChecked": false,
+      "timestamped": true,
+      "timestampValid": true,
+      "signingTime": "2026-11-16T09:29:58+00:00",
+      "modificationLevel": "LTA_UPDATES",
+      "certifies": false,
+      "locks": [],
+      "signerName": "Asha Rao",
+      "subject": "Common Name: Asha Rao, ...",
+      "issuer": "Common Name: Example Sub CA for Class 3 Individual, ...",
+      "serial": "1A2B3C",
+      "sha256Fingerprint": "9f86d081...",
+      "notBefore": "2026-01-01T00:00:00+00:00",
+      "notAfter": "2028-01-01T00:00:00+00:00"
+    }
+  ],
+  "documentTimestamps": [{ "intact": true, "trusted": true, "time": "2026-11-16T09:31:02+00:00" }],
+  "textFields": { "Name": "Asha Rao" },
+  "changesSinceBase": "FORM_FILLING",
+  "baseSignatureFields": ["Signature1"]
+}
+```
+
+| Member | Meaning |
+| --- | --- |
+| `status` | `valid` when every signature is `intact`, `coversWholeRevision`, has no invalid signature timestamp and passes the document's certification (DocMDP) rules, and every document timestamp is `intact`; `invalid` otherwise, or when the body isn't a readable PDF; `no_signatures` when it has no signatures, even with document timestamps. It doesn't include `trusted` or `revocationChecked`: check those on each signature. |
+| `checkedAt` | When the service checked, ISO 8601 in UTC. |
+| `message` | Present only for a body that isn't a readable PDF, such as `Not a readable PDF: PdfReadError`, with `status` `invalid` and no signatures. |
+| `signatures` | One entry per signature, in the order of the file, without document timestamps. |
+| `documentTimestamps` | Present when the PDF has document timestamps (PAdES B-LTA): each with `intact`, `trusted` (the TSA chains to a trusted root) and `time`, ISO 8601 or null. An entry that couldn't be checked has `intact` false and an `error`. |
+| `textFields` | Every text field's value in the latest revision, by full field name; an unset field is `""`. |
+| `changesSinceBase` | With `base` only: the most the revisions appended to the copy the signer was given change, as `modificationLevel` names it. `NONE`, `LTA_UPDATES` (revocation data and document timestamps), `FORM_FILLING` (form fields filled and signatures added) or `ANNOTATIONS`; `OTHER` for anything else, including an update that doesn't build on that copy's last revision, a form field widget added, moved or drawn differently (a field signed since may change only its value and appearance), a changed `/NeedAppearances`, or a copy that can't be read. Use it to check that a signed copy is the document you sent plus signatures. |
+| `baseSignatureFields` | With `base` only: the names of the signature fields, signed or not, in the copy the signer was given, so you can tell which signatures were added since. |
+
+Each entry of `signatures`:
+
+| Member | Meaning |
+| --- | --- |
+| `fieldName` | The signature field. |
+| `intact` | The signed bytes hash to the signed digest and the signature verifies with the certificate's key. |
+| `coversWholeRevision` | The signature covers the whole file up to the end of its revision. One that doesn't makes the report `invalid`. |
+| `trusted` | The certificate chains to a configured root (`SIGNING_TRUST_ROOTS_DIR` and `SIGNING_EXTRA_TRUST_ROOTS_DIR`, not the system's) and asserts the `keyUsage` asked for, either now or at the time of a trusted signature timestamp, so a signature proven older than its certificate's expiry or revocation stays trusted. |
+| `revocationChecked` | Revocation data for every certificate on the trusted path that names a CRL or OCSP responder checked out (below). Always false when `trusted` is false. |
+| `timestamped` | The signature carries a signature timestamp. |
+| `timestampValid` | That timestamp is intact and stamps this signature; `null` without one. False makes the report `invalid`. It doesn't say which TSA issued it (see the TSA note below). |
+| `signingTime` | The time the signer's software claims, not proven; ISO 8601 or null. |
+| `modificationLevel` | The most the revisions after this signature change: `NONE`, `LTA_UPDATES`, `FORM_FILLING`, `ANNOTATIONS` or `OTHER`; null when it couldn't be judged. |
+| `certifies` | The signature is a certification (DocMDP) signature, which limits what later revisions may change. |
+| `locks` | The field locks (FieldMDP) in its signature dictionary and its field's `/Lock`: each `{ action, fields }`, where `action` is `all` (every field), `include` (only `fields`) or `exclude` (every field but `fields`). Empty when it locks nothing; one `all` entry when the lock can't be read. |
+| `signerName` | The certificate subject's common name, or null. |
+| `subject`, `issuer` | The certificate's subject and issuer names, as readable text. |
+| `serial` | The certificate's serial number, uppercase hex. |
+| `sha256Fingerprint` | SHA-256 of the certificate's DER, lowercase hex; compare it with the `expectedCertificateSha256` of the job that signed. |
+| `notBefore`, `notAfter` | The certificate's validity period, ISO 8601. |
+| `error` | Present when the signature couldn't be checked at all: the exception's name. The entry then has `intact`, `trusted` and `coversWholeRevision` false, empty certificate facts, and makes the report `invalid`. |
 
 ## Run
 

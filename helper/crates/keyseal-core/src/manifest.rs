@@ -58,6 +58,12 @@ impl Manifest {
         Ok(manifest)
     }
 
+    /// `accentColor` as `0xrrggbb`; [`Manifest::parse`] has checked it.
+    pub fn accent(&self) -> Option<u32> {
+        let color = self.accent_color.as_deref()?;
+        u32::from_str_radix(color.strip_prefix('#')?, 16).ok()
+    }
+
     /// Whether this helper is older than `minHelperVersion` (section 6.2).
     pub(crate) fn needs_newer_helper(&self) -> bool {
         let minimum = self
@@ -156,6 +162,7 @@ mod tests {
         .unwrap();
         assert_eq!(manifest.name, "Example Trust");
         assert_eq!(manifest.accent_color.as_deref(), Some("#1F6feb"));
+        assert_eq!(manifest.accent(), Some(0x1f6feb));
         assert_eq!(manifest.translucent, Some(false));
         for bad in [
             &br#"{"protocol":2,"name":"x"}"#[..],

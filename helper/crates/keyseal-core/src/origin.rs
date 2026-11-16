@@ -78,11 +78,17 @@ impl Origin {
 
     /// The origin as `scheme://host[:port]`, the trust store key.
     pub fn as_string(&self) -> String {
+        format!("{}://{}", self.scheme, self.host_and_port())
+    }
+
+    /// The host in A-label form, with the port when it isn't the scheme's
+    /// default: what the windows show.
+    pub fn host_and_port(&self) -> String {
         let default = if self.scheme == "https" { 443 } else { 80 };
         if self.port == default {
-            format!("{}://{}", self.scheme, self.host)
+            self.host.clone()
         } else {
-            format!("{}://{}:{}", self.scheme, self.host, self.port)
+            format!("{}:{}", self.host, self.port)
         }
     }
 
@@ -242,6 +248,25 @@ mod tests {
 
     fn origin(url: &str, allow_insecure: bool) -> Result<String, String> {
         Origin::of_url(&Url::parse(url).unwrap(), allow_insecure).map(|o| o.as_string())
+    }
+
+    #[test]
+    fn shows_hosts_with_non_default_ports() {
+        let host = |url: &str| {
+            Origin::of_url(&Url::parse(url).unwrap(), true)
+                .unwrap()
+                .host_and_port()
+        };
+        assert_eq!(
+            host("https://dash.example.org/v1/jobs/x"),
+            "dash.example.org"
+        );
+        assert_eq!(
+            host("https://dash.example.org:8443/"),
+            "dash.example.org:8443"
+        );
+        assert_eq!(host("https://bücher.example/"), "xn--bcher-kva.example");
+        assert_eq!(host("http://127.0.0.1:3000/"), "127.0.0.1:3000");
     }
 
     #[test]

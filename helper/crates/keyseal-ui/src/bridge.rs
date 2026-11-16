@@ -46,16 +46,12 @@ pub(crate) struct Brand {
 impl Job {
     fn of(view: &JobView) -> Self {
         Self {
-            host: host(view.origin),
+            host: view.origin.host_and_port(),
             insecure: view.origin.insecure,
             brand: view.branding.map(|branding| Brand {
                 name: branding.manifest.name.clone(),
                 icon: branding.icon.clone(),
-                accent: branding
-                    .manifest
-                    .accent_color
-                    .as_deref()
-                    .and_then(|color| u32::from_str_radix(color.trim_start_matches('#'), 16).ok()),
+                accent: branding.manifest.accent(),
                 translucent: branding.manifest.translucent != Some(false),
             }),
             kind: view.kind,
@@ -74,7 +70,7 @@ impl Job {
     /// comes with the claimed job.
     fn unclaimed(origin: &Origin, kind: Kind) -> Self {
         Self {
-            host: host(origin),
+            host: origin.host_and_port(),
             insecure: origin.insecure,
             brand: None,
             kind,
@@ -89,22 +85,6 @@ impl Job {
     pub(crate) fn is_batch(&self) -> bool {
         self.documents.len() > 1
     }
-}
-
-/// The origin's host, in the A-label form the origin holds, with the port
-/// when it isn't the scheme's default.
-fn host(origin: &Origin) -> String {
-    let origin = origin.as_string();
-    url::Url::parse(&origin)
-        .ok()
-        .and_then(|url| {
-            let host = url.host_str()?.to_owned();
-            Some(match url.port() {
-                Some(port) => format!("{host}:{port}"),
-                None => host,
-            })
-        })
-        .unwrap_or(origin)
 }
 
 #[expect(
@@ -202,7 +182,7 @@ impl WindowUi {
 impl Ui for WindowUi {
     fn confirm_origin(&mut self, origin: &Origin) -> bool {
         self.ask_signer(|reply| Request::Trust {
-            host: host(origin),
+            host: origin.host_and_port(),
             insecure: origin.insecure,
             reply,
         })
@@ -324,28 +304,5 @@ impl Ui for WindowUi {
     #[cfg(windows)]
     fn window_handle(&self) -> Option<isize> {
         self.ask(|reply| Request::WindowHandle { reply }).flatten()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn shows_hosts_with_non_default_ports() {
-        let origin = |url: &str| Origin::of_url(&url::Url::parse(url).unwrap(), true).unwrap();
-        assert_eq!(
-            host(&origin("https://dash.example.org/v1/jobs/x")),
-            "dash.example.org"
-        );
-        assert_eq!(
-            host(&origin("https://dash.example.org:8443/")),
-            "dash.example.org:8443"
-        );
-        assert_eq!(
-            host(&origin("https://bücher.example/")),
-            "xn--bcher-kva.example"
-        );
-        assert_eq!(host(&origin("http://127.0.0.1:3000/")), "127.0.0.1:3000");
     }
 }

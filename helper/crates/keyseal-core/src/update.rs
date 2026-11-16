@@ -27,8 +27,8 @@ use crate::token::sha256_hex;
 /// this names the repository it runs in.
 pub const RELEASES: &str = "https://github.com/somus/keyseal/releases/latest/download";
 
-/// The maintainers' Ed25519 public keys, raw (see
-/// `helper/packaging/sign-manifest.md`).
+/// The maintainers' Ed25519 public keys, raw (see Key custody in
+/// `docs/code-signing-policy.md`).
 pub const RELEASE_KEYS: &[[u8; 32]] = &[
     // Somasundaram Ayyappan, primary release key, in Bitwarden.
     [

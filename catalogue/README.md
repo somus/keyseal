@@ -68,7 +68,7 @@ Every path must be absolute and live under a system or vendor directory: `/usr/l
    cd catalogue && bun install && bun test
    ```
 
-4. Sign with the catalogue key, check the signature, then attach `catalogue.json` and `catalogue.json.sig` to a KeySeal GitHub release:
+4. Sign with the catalogue key and check the signature:
 
    ```sh
    export BW_SESSION="$(bw unlock --raw)"
@@ -76,6 +76,27 @@ Every path must be absolute and live under a system or vendor directory: `/usr/l
    bw get notes "KeySeal catalogue key" | openssl pkey -pubout > /tmp/catalogue.pub.pem
    (cd catalogue && bun tools/verify.ts /tmp/catalogue.pub.pem)
    ```
+
+5. Publish both files ([Publishing](#publishing)).
+
+## Publishing
+
+Helpers download the catalogue and its signature from the GitHub release tagged `catalogue`, at `releases/download/catalogue/catalogue.json` and the same URL with `.sig` (`CATALOGUE_URL` in `helper/crates/keyseal-core/src/catalogue.rs`). That release exists; replace its two files from the repository root:
+
+```sh
+gh release upload catalogue catalogue/catalogue.json catalogue/catalogue.json.sig --clobber
+```
+
+`--clobber` deletes each file before uploading its replacement, so a helper that fetches at that moment may miss a file or get the new catalogue with the old signature. It then keeps the last catalogue it verified and tries again a day later.
+
+The `catalogue` release must never be marked latest. Helpers look for updates at `releases/latest/download/keyseal-update.json`, which only a helper release holds, so with the catalogue release as latest that URL would 404 and every installed helper would stop updating. Uploading files doesn't change which release is latest, but creating a release can: if the `catalogue` release ever has to be made again, create it with `--latest=false`:
+
+```sh
+gh release create catalogue catalogue/catalogue.json catalogue/catalogue.json.sig --latest=false \
+  --title "Driver catalogue" --notes "The signed driver catalogue the helper downloads (catalogue/README.md)."
+```
+
+Afterwards, `gh api repos/somus/keyseal/releases/latest --jq .tag_name` must still print the newest `helper-v` tag.
 
 ## Signing
 

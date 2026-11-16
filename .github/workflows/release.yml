@@ -8,7 +8,7 @@ name: release
 #    keyseal-update.json and the SHA-256 lists.
 # 2. Maintainers rebuild, compare, and sign keyseal-update.json and SHA256SUMS
 #    offline with their release keys, software keys in Bitwarden for now
-#    (docs/code-signing-policy.md, helper/packaging/sign-manifest.md). A manual
+#    (docs/code-signing-policy.md, docs/releasing.md). A manual
 #    run with the combined signatures verifies them with the pinned keys and
 #    threshold, checks every asset against SHA256SUMS, then publishes the
 #    draft as the latest release.

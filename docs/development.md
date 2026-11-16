@@ -11,7 +11,7 @@
 | `catalogue/` | Driver catalogue and its build and signing tools | Bun, TypeScript |
 | `examples/reference-server/` | Reference integrator backend | Bun |
 | `spec/` | Protocol specification and OpenAPI | |
-| `scripts/` | Test certificates and the CI scripts | bash |
+| `scripts/` | The release script, test certificates, the app icons and the CI scripts | bash |
 | `docs/` | Design, integration, development and release docs | |
 
 Each component's README covers its internals: [helper](../helper/README.md), [server](../packages/server/README.md), [browser](../packages/browser/README.md), [service](../service/README.md), [catalogue](../catalogue/README.md).

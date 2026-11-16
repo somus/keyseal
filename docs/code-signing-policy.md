@@ -13,7 +13,7 @@ key and is outside this policy.
 | `SHA256SUMS` | Ed25519, the same keys and threshold | Maintainers | The same keys |
 | macOS `KeySeal.app` (with the token worker inside) and disk image | Apple Developer ID, notarized; ad-hoc signed until the project has a Developer ID | The release workflow | Apple certificate in the `release-macos` GitHub environment |
 | Windows `keyseal.exe` | none yet: SignPath Foundation declined the first application (October 2026) | | |
-| Linux binaries, tarball, deb, AppImage | none in release one | | |
+| Linux binaries, tarball, deb, AppImage | none | | |
 
 Every published asset is listed with its SHA-256 in the release's signed
 `SHA256SUMS` (signatures in `SHA256SUMS.sig`), and the update assets also
@@ -30,15 +30,13 @@ every check passing).
   and merge pull requests.
 - **Reviewers**: the maintainers review every change from someone who isn't
   one before it is merged.
-- **Approvers**: the maintainers approve each SignPath request. The
-  `release-macos` and `release` environments have no required reviewer
-  while there is one maintainer, since an approval by the account that
-  pushed the tag added nothing; they still admit only runs from
-  `helper-v*` tags and from `main`, and the publish run accepts only
-  signatures from the pinned keys. Required reviewers come back when a
-  second maintainer exists.
+- **Approvers**: the maintainers approve each Windows signing request,
+  once a signing service accepts the project, and the release runs, once
+  the release environments have required reviewers again
+  ([Release environments](#release-environments)).
 
-Every maintainer uses multi-factor authentication on GitHub and SignPath.
+Every maintainer uses multi-factor authentication on GitHub, and on the
+Windows signing service once there is one.
 
 ## Privacy
 
@@ -50,7 +48,7 @@ driver catalogue from this repository's GitHub releases. The README's
 ## Who may sign
 
 Maintainers are listed in the table below. Only they hold release keys,
-only they may push release tags, and only they may approve SignPath
+only they may push release tags, and only they may approve Windows
 signing requests (and the `release` and `release-macos` environments, once
 those have required reviewers again). Adding or removing a maintainer is a reviewed
 change to this file and, for release keys, to `RELEASE_KEYS` in
@@ -67,7 +65,8 @@ change to this file and, for release keys, to `RELEASE_KEYS` in
   Each maintainer has two, both pinned: a primary kept as a secure note in
   their Bitwarden vault, and a backup encrypted with a passphrase and kept
   offline, away from the vault. Losing one key, or access to the vault, is
-  not an emergency.
+  not an emergency. Releases are signed with the primary; the backup is
+  used only when the primary is lost.
 - The unencrypted key is never written to disk: `new-key.sh` and
   `helper/packaging/sign-file.sh` pass it to OpenSSL through a pipe. The
   vault is protected by two-factor authentication.
@@ -81,12 +80,32 @@ change to this file and, for release keys, to `RELEASE_KEYS` in
   release workflow's runs for `helper-v*` tags, which only maintainers can
   push.
 
+A maintainer makes their two release keys once, on a machine with OpenSSL
+3 or later (`brew install openssl@3` on macOS, whose own `openssl` is
+LibreSSL), `jq`, `xxd` and the Bitwarden CLI logged in to their vault.
+`helper/packaging/release.sh` signs with the Bitwarden item named
+"KeySeal release key" unless `KEYSEAL_RELEASE_KEY` names another.
+
+```sh
+export BW_SESSION="$(bw unlock --raw)"
+helper/packaging/new-key.sh bitwarden "KeySeal release key"
+helper/packaging/new-key.sh offline /Volumes/<backup drive>/keyseal-release-backup.pem
+```
+
+Each prints the key's `keyId` and its bytes. Add the bytes to
+`RELEASE_KEYS` in a reviewed pull request, with a comment naming the
+maintainer and which of their keys it is, and the keyId to the table in
+[Who may sign](#who-may-sign). Catalogue keys are made the same way and
+pinned in `CATALOGUE_KEYS` (`catalogue/README.md`). A new or replaced key
+reaches users only in a release signed by keys their helpers already
+trust; helpers that install it trust the new key from then on.
+
 ## Threshold
 
 The helper accepts a manifest only when signatures from `THRESHOLD`
-distinct pinned keys verify (spec section 13), and refuses one past the
-signed `expires` date, 180 days after the tagged commit
-(`docs/releasing.md`). The release workflow holds
+distinct pinned keys verify (spec section 13), and refuses one past its
+signed `expires` date ([docs/releasing.md](releasing.md#manifest-expiry)
+says what that means for releasing). The release workflow holds
 `SHA256SUMS` to the same rule (`helper/packaging/verify-signatures.sh`).
 
 - Today there is one maintainer, so the threshold is 1 of N, N being that
@@ -102,7 +121,29 @@ The release workflow releases only a commit on `main`, and only when its
 (`helper/packaging/check-release-commit.sh`), so a tag on an unreviewed
 commit can't bring keys of its own. It also needs the `checks` and `e2e`
 runs for the commit's push to `main` to have passed
-(`scripts/ci/ci-passed.sh`). `helper-v*` tags are protected (`docs/releasing.md`).
+(`scripts/ci/ci-passed.sh`).
+
+- A branch ruleset on `main` requires a pull request whose `checks` and
+  `e2e` checks pass, and blocks force pushes and deletion.
+- A tag ruleset on `helper-v*` lets only repository admins, the
+  maintainers, create, update or delete release tags, and blocks force
+  pushes. The workflow's own check above would refuse a tag on a commit
+  off `main`, but the ruleset keeps anyone else from making or moving
+  release tags at all.
+
+## Release environments
+
+- The `release-macos` environment, which only `helper-v*` tags can use,
+  holds the macOS signing secrets (listed in
+  [docs/releasing.md](releasing.md#repository-setup)) for the build run.
+- The `release` environment, which only `main` can use, runs the publish
+  run.
+
+Neither environment has a required reviewer. With one maintainer, an
+approval by the account that had just pushed the tag added nothing: the
+branch and tag restrictions decide which runs reach the secrets, and the
+publish run accepts only signatures from the pinned keys. Required
+reviewers come back when a second maintainer exists.
 
 ## Build provenance
 
@@ -111,14 +152,10 @@ Sigstore-signed statement, recorded in GitHub and Sigstore's public
 transparency log, that the file was built by `.github/workflows/release.yml`
 from the tagged commit. It is made in CI with the workflow's identity, needs
 no maintainer key, and isn't a release signature: helpers trust only the
-signed manifest. It lets anyone tie a downloaded file to the run and commit
-that built it:
-
-```sh
-gh attestation verify keyseal-helper-1.4.0-linux-x64.AppImage --repo somus/keyseal \
-  --signer-workflow somus/keyseal/.github/workflows/release.yml \
-  --source-ref refs/tags/helper-v1.4.0
-```
+signed manifest, and `SHA256SUMS.sig` is what maintainers sign. The
+signatures added at publish aren't attested. It lets anyone tie a
+downloaded file to the run and commit that built it; the command is in
+[docs/releasing.md](releasing.md#checking-build-provenance).
 
 ## Before signing: reproducibility
 
@@ -135,10 +172,9 @@ the assets. Per platform it checks:
   independently of CI, and `--skip-rebuild` skips it, leaving the Linux
   binary and packages with no independent check. By default x64 rebuilds
   in a Boat sandbox made for the run, without the maintainer's stored
-  secrets, and arm64 in Docker on the maintainer's Mac;
-  `--rebuild-boat` puts arm64 in a second sandbox under QEMU user
-  emulation, `--rebuild-host` uses an x86_64 Linux machine over SSH and
-  `--rebuild-local` keeps both on the Mac. The sandbox or host gets the
+  secrets, and arm64 in Docker on the maintainer's Mac; flags move the
+  rebuild to Boat, to an x86_64 Linux machine over SSH or to the Mac
+  ([docs/releasing.md](releasing.md#rebuild-modes)). The sandbox or host gets the
   source and the packages and returns only the binary's SHA-256, so it
   can't change what is signed, but the comparison trusts its answer: a
   rebuild on Boat or over SSH is independent of GitHub's CI, not of Boat
@@ -158,7 +194,7 @@ the assets. Per platform it checks:
 Anyone can rebuild macOS and Windows by hand with the toolchains `BUILDINFO`
 names and compare with `SHA256SUMS-unsigned` (`docs/releasing.md`,
 Reproducing a release), but signing doesn't wait for it. When Windows
-signing starts, the SignPath request is submitted only after the Windows
+signing starts, the signing request is submitted only after the Windows
 check above passes for the unsigned exe.
 
 ## Revocation
@@ -178,6 +214,6 @@ If a release key is lost, stolen or suspected compromised:
 4. Record the event and the new keyIds in this file.
 
 If the Apple certificate or API key leaks, revoke it in the Apple Developer
-account, replace the environment secrets, and re-release. If SignPath
-reports a problem with a signed binary, follow SignPath Foundation's
-instructions and publish a fixed release.
+account, replace the environment secrets, and re-release. If the Windows
+signing service, once there is one, reports a problem with a signed
+binary, follow its instructions and publish a fixed release.

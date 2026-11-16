@@ -15,7 +15,7 @@ signatures="$2"
 here="$(cd "$(dirname "$0")" && pwd)"
 update="$here/../crates/keyseal-core/src/update.rs"
 
-# The keys are pinned as `xxd -i` bytes (sign-manifest.md); one line of 64
+# The keys are pinned as `0x..` bytes, as new-key.sh prints them; one line of 64
 # hex digits per key. The placeholder [[0; 32]] yields none.
 keys="$(awk '/^pub const RELEASE_KEYS:/ { p = 1 } p { print } p && (/^\];/ || /^pub const .*;[[:space:]]*$/) { exit }' "$update" \
   | sed 's#//.*##' | grep -oE '0x[0-9a-fA-F]{2}' | sed 's/^0x//' | tr -d '\n' | fold -w 64 | sort -u || true)"

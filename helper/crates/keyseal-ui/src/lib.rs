@@ -21,7 +21,7 @@ use gpui_kit::{App, KeyBinding, Menu, MenuItem, QuitMode, actions};
 use keyseal_core::doctor::Report;
 use keyseal_core::flow::{DigestConfirm, JobView, PinPrompt, Progress, Step, Ui};
 use keyseal_core::origin::Origin;
-use keyseal_core::protocol::{Kind, plain};
+use keyseal_core::protocol::Kind;
 use keyseal_core::token::{CertificateSummary, PinWarning, TokenSummary};
 use zeroize::Zeroizing;
 
@@ -355,7 +355,7 @@ impl Job {
             documents: view
                 .documents
                 .iter()
-                .map(|document| plain(&document.title))
+                .map(|document| document.title.clone())
                 .collect(),
         }
     }
@@ -519,18 +519,10 @@ impl Ui for WindowUi {
         job: &JobView,
         certificates: &[CertificateSummary],
     ) -> Option<usize> {
-        let certificates = certificates
-            .iter()
-            .map(|certificate| CertificateSummary {
-                name: plain(&certificate.name),
-                issuer: plain(&certificate.issuer),
-                ..certificate.clone()
-            })
-            .collect();
         self.ask_signer(|reply| Request::Job {
             job: Job::of(job),
             stage: Stage::Choose {
-                certificates,
+                certificates: certificates.to_vec(),
                 reply,
             },
         })
@@ -538,18 +530,12 @@ impl Ui for WindowUi {
     }
 
     fn choose_token(&mut self, job: &JobView, tokens: &[TokenSummary]) -> Option<usize> {
-        let tokens = tokens
-            .iter()
-            .map(|token| TokenSummary {
-                label: plain(&token.label),
-                model: plain(&token.model),
-                serial: plain(&token.serial),
-                names: token.names.iter().map(|name| plain(name)).collect(),
-            })
-            .collect();
         self.ask_signer(|reply| Request::Job {
             job: Job::of(job),
-            stage: Stage::ChooseToken { tokens, reply },
+            stage: Stage::ChooseToken {
+                tokens: tokens.to_vec(),
+                reply,
+            },
         })
         .flatten()
     }
@@ -558,8 +544,8 @@ impl Ui for WindowUi {
         self.ask_signer(|reply| Request::Job {
             job: Job::of(prompt.job),
             stage: Stage::Pin {
-                token: prompt.token.as_deref().map(plain),
-                certificate: prompt.certificate.as_deref().map(plain),
+                token: prompt.token.clone(),
+                certificate: prompt.certificate.clone(),
                 digests: prompt.digests.clone(),
                 pin_pad: prompt.pin_pad,
                 // The flow fails a locked PIN instead of asking for it.
@@ -579,7 +565,7 @@ impl Ui for WindowUi {
         self.ask_signer(|reply| Request::Job {
             job: Job::of(confirm.job),
             stage: Stage::Confirm {
-                certificate: plain(&confirm.certificate),
+                certificate: confirm.certificate.clone(),
                 digests: confirm.digests.clone(),
                 reply,
             },
@@ -603,7 +589,7 @@ impl Ui for WindowUi {
         }
         self.ask(|reply| Request::Message {
             heading: strings::ERROR_HEADING,
-            message: plain(message),
+            message: message.to_owned(),
             reply,
         });
     }
@@ -611,7 +597,7 @@ impl Ui for WindowUi {
     fn show_info(&mut self, message: &str) {
         self.ask(|reply| Request::Message {
             heading: strings::INFO_HEADING,
-            message: plain(message),
+            message: message.to_owned(),
             reply,
         });
     }

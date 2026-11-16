@@ -14,6 +14,7 @@ use nusb::MaybeFuture;
 use serde::Deserialize;
 use ureq::Agent;
 
+use crate::protocol::plain;
 use crate::update::key_id;
 
 /// Public keys that may sign the catalogue, as raw Ed25519 bytes
@@ -143,7 +144,7 @@ pub fn usb_devices() -> Result<Vec<UsbDevice>, String> {
         .map(|device| UsbDevice {
             vid: device.vendor_id(),
             pid: device.product_id(),
-            product: device.product_string().map(str::to_owned),
+            product: device.product_string().map(plain),
         })
         .collect())
 }

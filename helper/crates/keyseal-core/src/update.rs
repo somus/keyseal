@@ -21,7 +21,7 @@ use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 use ureq::Agent;
 
-use crate::token::sha256_hex;
+use crate::sha256_hex;
 
 /// Where releases are published. The release workflow refuses to run unless
 /// this names the repository it runs in.
@@ -49,7 +49,7 @@ pub const RELEASE_KEYS: &[[u8; 32]] = &[
 pub const THRESHOLD: usize = 1;
 
 /// This build's platform id in the manifest.
-pub const PLATFORM: Option<&str> = if cfg!(target_os = "macos") {
+const PLATFORM: Option<&str> = if cfg!(target_os = "macos") {
     Some("macos-universal")
 } else if cfg!(all(windows, target_arch = "x86_64")) {
     Some("windows-x64")
@@ -85,7 +85,7 @@ static NOTICE: Mutex<Option<String>> = Mutex::new(None);
 
 /// `keyseal-update.json`.
 #[derive(Debug, Deserialize)]
-pub struct UpdateManifest {
+struct UpdateManifest {
     pub format: u64,
     pub version: String,
     pub expires: Expiry,
@@ -98,7 +98,7 @@ pub struct UpdateManifest {
 /// the time it names.
 #[derive(Debug, Deserialize)]
 #[serde(try_from = "String")]
-pub struct Expiry {
+struct Expiry {
     pub text: String,
     at: OffsetDateTime,
 }
@@ -123,7 +123,7 @@ impl Expiry {
 }
 
 #[derive(Debug, Deserialize)]
-pub struct PlatformFile {
+struct PlatformFile {
     pub file: String,
     pub sha256: String,
 }
@@ -142,7 +142,7 @@ struct SignatureEntry {
 }
 
 /// The `keyId` of a public key: lowercase hex SHA-256 of its 32 raw bytes.
-pub fn key_id(key: &[u8; 32]) -> String {
+pub(crate) fn key_id(key: &[u8; 32]) -> String {
     sha256_hex(key)
 }
 
@@ -150,7 +150,7 @@ pub fn key_id(key: &[u8; 32]) -> String {
 /// `keys` verify strictly over exactly `manifest`. A `keyId` listed twice
 /// makes the file malformed; signatures from unknown keys, and ones that
 /// don't verify, are ignored.
-pub fn verify_threshold(
+fn verify_threshold(
     manifest: &[u8],
     signatures: &[u8],
     keys: &[[u8; 32]],
@@ -584,7 +584,7 @@ fn make_executable(path: &Path) -> std::io::Result<()> {
 
 /// A `426` or a `minHelperVersion` refusal: the next check runs even if
 /// one ran today.
-pub fn check_soon() {
+pub(crate) fn check_soon() {
     CHECK_SOON.store(true, Ordering::Relaxed);
 }
 
@@ -751,6 +751,7 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
+    use crate::testing::TempDir;
     use ed25519_dalek::{Signer, SigningKey};
     use serde_json::json;
 
@@ -807,14 +808,6 @@ mod tests {
         let entries: Vec<_> = keys.iter().map(|key| (*key, manifest.as_slice())).collect();
         let signed = signatures(&entries);
         (manifest, signed)
-    }
-
-    fn temp_dir(name: &str) -> PathBuf {
-        let dir =
-            std::env::temp_dir().join(format!("keyseal-update-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
     }
 
     /// Serves `files` over HTTP on a free port; returns the base URL.
@@ -942,7 +935,7 @@ mod tests {
 
     #[test]
     fn checks_at_most_daily() {
-        let dir = temp_dir("stamp");
+        let dir = TempDir::new("update-stamp");
         let stamp = dir.join(STAMP);
         let start = UNIX_EPOCH + Duration::from_secs(1_800_000_000);
         assert!(check_due(&stamp, start));
@@ -961,7 +954,6 @@ mod tests {
         assert_eq!(read_stamp(&stamp), (Some(1_800_000_000), "1.1.0".into()));
         std::fs::write(&stamp, "garbage").unwrap();
         assert!(check_due(&stamp, start));
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -978,7 +970,8 @@ mod tests {
                 ("keyseal-new".to_owned(), asset.to_vec()),
             ]))
         };
-        let dir = temp_dir("stage").join(STAGED);
+        let temp = TempDir::new("update-stage");
+        let dir = temp.join(STAGED);
         let stamp = dir.parent().unwrap().join(STAMP);
 
         // A check that fails is tried again after the next job.
@@ -1090,7 +1083,6 @@ mod tests {
         .unwrap_err();
         assert!(error.contains("already downloaded"), "{error}");
         assert!(!dir.exists());
-        let _ = std::fs::remove_dir_all(dir.parent().unwrap());
     }
 
     #[test]
@@ -1134,7 +1126,8 @@ mod tests {
             (SIGNATURES.to_owned(), signed),
             ("keyseal-new".to_owned(), build.clone()),
         ]));
-        let dir = temp_dir("expired").join(STAGED);
+        let temp = TempDir::new("update-expired");
+        let dir = temp.join(STAGED);
         let stamp = dir.parent().unwrap().join(STAMP);
         let expiry = UNIX_EPOCH + EXPIRY;
         let stage = |current: &str, now: SystemTime| {
@@ -1160,7 +1153,6 @@ mod tests {
         let before = expiry - Duration::from_secs(1);
         assert_eq!(stage("1.0.0", before).unwrap().as_deref(), Some("1.1.0"));
         assert_eq!(std::fs::read(dir.join("keyseal-new")).unwrap(), build);
-        let _ = std::fs::remove_dir_all(dir.parent().unwrap());
     }
 
     /// Stages `asset` as release 1.1.0 in `dir`, as `check_and_stage` would.
@@ -1211,7 +1203,7 @@ mod tests {
     fn applies_a_staged_build_that_verifies() {
         let (a, stranger) = (signing_key(1), signing_key(9));
         let keys = [public(&a)];
-        let root = temp_dir("apply");
+        let root = TempDir::new("update-apply");
         let dir = root.join(STAGED);
         let (exe, asset) = installed(&root);
 
@@ -1243,7 +1235,6 @@ mod tests {
         assert_eq!(applied.as_deref(), Some("1.1.0"));
         assert_eq!(std::fs::read(&exe).unwrap(), b"new build");
         assert!(!dir.exists());
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// A release staged while its manifest was fresh installs on a launch
@@ -1251,7 +1242,7 @@ mod tests {
     #[test]
     fn applies_a_staged_build_whose_manifest_has_expired() {
         let a = signing_key(1);
-        let root = temp_dir("apply-expired");
+        let root = TempDir::new("update-apply-expired");
         let dir = root.join(STAGED);
         let (exe, asset) = installed(&root);
         let (manifest, signed) = release(
@@ -1269,7 +1260,6 @@ mod tests {
             apply_staged(&dir, &exe, true, &[public(&a)], 1, "test-x64", "1.0.0").unwrap();
         assert_eq!(applied.as_deref(), Some("1.1.0"));
         assert_eq!(std::fs::read(&exe).unwrap(), b"new build");
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// The all-zero key decodes to a point of order 4, for which a
@@ -1319,7 +1309,7 @@ mod tests {
         assert!(unwritable(&Error::from(ErrorKind::ReadOnlyFilesystem)));
         assert!(!unwritable(&Error::from(ErrorKind::NotFound)));
 
-        let root = temp_dir("unwritable");
+        let root = TempDir::new("update-unwritable");
         let (folder, config) = (root.join("bin"), root.join("config"));
         std::fs::create_dir_all(&folder).unwrap();
         std::fs::create_dir_all(&config).unwrap();
@@ -1363,7 +1353,6 @@ mod tests {
         assert_eq!(take_notice().is_some(), root_user);
         keep(b"newer build", &exe, "1.2.0", &config).unwrap();
         assert!(take_notice().is_some());
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// An AppImage is replaced as a whole, not the executable inside its
@@ -1371,7 +1360,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn updates_the_appimage_itself() {
-        let root = temp_dir("appimage");
+        let root = TempDir::new("update-appimage");
         let image = root.join("keyseal-x86_64.AppImage");
         std::fs::write(&image, b"old image").unwrap();
         let target = install_target(Some(image.clone())).unwrap();
@@ -1386,7 +1375,6 @@ mod tests {
         assert_eq!(std::fs::read(&image).unwrap(), b"new image");
         assert!(!root.join("keyseal-x86_64.new").exists());
         assert_eq!(install_target(None), Some((exe, !linux)));
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// A bundle in a folder the user can't write (`/Applications` for a
@@ -1399,7 +1387,7 @@ mod tests {
         let _notices = NOTICES.lock().unwrap_or_else(|e| e.into_inner());
         let a = signing_key(1);
         let keys = [public(&a)];
-        let root = temp_dir("locked");
+        let root = TempDir::new("update-locked");
         let config = root.join("config");
         let dir = config.join(STAGED);
         let (exe, asset) = installed(&root);
@@ -1425,7 +1413,6 @@ mod tests {
             assert!(again.is_err());
             assert_eq!(take_notice(), None, "noticed once per version");
         }
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// When the new bundle can't be moved into place, the old one goes back.
@@ -1433,7 +1420,7 @@ mod tests {
     #[test]
     fn restores_the_bundle_when_the_swap_fails() {
         use std::os::unix::fs::PermissionsExt;
-        let root = temp_dir("rollback");
+        let root = TempDir::new("update-rollback");
         let (exe, _) = installed(&root);
         // A bundle without write permission can't be moved to another
         // folder, so the second rename fails after the first succeeded.
@@ -1460,6 +1447,5 @@ mod tests {
             .arg("u+w")
             .arg(&root)
             .status();
-        let _ = std::fs::remove_dir_all(&root);
     }
 }

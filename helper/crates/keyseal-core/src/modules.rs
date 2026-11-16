@@ -14,7 +14,7 @@ use crate::catalogue::{self, Catalogue, UsbDevice};
 /// driver catalogue's schema. User-writable places such as the home
 /// directory aren't among them; only `KEYSEAL_PKCS11_MODULE` reaches those.
 #[cfg(not(target_os = "windows"))]
-pub const DIRECTORIES: &[&str] = &[
+const DIRECTORIES: &[&str] = &[
     "/usr/local/lib",
     "/usr/lib",
     "/usr/lib64",
@@ -23,7 +23,7 @@ pub const DIRECTORIES: &[&str] = &[
     "/Applications",
 ];
 #[cfg(target_os = "windows")]
-pub const DIRECTORIES: &[&str] = &[
+const DIRECTORIES: &[&str] = &[
     r"C:\Windows\System32",
     r"C:\Program Files",
     r"C:\Program Files (x86)",
@@ -31,7 +31,7 @@ pub const DIRECTORIES: &[&str] = &[
 
 /// Whether `path` is an absolute path, without `.` or `..`, inside one of
 /// [`DIRECTORIES`].
-pub fn in_module_directory(path: &Path) -> bool {
+fn in_module_directory(path: &Path) -> bool {
     path.is_absolute()
         && !path
             .components()
@@ -43,7 +43,7 @@ pub fn in_module_directory(path: &Path) -> bool {
 
 /// Drivers of the DSC tokens sold in India, in the order they are tried.
 #[cfg(target_os = "macos")]
-pub const KNOWN: &[&str] = &[
+const KNOWN: &[&str] = &[
     "/usr/local/lib/libcastle_v2.1.0.0.dylib",
     "/usr/local/lib/libcastle.dylib",
     "/Library/Frameworks/eToken.framework/Versions/A/libeToken.dylib",
@@ -54,7 +54,7 @@ pub const KNOWN: &[&str] = &[
     "/usr/local/lib/libIDPrimePKCS11.dylib",
 ];
 #[cfg(target_os = "windows")]
-pub const KNOWN: &[&str] = &[
+const KNOWN: &[&str] = &[
     r"C:\Windows\System32\HYP2003csp11IND.dll",
     r"C:\Windows\System32\eps2003csp11.dll",
     r"C:\Windows\System32\eps2003csp11v2.dll",
@@ -67,7 +67,7 @@ pub const KNOWN: &[&str] = &[
     r"C:\Windows\System32\cryptoide_pkcs11.dll",
 ];
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-pub const KNOWN: &[&str] = &[
+const KNOWN: &[&str] = &[
     "/usr/lib/libcastle.so",
     "/usr/lib/libcastle_v2.1.0.0.so",
     "/usr/lib/libeTPkcs11.so",
@@ -78,7 +78,7 @@ pub const KNOWN: &[&str] = &[
     "/usr/lib/libIDPrimePKCS11.so",
 ];
 
-pub const OVERRIDE: &str = "KEYSEAL_PKCS11_MODULE";
+const OVERRIDE: &str = "KEYSEAL_PKCS11_MODULE";
 
 /// p11-kit's module configuration directories.
 #[cfg(target_os = "linux")]
@@ -140,7 +140,7 @@ struct Config {
 /// connected tokens, then of every token; the known drivers; and on Linux
 /// the modules p11-kit is configured with. Paths other than the override
 /// and the configured module must be in [`DIRECTORIES`].
-pub fn candidates() -> Result<Vec<Candidate>, String> {
+pub(crate) fn candidates() -> Result<Vec<Candidate>, String> {
     Ok(search()?.0)
 }
 
@@ -203,7 +203,7 @@ impl std::fmt::Display for Attempt {
 /// exist, then on Windows and macOS the certificate store. On Windows it
 /// comes first when a plugged-in token's catalogue entry has `cng`. An
 /// [`OVERRIDE`] that names no file is an error, not a missing driver.
-pub fn attempts() -> Result<Vec<Attempt>, String> {
+pub(crate) fn attempts() -> Result<Vec<Attempt>, String> {
     let (candidates, prefer_cng) = search()?;
     if let [
         Candidate {
@@ -348,6 +348,7 @@ pub const NO_DRIVER: &str = "No token or smart card driver was found.";
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::TempDir;
 
     #[test]
     fn known_drivers_are_in_module_directories() {
@@ -358,14 +359,6 @@ mod tests {
         );
     }
 
-    fn temp_dir(name: &str) -> PathBuf {
-        let dir =
-            std::env::temp_dir().join(format!("keyseal-modules-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
-    }
-
     /// A path in a module directory on this platform.
     fn system(name: &str) -> String {
         Path::new(DIRECTORIES[0]).join(name).display().to_string()
@@ -373,7 +366,7 @@ mod tests {
 
     #[test]
     fn candidates_in_order() {
-        let config = temp_dir("config");
+        let config = TempDir::new("modules-config");
         let configured = config.join("libconfigured.so");
         std::fs::write(&configured, b"").unwrap();
         std::fs::write(
@@ -381,7 +374,7 @@ mod tests {
             serde_json::json!({ "module": configured }).to_string(),
         )
         .unwrap();
-        let p11_kit = temp_dir("p11-kit");
+        let p11_kit = TempDir::new("modules-p11-kit");
         std::fs::write(
             p11_kit.join("vendor.module"),
             format!("module: {}\n", system("libp11.so")),
@@ -450,14 +443,12 @@ mod tests {
         std::fs::remove_file(config.join("config.json")).unwrap();
         let list = collect(Some(&config), &catalogue, &[], &[]).unwrap();
         assert_eq!(list[0].source, Source::Catalogue("Unplugged".into()));
-
-        let _ = std::fs::remove_dir_all(&config);
-        let _ = std::fs::remove_dir_all(&p11_kit);
     }
 
     #[test]
     fn the_environment_override_stands_alone() {
-        let module = temp_dir("override").join("libdev.so");
+        let dir = TempDir::new("modules-override");
+        let module = dir.join("libdev.so");
         // SAFETY: no other test reads or writes this variable.
         unsafe { std::env::set_var(OVERRIDE, &module) };
         let list = candidates();
@@ -503,7 +494,7 @@ mod tests {
 
     #[test]
     fn reads_p11_kit_module_files() {
-        let dir = temp_dir("p11-kit-files");
+        let dir = TempDir::new("modules-p11-kit-files");
         let fixture = [
             (
                 "opensc.module",
@@ -534,7 +525,6 @@ mod tests {
             p11_kit_modules(&[dir.to_str().unwrap(), "/nonexistent"]),
             expected
         );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[cfg(not(target_os = "windows"))]

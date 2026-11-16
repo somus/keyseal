@@ -18,18 +18,19 @@ use cryptoki::slot::Slot;
 use cryptoki::types::AuthPin;
 use cryptoki_sys::{CK_C_Sign, CK_ULONG, CKR_OK};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
+use crate::certificate::{CertificateSummary, is_signing_certificate};
 use crate::cms::{self, DigestAlgorithm, KeyKind, SignatureAlgorithm};
 use crate::protocol::{KeyUsage, plain};
-use crate::worker::{self, Backend, WorkerToken};
+use crate::sha256_hex;
+use crate::worker::{self, Runner, WorkerToken};
 
 #[derive(Debug)]
 pub struct TokenError(pub String);
 
 /// The error when no token is plugged in, also as relayed by the worker.
-pub const NO_TOKEN: &str = "No token or smart card is plugged in.";
+pub(crate) const NO_TOKEN: &str = "No token or smart card is plugged in.";
 
 /// The error when the token's PIN is locked.
 pub const PIN_LOCKED: &str = "Your token's PIN is locked after too many wrong tries, so KeySeal can't use it. To unlock it, use the software that came with your token, or ask whoever issued the token.";
@@ -48,6 +49,12 @@ impl std::error::Error for TokenError {}
 impl From<String> for TokenError {
     fn from(message: String) -> Self {
         Self(message)
+    }
+}
+
+impl From<TokenError> for String {
+    fn from(error: TokenError) -> Self {
+        error.0
     }
 }
 
@@ -80,160 +87,6 @@ impl From<TokenError> for LoginError {
 
 pub(crate) fn err(context: &str, error: impl std::fmt::Display) -> TokenError {
     TokenError(plain(&format!("{context}: {error}")))
-}
-
-pub fn sha256_hex(data: &[u8]) -> String {
-    hex::encode(Sha256::digest(data))
-}
-
-/// Whether a certificate can be offered for signing: a supported key
-/// (section 11), not a CA, and a KeyUsage extension asserting what `usage`
-/// asks for, as the server's certificate check requires.
-pub fn is_signing_certificate(der: &[u8], usage: KeyUsage) -> bool {
-    if KeyKind::of_certificate(der).is_err() {
-        return false;
-    }
-    let Ok((_, certificate)) = x509_parser::parse_x509_certificate(der) else {
-        return false;
-    };
-    let ca = matches!(certificate.basic_constraints(), Ok(Some(ext)) if ext.value.ca);
-    let asserted = match certificate.key_usage() {
-        Ok(Some(ext)) => match usage {
-            KeyUsage::NonRepudiation => ext.value.non_repudiation(),
-            KeyUsage::DigitalSignature => {
-                ext.value.digital_signature() || ext.value.non_repudiation()
-            }
-        },
-        _ => false,
-    };
-    !ca && asserted
-}
-
-/// Why a certificate can't sign at the Unix time `now`: it has expired or
-/// isn't valid yet. `None` within its validity period, as the server's
-/// certificate check requires.
-pub fn outside_validity(der: &[u8], now: i64) -> Option<String> {
-    let (_, certificate) = x509_parser::parse_x509_certificate(der).ok()?;
-    let validity = certificate.validity();
-    let date = |time: &x509_parser::time::ASN1Time| {
-        let time = time.to_datetime();
-        format!("{} {} {}", time.day(), time.month(), time.year())
-    };
-    if now > validity.not_after.timestamp() {
-        Some(format!(
-            "The certificate on your token expired on {}. Renew it with the company that issued it, then try again.",
-            date(&validity.not_after)
-        ))
-    } else if now < validity.not_before.timestamp() {
-        Some(format!(
-            "The certificate on your token isn't valid until {}. Try again from that date.",
-            date(&validity.not_before)
-        ))
-    } else {
-        None
-    }
-}
-
-/// The certificates among `others` that form the issuer chain of `der`,
-/// its issuer first: each one's subject is the issuer name of the one
-/// before and, when both carry key identifiers, its subject key identifier
-/// is that one's authority key identifier. The chain ends at a self-issued
-/// certificate or where no issuer is among `others`, so the rest of a
-/// shared token's certificates are left out.
-pub fn issuers(der: &[u8], mut others: Vec<Vec<u8>>) -> Vec<Vec<u8>> {
-    use x509_parser::certificate::X509Certificate;
-    use x509_parser::extensions::ParsedExtension;
-
-    fn key_ids<'a>(certificate: &'a X509Certificate) -> (Option<&'a [u8]>, Option<&'a [u8]>) {
-        let (mut authority, mut subject) = (None, None);
-        for extension in certificate.iter_extensions() {
-            match extension.parsed_extension() {
-                ParsedExtension::AuthorityKeyIdentifier(aki) => {
-                    authority = aki.key_identifier.as_ref().map(|id| id.0);
-                }
-                ParsedExtension::SubjectKeyIdentifier(ski) => subject = Some(ski.0),
-                _ => {}
-            }
-        }
-        (authority, subject)
-    }
-
-    let mut chain = Vec::new();
-    let mut current = der.to_vec();
-    while let Ok((_, certificate)) = x509_parser::parse_x509_certificate(&current) {
-        let issuer = certificate.issuer().as_raw();
-        if certificate.subject().as_raw() == issuer {
-            break;
-        }
-        let (authority, _) = key_ids(&certificate);
-        let found = others.iter().position(|other| {
-            x509_parser::parse_x509_certificate(other).is_ok_and(|(_, candidate)| {
-                let (_, subject_key) = key_ids(&candidate);
-                candidate.subject().as_raw() == issuer
-                    && match (authority, subject_key) {
-                        (Some(authority), Some(subject_key)) => authority == subject_key,
-                        _ => true,
-                    }
-            })
-        });
-        let Some(index) = found else {
-            break;
-        };
-        current = others.swap_remove(index);
-        chain.push(current.clone());
-    }
-    chain
-}
-
-/// The certificate's subject, for display (section 12.1).
-pub fn subject(der: &[u8]) -> String {
-    x509_parser::parse_x509_certificate(der)
-        .map(|(_, certificate)| plain(&certificate.subject().to_string()))
-        .unwrap_or_else(|_| "unreadable certificate".into())
-}
-
-/// A certificate as the chooser lists it, so that a renewed certificate
-/// can be told from the one it replaces.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct CertificateSummary {
-    /// The subject's common name, or the whole subject without a single one.
-    pub name: String,
-    /// The issuer's common name, or the whole issuer without a single one.
-    pub issuer: String,
-    /// The last day of the validity period, as "12 March 2027".
-    pub valid_until: String,
-    /// The serial number's last three bytes in uppercase hex, as "4F A1 9C".
-    pub serial_end: String,
-}
-
-impl CertificateSummary {
-    pub fn of(der: &[u8]) -> Self {
-        let Ok((_, certificate)) = x509_parser::parse_x509_certificate(der) else {
-            return Self {
-                name: subject(der),
-                issuer: String::new(),
-                valid_until: String::new(),
-                serial_end: String::new(),
-            };
-        };
-        let name = |name: &x509_parser::x509::X509Name| {
-            plain(
-                &crate::protocol::only(name.iter_common_name()).unwrap_or_else(|| name.to_string()),
-            )
-        };
-        let until = certificate.validity().not_after.to_datetime();
-        let serial = certificate.raw_serial();
-        Self {
-            name: name(certificate.subject()),
-            issuer: name(certificate.issuer()),
-            valid_until: format!("{} {} {}", until.day(), until.month(), until.year()),
-            serial_end: serial[serial.len().saturating_sub(3)..]
-                .iter()
-                .map(|byte| format!("{byte:02X}"))
-                .collect::<Vec<_>>()
-                .join(" "),
-        }
-    }
 }
 
 /// What the sign and enrol flow needs from where the job's key lives: a
@@ -279,7 +132,7 @@ pub trait TokenBackend {
 /// a plugged-in token. The HyperSecu driver finds its token a second or two
 /// after initialising, so an empty slot list right away doesn't mean no
 /// token.
-pub const SLOT_WAIT: Duration = Duration::from_secs(5);
+pub(crate) const SLOT_WAIT: Duration = Duration::from_secs(5);
 
 /// A token a driver reaches, read before login.
 #[derive(Serialize, Deserialize)]
@@ -362,13 +215,13 @@ pub fn tokens(
     path: &Path,
     wait: Duration,
 ) -> Result<(Box<dyn Driver>, Vec<TokenInfo>), TokenError> {
-    match worker::backend_for(path)? {
-        Backend::InProcess => {
+    match worker::runner_for(path)? {
+        Runner::InProcess => {
             let module = Module::load(path)?;
             let tokens = module.tokens(wait)?;
             Ok((Box::new(module), tokens))
         }
-        Backend::Worker => {
+        Runner::Worker => {
             let worker = WorkerToken::start(&worker::locate()?)?;
             let tokens = worker.tokens(path, wait)?;
             Ok((Box::new(worker), tokens))
@@ -834,56 +687,7 @@ impl Token {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn signing_certificates_need_the_key_usage() {
-        const NON_REPUDIATION: &[u8] = include_bytes!("../tests/fixtures/non-repudiation.der");
-        const DIGITAL_SIGNATURE: &[u8] = include_bytes!("../tests/fixtures/digital-signature.der");
-        const NO_KEY_USAGE: &[u8] = include_bytes!("../tests/fixtures/no-key-usage.der");
-        assert!(is_signing_certificate(
-            NON_REPUDIATION,
-            KeyUsage::NonRepudiation
-        ));
-        assert!(!is_signing_certificate(
-            DIGITAL_SIGNATURE,
-            KeyUsage::NonRepudiation
-        ));
-        assert!(!is_signing_certificate(
-            NO_KEY_USAGE,
-            KeyUsage::NonRepudiation
-        ));
-        assert!(is_signing_certificate(
-            NON_REPUDIATION,
-            KeyUsage::DigitalSignature
-        ));
-        assert!(is_signing_certificate(
-            DIGITAL_SIGNATURE,
-            KeyUsage::DigitalSignature
-        ));
-        assert!(!is_signing_certificate(
-            NO_KEY_USAGE,
-            KeyUsage::DigitalSignature
-        ));
-    }
-
-    #[test]
-    fn certificates_sign_only_within_their_validity_period() {
-        // Valid from 1 January 2020 to 1 January 2021.
-        const EXPIRED: &[u8] = include_bytes!("../tests/fixtures/expired.der");
-        assert_eq!(outside_validity(EXPIRED, 1_600_000_000), None);
-        assert_eq!(
-            outside_validity(EXPIRED, 1_700_000_000).as_deref(),
-            Some(
-                "The certificate on your token expired on 1 January 2021. Renew it with the company that issued it, then try again."
-            )
-        );
-        assert_eq!(
-            outside_validity(EXPIRED, 1_500_000_000).as_deref(),
-            Some(
-                "The certificate on your token isn't valid until 1 January 2020. Try again from that date."
-            )
-        );
-    }
+    use crate::certificate::subject;
 
     /// CKM_RSA_PKCS over the DigestInfo hashed here gives the signature the
     /// combined mechanism gives. SoftHSM has both, so the inputs come from
@@ -901,8 +705,7 @@ mod tests {
             return;
         };
         if std::env::var_os("KEYSEAL_PKCS1_TOKEN").is_none() {
-            let dir = std::env::temp_dir().join(format!("keyseal-pkcs1-{}", std::process::id()));
-            let _ = std::fs::remove_dir_all(&dir);
+            let dir = crate::testing::TempDir::new("pkcs1");
             std::fs::create_dir_all(dir.join("tokens")).unwrap();
             let conf = dir.join("softhsm2.conf");
             std::fs::write(
@@ -946,7 +749,6 @@ mod tests {
                 ])
                 .env("KEYSEAL_PKCS1_TOKEN", "1"));
             assert!(child.contains("1 passed"), "{child}");
-            std::fs::remove_dir_all(&dir).unwrap();
             return;
         }
         let module = Module::load(Path::new(&module)).unwrap();
@@ -1033,30 +835,6 @@ mod tests {
         assert_eq!(token("Office", "", ""), "Office");
     }
 
-    #[test]
-    fn summarises_certificates_for_the_chooser() {
-        assert_eq!(
-            CertificateSummary::of(SIGNER),
-            CertificateSummary {
-                name: "Test Signer chain".into(),
-                issuer: "KeySeal Chain Sub CA".into(),
-                valid_until: "1 January 2036".into(),
-                serial_end: "0B 05 43".into(),
-            }
-        );
-        // Names in BMPString read as text.
-        let bmp = CertificateSummary::of(include_bytes!("../tests/fixtures/bmp-names.der"));
-        assert_eq!(bmp.name, "KeySeal BMP CA");
-        assert_eq!(bmp.issuer, "KeySeal BMP CA");
-        let other = CertificateSummary::of(OTHER);
-        assert_eq!(other.valid_until, "28 September 2126");
-        assert_eq!(other.serial_end, "48 C1 46");
-        assert_eq!(
-            CertificateSummary::of(b"not a certificate").name,
-            "unreadable certificate"
-        );
-    }
-
     // control-names.der: a self-signed P-256 nonRepudiation certificate
     // whose common name wraps "Asha\u{7} Rao" in bidi controls, made with
     // `openssl req -x509 -utf8`.
@@ -1096,35 +874,5 @@ mod tests {
             summary.to_string(),
             "Office (Feitian ePass2003, serial number 01)"
         );
-    }
-
-    // chain-*.der: a P-256 root, a sub CA it issued, a signer the sub CA
-    // issued, and an impostor self-signed CA with the sub CA's name and
-    // another key, made with `openssl x509 -req` and key identifiers.
-    const ROOT: &[u8] = include_bytes!("../tests/fixtures/chain-root.der");
-    const SUB: &[u8] = include_bytes!("../tests/fixtures/chain-sub.der");
-    const SIGNER: &[u8] = include_bytes!("../tests/fixtures/chain-signer.der");
-    const IMPOSTOR: &[u8] = include_bytes!("../tests/fixtures/chain-impostor.der");
-    const OTHER: &[u8] = include_bytes!("../tests/fixtures/non-repudiation.der");
-
-    #[test]
-    fn issuers_follow_the_chain_and_leave_the_rest_out() {
-        let others = [OTHER, ROOT, IMPOSTOR, SUB].map(<[u8]>::to_vec).to_vec();
-        assert_eq!(issuers(SIGNER, others), [SUB, ROOT]);
-    }
-
-    #[test]
-    fn issuers_need_the_issuer_on_the_token() {
-        let others = [OTHER, ROOT, IMPOSTOR].map(<[u8]>::to_vec).to_vec();
-        assert!(issuers(SIGNER, others).is_empty());
-        let others = [ROOT, SIGNER].map(<[u8]>::to_vec).to_vec();
-        assert_eq!(issuers(SUB, others), [ROOT]);
-    }
-
-    #[test]
-    fn a_self_signed_certificate_has_no_issuers() {
-        let others = [ROOT, SUB, SIGNER].map(<[u8]>::to_vec).to_vec();
-        assert!(issuers(OTHER, others.clone()).is_empty());
-        assert!(issuers(ROOT, others).is_empty());
     }
 }

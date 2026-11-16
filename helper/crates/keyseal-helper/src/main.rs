@@ -9,12 +9,14 @@ use std::io::Write;
 use std::process::ExitCode;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use keyseal_core::backend;
+use keyseal_core::certificate::{self, CertificateSummary};
 use keyseal_core::flow::{
     self, DigestConfirm, Environment, Failure, JobView, Outcome, PinPrompt, Ui,
 };
 use keyseal_core::origin::{self, Origin};
 use keyseal_core::protocol::{KeyUsage, Kind};
-use keyseal_core::token::{self, CertificateSummary, TokenSummary};
+use keyseal_core::token::TokenSummary;
 use keyseal_core::trust::TrustStore;
 use keyseal_core::{doctor, install, update};
 use zeroize::Zeroizing;
@@ -364,7 +366,7 @@ fn list() -> Result<(), String> {
     loop {
         let mut names = Vec::new();
         let backend =
-            flow::open_backend(KeyUsage::DigitalSignature, &mut || Ok(()), &mut |_, _| {})
+            backend::open_backend(KeyUsage::DigitalSignature, &mut || Ok(()), &mut |_, _| {})
                 .and_then(|found| {
                     found.open(|tokens| {
                         names = tokens
@@ -400,7 +402,8 @@ fn list() -> Result<(), String> {
             );
         }
         for certificate in certificates {
-            let role = if token::is_signing_certificate(&certificate.der, KeyUsage::default()) {
+            let role = if certificate::is_signing_certificate(&certificate.der, KeyUsage::default())
+            {
                 "signing"
             } else {
                 "other"
@@ -408,7 +411,7 @@ fn list() -> Result<(), String> {
             println!(
                 "{}  {role:7}  {}",
                 certificate.sha256,
-                token::subject(&certificate.der)
+                certificate::subject(&certificate.der)
             );
         }
         token.close();

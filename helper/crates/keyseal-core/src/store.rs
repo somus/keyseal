@@ -9,6 +9,7 @@
 //! The platform calls sit behind [`KeyStore`], so the filtering and the
 //! signature encoding are tested on every platform.
 
+use crate::certificate;
 use crate::cms::{self, DigestAlgorithm, KeyKind, SignatureAlgorithm};
 use crate::protocol::KeyUsage;
 use crate::token::{self, TokenBackend, TokenCertificate, TokenError};
@@ -78,9 +79,9 @@ impl<S: KeyStore> TokenBackend for Store<S> {
             .store
             .certificates()?
             .into_iter()
-            .filter(|c| c.hardware_key && token::is_signing_certificate(&c.der, self.usage))
+            .filter(|c| c.hardware_key && certificate::is_signing_certificate(&c.der, self.usage))
             .map(|c| TokenCertificate {
-                sha256: token::sha256_hex(&c.der),
+                sha256: crate::sha256_hex(&c.der),
                 der: c.der,
                 id: None,
             })
@@ -189,7 +190,7 @@ mod tests {
             .unwrap();
         assert_eq!(offered.len(), 1);
         assert_eq!(offered[0].der, NON_REPUDIATION);
-        assert_eq!(offered[0].sha256, token::sha256_hex(NON_REPUDIATION));
+        assert_eq!(offered[0].sha256, crate::sha256_hex(NON_REPUDIATION));
         // A job whose policy accepts digitalSignature also sees that one.
         let offered = Store::new(store(), KeyUsage::DigitalSignature)
             .certificates(false)

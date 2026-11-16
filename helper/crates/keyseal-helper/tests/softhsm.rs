@@ -1124,7 +1124,7 @@ fn picks_a_token_by_the_expected_certificate_on_softhsm() {
     let listed = String::from_utf8_lossy(&output.stdout);
     for name in ["first", "second"] {
         let token = format!("{name} (SoftHSM project SoftHSM v2, serial number ");
-        let certificate = keyseal_core::token::sha256_hex(&setup.read(&format!("{name}.der")));
+        let certificate = keyseal_core::sha256_hex(&setup.read(&format!("{name}.der")));
         let at = listed.find(&token).unwrap_or_else(|| panic!("{listed}"));
         assert!(listed[at..].contains(&certificate), "{listed}");
     }

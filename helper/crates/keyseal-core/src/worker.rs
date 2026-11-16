@@ -22,7 +22,7 @@ use crate::token::{
 };
 
 /// The worker's file name, beside the helper's executable.
-pub const WORKER: &str = "keyseal-token-worker";
+const WORKER: &str = "keyseal-token-worker";
 
 const CPU_TYPE_X86_64: u32 = 0x0100_0007;
 const CPU_TYPE_ARM64: u32 = 0x0100_000c;
@@ -33,7 +33,7 @@ const MH_MAGIC_64: u32 = 0xfeed_facf;
 
 /// A Mach-O CPU type.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Arch {
+enum Arch {
     X86_64,
     /// arm64 and arm64e.
     Arm64,
@@ -62,7 +62,7 @@ impl std::fmt::Display for Arch {
 
 /// The architectures of a thin or fat Mach-O file from its first bytes, or
 /// `None` if `header` doesn't start one.
-pub fn architectures(header: &[u8]) -> Option<Vec<Arch>> {
+fn architectures(header: &[u8]) -> Option<Vec<Arch>> {
     let word = |at: usize, big_endian: bool| -> Option<u32> {
         let bytes = header.get(at..at + 4)?.try_into().ok()?;
         Some(if big_endian {
@@ -93,7 +93,7 @@ pub fn architectures(header: &[u8]) -> Option<Vec<Arch>> {
 
 /// Where a module's PKCS#11 operations run.
 #[derive(Debug, PartialEq, Eq)]
-pub enum Backend {
+pub enum Runner {
     InProcess,
     Worker,
 }
@@ -101,9 +101,9 @@ pub enum Backend {
 /// In this process when the module at `path` has a slice for this
 /// process's architecture, in the worker when it has only x86_64 and this
 /// process runs as arm64. Off macOS, always in this process.
-pub fn backend_for(path: &Path) -> Result<Backend, TokenError> {
+pub fn runner_for(path: &Path) -> Result<Runner, TokenError> {
     if !cfg!(target_os = "macos") {
-        return Ok(Backend::InProcess);
+        return Ok(Runner::InProcess);
     }
     let current = if cfg!(target_arch = "aarch64") {
         Arch::Arm64
@@ -126,10 +126,10 @@ pub fn backend_for(path: &Path) -> Result<Backend, TokenError> {
         ))
     })?;
     if found.contains(&current) {
-        return Ok(Backend::InProcess);
+        return Ok(Runner::InProcess);
     }
     if current == Arch::Arm64 && found.contains(&Arch::X86_64) {
-        return Ok(Backend::Worker);
+        return Ok(Runner::Worker);
     }
     let found: Vec<String> = found.iter().map(Arch::to_string).collect();
     Err(TokenError(format!(
@@ -141,7 +141,7 @@ pub fn backend_for(path: &Path) -> Result<Backend, TokenError> {
 
 /// The worker beside this executable: in `Contents/MacOS/` of the app
 /// bundle. One that resolves to another directory isn't run.
-pub fn locate() -> Result<PathBuf, TokenError> {
+pub(crate) fn locate() -> Result<PathBuf, TokenError> {
     let exe = std::env::current_exe()
         .and_then(|exe| exe.canonicalize())
         .map_err(|e| err("Couldn't find the helper's executable", e))?;
@@ -472,33 +472,28 @@ mod tests {
         let found = architectures(&header).unwrap();
         assert!(found.contains(&Arch::X86_64), "{found:?}");
         assert!(found.contains(&Arch::Arm64), "{found:?}");
-        assert_eq!(
-            backend_for(Path::new("/bin/ls")).unwrap(),
-            Backend::InProcess
-        );
+        assert_eq!(runner_for(Path::new("/bin/ls")).unwrap(), Runner::InProcess);
     }
 
     #[cfg(target_os = "macos")]
     #[test]
     fn names_the_architectures_it_cannot_load() {
-        let dir = std::env::temp_dir().join(format!("keyseal-worker-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = crate::testing::TempDir::new("worker");
         let x86_64 = dir.join("x86_64.dylib");
         let other = dir.join("other.dylib");
         std::fs::write(&x86_64, thin(CPU_TYPE_X86_64)).unwrap();
         std::fs::write(&other, fat(FAT_MAGIC, 20, &[7, 18])).unwrap();
         let expected = if cfg!(target_arch = "aarch64") {
-            Backend::Worker
+            Runner::Worker
         } else {
-            Backend::InProcess
+            Runner::InProcess
         };
-        assert_eq!(backend_for(&x86_64).unwrap(), expected);
-        let message = backend_for(&other).unwrap_err().0;
+        assert_eq!(runner_for(&x86_64).unwrap(), expected);
+        let message = runner_for(&other).unwrap_err().0;
         assert!(
             message.contains("built for CPU type 0x7, CPU type 0x12"),
             "{message}"
         );
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

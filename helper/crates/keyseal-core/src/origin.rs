@@ -108,7 +108,7 @@ impl Origin {
     /// so error bodies can be read; proxies from the environment are not
     /// used, since the resolved address of the server couldn't be checked;
     /// TLS uses the system trust store.
-    pub fn agent(&self, timeout: Duration) -> Agent {
+    pub(crate) fn agent(&self, timeout: Duration) -> Agent {
         let tls = TlsConfig::builder()
             .root_certs(RootCerts::PlatformVerifier)
             .build();
@@ -142,7 +142,7 @@ impl std::fmt::Display for Origin {
 /// the IANA special-purpose registries, and IPv6 forms that carry such an
 /// IPv4 address (IPv4-mapped, IPv4-compatible, NAT64 `64:ff9b::/96` and
 /// 6to4).
-pub fn is_private(ip: IpAddr) -> bool {
+fn is_private(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(ip) => is_private_v4(ip),
         IpAddr::V6(ip) => is_private_v6(ip),

@@ -42,7 +42,7 @@ impl TrustStore {
         Ok(self.read()?.origins)
     }
 
-    pub fn is_trusted(&self, origin: &Origin) -> Result<bool, String> {
+    pub(crate) fn is_trusted(&self, origin: &Origin) -> Result<bool, String> {
         if origin.insecure {
             return Ok(false);
         }
@@ -108,13 +108,8 @@ impl TrustStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::TempDir;
     use url::Url;
-
-    fn temp_dir(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("keyseal-trust-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        dir
-    }
 
     fn origin(url: &str) -> Origin {
         Origin::of_url(&Url::parse(url).unwrap(), true).unwrap()
@@ -122,7 +117,7 @@ mod tests {
 
     #[test]
     fn trusts_lists_and_forgets_exact_origins() {
-        let dir = temp_dir("roundtrip");
+        let dir = TempDir::new("trust-roundtrip");
         let store = TrustStore::new(&dir.join("nested"));
         let dash = origin("https://dash.example.org/v1/jobs/x");
         assert!(store.list().unwrap().is_empty());
@@ -152,12 +147,11 @@ mod tests {
         assert!(!reopened.forget("https://other.example.org").unwrap());
         assert!(reopened.forget("https://Dash.example.org:443/").unwrap());
         assert!(!reopened.is_trusted(&dash).unwrap());
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn never_stores_development_origins() {
-        let dir = temp_dir("insecure");
+        let dir = TempDir::new("trust-insecure");
         let store = TrustStore::new(&dir);
         let local = origin("http://127.0.0.1:8080/");
         assert!(store.trust(&local).is_err());
@@ -167,11 +161,9 @@ mod tests {
 
     #[test]
     fn reports_a_damaged_store() {
-        let dir = temp_dir("damaged");
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = TempDir::new("trust-damaged");
         std::fs::write(dir.join("trust.json"), b"not json").unwrap();
         let store = TrustStore::new(&dir);
         assert!(store.list().unwrap_err().contains("damaged"));
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -198,7 +198,10 @@ fn runs_both_rounds_and_the_failure_report() {
         Some(&["KeySeal Test Sub CA".to_owned()][..])
     );
     assert_eq!(policy.subject_organization.as_deref(), Some("Acme, Inc."));
-    assert!(policy.accepts(include_bytes!("fixtures/policy.der")));
+    assert!(keyseal_core::certificate::meets_policy(
+        &policy,
+        include_bytes!("fixtures/policy.der")
+    ));
 
     let prepared = client
         .prepare(NONCE, b"certificate", &[b"ca".to_vec()])
@@ -516,9 +519,10 @@ fn reports_unreachable_servers() {
 
 mod flow {
     use super::*;
+    use keyseal_core::certificate::CertificateSummary;
     use keyseal_core::flow::{DigestConfirm, Environment, JobView, PinPrompt, Ui, run};
     use keyseal_core::origin::Origin;
-    use keyseal_core::token::{CertificateSummary, TokenSummary};
+    use keyseal_core::token::TokenSummary;
     use zeroize::Zeroizing;
 
     /// Accepts the origin, records errors and fails the test on any prompt

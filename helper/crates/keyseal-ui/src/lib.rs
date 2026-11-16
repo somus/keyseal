@@ -18,11 +18,12 @@ use std::time::Duration;
 use futures::StreamExt;
 use futures::channel::mpsc::{UnboundedSender, unbounded};
 use gpui_kit::{App, KeyBinding, Menu, MenuItem, QuitMode, actions};
+use keyseal_core::certificate::CertificateSummary;
 use keyseal_core::doctor::Report;
 use keyseal_core::flow::{DigestConfirm, JobView, PinPrompt, Progress, Step, Ui};
 use keyseal_core::origin::Origin;
 use keyseal_core::protocol::Kind;
-use keyseal_core::token::{CertificateSummary, PinWarning, TokenSummary};
+use keyseal_core::token::{PinWarning, TokenSummary};
 use zeroize::Zeroizing;
 
 actions!(keyseal, [OpenSettings]);

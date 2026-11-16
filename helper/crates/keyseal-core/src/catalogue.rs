@@ -37,7 +37,7 @@ pub const CATALOGUE_KEYS: &[[u8; 32]] = &[
 /// Where the catalogue is published; the signature is at the same URL with
 /// `.sig` appended: the asset of the KeySeal GitHub release tagged
 /// `catalogue`.
-pub const CATALOGUE_URL: &str =
+const CATALOGUE_URL: &str =
     "https://github.com/somus/keyseal/releases/download/catalogue/catalogue.json";
 
 /// The catalogue this helper was built with. Not signature-checked: it is
@@ -77,7 +77,7 @@ pub struct UsbId {
 
 /// Which copy of the catalogue is in use.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Source {
+pub enum Provenance {
     Embedded,
     Fetched,
 }
@@ -104,7 +104,7 @@ impl Catalogue {
     }
 
     /// The token a device belongs to.
-    pub fn token_for(&self, device: &UsbDevice) -> Option<&Token> {
+    pub(crate) fn token_for(&self, device: &UsbDevice) -> Option<&Token> {
         let (vid, pid) = (format!("{:04x}", device.vid), format!("{:04x}", device.pid));
         self.tokens
             .iter()
@@ -114,7 +114,7 @@ impl Catalogue {
 
 impl Token {
     /// Module paths for `platform`, in order.
-    pub fn modules_for(&self, platform: &str) -> &[String] {
+    pub(crate) fn modules_for(&self, platform: &str) -> &[String] {
         self.modules.get(platform).map_or(&[], Vec::as_slice)
     }
 }
@@ -136,7 +136,7 @@ fn platform_of(os: &str, arch: &str) -> Option<&'static str> {
 }
 
 /// Connected USB devices.
-pub fn usb_devices() -> Result<Vec<UsbDevice>, String> {
+pub(crate) fn usb_devices() -> Result<Vec<UsbDevice>, String> {
     let devices = nusb::list_devices()
         .wait()
         .map_err(|e| format!("Couldn't list USB devices: {e}"))?;
@@ -171,7 +171,7 @@ fn verify(catalogue: &[u8], signature: &[u8], keys: &[[u8; 32]]) -> Result<Catal
 }
 
 /// The catalogue built into the helper.
-pub fn embedded() -> Catalogue {
+pub(crate) fn embedded() -> Catalogue {
     Catalogue::parse(EMBEDDED.as_bytes()).expect("the embedded catalogue parses")
 }
 
@@ -191,11 +191,11 @@ fn load_from(dir: &Path, keys: &[[u8; 32]]) -> Option<Catalogue> {
 }
 
 /// The newer of the cached download and the embedded catalogue.
-pub fn current() -> (Catalogue, Source) {
+pub fn current() -> (Catalogue, Provenance) {
     let embedded = embedded();
     match load() {
-        Some(fetched) if fetched.version >= embedded.version => (fetched, Source::Fetched),
-        _ => (embedded, Source::Embedded),
+        Some(fetched) if fetched.version >= embedded.version => (fetched, Provenance::Fetched),
+        _ => (embedded, Provenance::Embedded),
     }
 }
 
@@ -270,15 +270,9 @@ fn get(agent: &Agent, url: &str, deadline: Instant) -> Result<Vec<u8>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::TempDir;
     use ed25519_dalek::{Signer, SigningKey};
     use serde_json::json;
-
-    fn temp_dir(name: &str) -> PathBuf {
-        let dir =
-            std::env::temp_dir().join(format!("keyseal-catalogue-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        dir
-    }
 
     fn catalogue(version: u64) -> Vec<u8> {
         serde_json::to_vec(&json!({
@@ -328,7 +322,7 @@ mod tests {
 
     #[test]
     fn stores_and_refuses_a_rollback_or_an_unsigned_file() {
-        let dir = temp_dir("store");
+        let dir = TempDir::new("catalogue-store");
         let key = SigningKey::from_bytes(&[1; 32]);
         let pinned = [key.verifying_key().to_bytes()];
 
@@ -344,19 +338,17 @@ mod tests {
         let error = store(&dir, &older, &sign(&key, &older), &pinned).unwrap_err();
         assert!(error.contains("older than version 101"), "{error}");
         assert_eq!(load_from(&dir, &pinned).unwrap().version, 101);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn a_tampered_cache_is_ignored() {
-        let dir = temp_dir("tampered");
+        let dir = TempDir::new("catalogue-tampered");
         let key = SigningKey::from_bytes(&[1; 32]);
         let pinned = [key.verifying_key().to_bytes()];
         let bytes = catalogue(100);
         store(&dir, &bytes, &sign(&key, &bytes), &pinned).unwrap();
         std::fs::write(dir.join("catalogue.json"), catalogue(102)).unwrap();
         assert!(load_from(&dir, &pinned).is_none());
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

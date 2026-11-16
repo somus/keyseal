@@ -5,8 +5,8 @@
 
 use std::process::{Command, Output};
 
+use keyseal_core::backend;
 use keyseal_core::cms::{DigestAlgorithm, SignatureAlgorithm};
-use keyseal_core::flow;
 use keyseal_core::protocol::KeyUsage;
 use keyseal_core::token::TokenSummary;
 use zeroize::Zeroizing;
@@ -71,7 +71,7 @@ fn opens_the_token_the_signer_chooses() {
     }
     let certificate = std::fs::read(dir.join("cert.der")).unwrap();
 
-    let found = flow::open_backend(KeyUsage::NonRepudiation, &mut || Ok(()), &mut |_, _| {})
+    let found = backend::open_backend(KeyUsage::NonRepudiation, &mut || Ok(()), &mut |_, _| {})
         .unwrap_or_else(|failure| panic!("{}", failure.message));
     let backend = found
         .open(|tokens| {

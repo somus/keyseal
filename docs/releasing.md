@@ -156,7 +156,9 @@ revocation are described in `docs/code-signing-policy.md`.
    unless `BW_SESSION` is set; either way it takes the session out of its
    environment and hands it only to `bw` and `sign-file.sh`. If the draft
    isn't there yet it waits for the tag's release run, and stops if that
-   run failed. It downloads the draft and clones the tag, and stops unless the tagged commit is on `main`, pins
+   run failed. One failure it handles: when GitHub cancelled a job because
+   no hosted runner took it, as happens when macOS runners are short, it
+   runs the failed jobs again, once, and goes on waiting. It downloads the draft and clones the tag, and stops unless the tagged commit is on `main`, pins
    `main`'s keys and is the commit the release run built. It checks every
    asset the way `sign-manifest.md` describes, the Windows and macOS ones
    against that run's unsigned binaries, rebuilds the Linux binaries in the

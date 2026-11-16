@@ -25,30 +25,18 @@ from fastapi.responses import JSONResponse
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field, StringConstraints
 from pyhanko.sign import timestamps
+from pyhanko_certvalidator import ValidationContext
 
-from . import remote_sign
+from . import ltv, remote_sign
 from .appearance import SignedByStampStyle
 from .fetch_cache import CachingFetcherBackend, FetchCache
 from .fetching import public_fetch_session
 from .prepare import MAX_FIELDS, FieldRequest, PrepareError, prepare_fields
 from .request_guard import RequestGuard
-from .settings import (
-    LogLevelError,
-    Settings,
-    TrustRootsError,
-    TsaUrlError,
-    WeakTokenError,
-    check_token,
-)
+from .settings import LogLevelError, Settings, TsaUrlError, WeakTokenError, check_token
 from .timestamping import TSA_TIMEOUT_SECONDS, TimestampAuthorities, TimestampUnavailableError
-from .validate import (
-    DEFAULT_KEY_USAGE,
-    KeyUsage,
-    ValidationLimitError,
-    ValidationSettings,
-    certificate_trusted,
-    validate_pdf_async,
-)
+from .trust import DEFAULT_KEY_USAGE, KeyUsage, TrustRootsError, ValidationSettings
+from .validate import ValidationLimitError, certificate_trusted, validate_pdf_async
 
 log = logging.getLogger(__name__)
 
@@ -74,6 +62,7 @@ ROUTERS_GROUP = "keyseal.routers"
 #: A page coordinate: finite and within the largest page PDF allows.
 Coordinate = Annotated[float, Field(allow_inf_nan=False, ge=-14400, le=14400)]
 Pdf = Annotated[str, Field(max_length=MAX_PDF_CHARS, description="A PDF, base64")]
+FieldName = Annotated[str, Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_]+$")]
 Certificate = Annotated[
     str, Field(max_length=MAX_CERTIFICATE_CHARS, description="A certificate, DER in base64")
 ]
@@ -91,14 +80,14 @@ DetailText = Annotated[
 
 
 class PrepareField(BaseModel):
-    name: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_]+$")
+    name: FieldName
     page: int
     box: tuple[Coordinate, Coordinate, Coordinate, Coordinate]
 
 
 class SignStartRequest(BaseModel):
     pdf: Pdf
-    fieldName: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_]+$")
+    fieldName: FieldName
     certificate: Certificate
     chain: Chain
     stampStyle: str = DEFAULT_STAMP_STYLE
@@ -309,43 +298,35 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(503, str(error)) from error
         return Response(content=pdf, media_type="application/pdf")
 
-    @app.post("/finalize")
-    async def finalize(request: Request) -> Response:
+    async def _long_term(
+        request: Request,
+        work: Callable[
+            [bytes, timestamps.TimeStamper, ValidationContext], Coroutine[Any, Any, bytes]
+        ],
+        doing: str,
+    ) -> Response:
         if tsa is None:
             raise HTTPException(503, "No timestamp authority is configured")
         pdf = await _read_pdf(request)
         stamper = tsa.stamper()
         try:
-            out = await _validating(
-                lambda settings: remote_sign.finalize(pdf, stamper, settings.context())
-            )
+            out = await _validating(lambda settings: work(pdf, stamper, settings.context()))
         except (remote_sign.RemoteSignError, ValidationLimitError) as error:
             raise HTTPException(422, str(error)) from error
         except TimestampUnavailableError as error:
             raise HTTPException(503, str(error)) from error
         except Exception as error:  # noqa: BLE001 - reported, the PDF stays as it was
-            log.exception("Couldn't finalise")
-            raise HTTPException(422, f"Couldn't finalise: {type(error).__name__}") from error
+            log.exception("Couldn't %s", doing)
+            raise HTTPException(422, f"Couldn't {doing}: {type(error).__name__}") from error
         return Response(content=out, media_type="application/pdf")
+
+    @app.post("/finalize")
+    async def finalize(request: Request) -> Response:
+        return await _long_term(request, ltv.finalize, "finalise")
 
     @app.post("/retimestamp")
     async def retimestamp(request: Request) -> Response:
-        if tsa is None:
-            raise HTTPException(503, "No timestamp authority is configured")
-        pdf = await _read_pdf(request)
-        stamper = tsa.stamper()
-        try:
-            out = await _validating(
-                lambda settings: remote_sign.retimestamp(pdf, stamper, settings.context())
-            )
-        except (remote_sign.RemoteSignError, ValidationLimitError) as error:
-            raise HTTPException(422, str(error)) from error
-        except TimestampUnavailableError as error:
-            raise HTTPException(503, str(error)) from error
-        except Exception as error:  # noqa: BLE001 - reported, the PDF stays as it was
-            log.exception("Couldn't timestamp")
-            raise HTTPException(422, f"Couldn't timestamp: {type(error).__name__}") from error
-        return Response(content=out, media_type="application/pdf")
+        return await _long_term(request, ltv.retimestamp, "timestamp")
 
     @app.post("/prepare")
     def prepare(body: PrepareRequest) -> Response:

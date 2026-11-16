@@ -9,14 +9,13 @@ from typing import Any
 
 import pytest
 from fastapi import APIRouter, Request, WebSocket
-from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
 from keyseal_service import app as app_module
 from keyseal_service.settings import Settings
-from keyseal_service.validate import ValidationSettings
+from keyseal_service.trust import ValidationSettings
 
-from .conftest import AUTH, TOKEN
+from .conftest import AUTH, TOKEN, client_for
 
 JSON_PATHS = ["/certificate", "/prepare", "/sign/start", "/sign/finish", "/extra/echo"]
 PDF_PATHS = ["/validate", "/finalize", "/retimestamp"]
@@ -71,11 +70,7 @@ def request(
     async def send(message: dict[str, Any]) -> None:
         messages.append(message)
 
-    app = app_module.create_app(
-        Settings(
-            token=TOKEN, tsa_urls=("https://tsa.example",), validation=ValidationSettings([])
-        )
-    )
+    app = client_for(ValidationSettings([]), ("https://tsa.example",)).app
     scope = {
         "type": "http",
         "asgi": {"version": "3.0"},
@@ -96,7 +91,15 @@ def request(
 
 @pytest.mark.parametrize("path", PATHS)
 @pytest.mark.parametrize(
-    "authorization", [None, b"Bearer wrong", TOKEN.encode(), f"bearer {TOKEN}".encode()]
+    "authorization",
+    [
+        None,
+        b"Bearer wrong",
+        TOKEN.encode(),
+        f"bearer {TOKEN}".encode(),
+        f"Basic {TOKEN}".encode(),
+        f"Bearer{TOKEN}".encode(),
+    ],
 )
 def test_an_unauthenticated_body_is_never_read(path: str, authorization: bytes | None) -> None:
     assert request(path, [], authorization=authorization) == (401, [])
@@ -143,10 +146,7 @@ def test_the_pdf_limit_is_25_mb() -> None:
 
 
 def test_a_plugin_websocket_needs_the_token() -> None:
-    app = app_module.create_app(
-        Settings(token=TOKEN, tsa_urls=(), validation=ValidationSettings([]))
-    )
-    client = TestClient(app)
+    client = client_for(ValidationSettings([]))
     with pytest.raises(WebSocketDisconnect) as refused:
         with client.websocket_connect("/extra/socket"):
             pass

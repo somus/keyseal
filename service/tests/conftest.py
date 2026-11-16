@@ -1,36 +1,73 @@
-"""Test fixtures: a throwaway CA, a signer certificate and signed PDFs."""
+"""Test fixtures: a throwaway CA, a signer certificate and signed PDFs, the
+signing steps the helper takes, stand-in timestamp authorities and an
+in-memory network."""
 
 from __future__ import annotations
 
+import asyncio
+import base64
+import hashlib
 import io
+import socket
+import threading
 from collections.abc import Collection
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
+import aiohttp
 import pytest
 from asn1crypto import keys, x509 as asn1_x509
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import ec, rsa
+from cryptography.hazmat.primitives.asymmetric import ec, padding, rsa
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 from pyhanko.pdf_utils import generic
 from pyhanko.pdf_utils.incremental_writer import IncrementalPdfFileWriter
 from pyhanko.pdf_utils.writer import PdfFileWriter
 from pyhanko.sign import fields, signers, timestamps
+from pyhanko.sign.timestamps.common_utils import TimestampRequestError
 from fastapi.testclient import TestClient
+from pyhanko_certvalidator import ValidationContext
 from pyhanko_certvalidator.registry import SimpleCertificateStore
 
+from keyseal_service import trust
 from keyseal_service.app import create_app
+from keyseal_service.prepare import FieldRequest, prepare_fields
 from keyseal_service.settings import Settings
-from keyseal_service.validate import ValidationSettings
+from keyseal_service.trust import DEFAULT_KEY_USAGE, KeyUsage, ValidationSettings
+from keyseal_service.validate import validate_pdf_async
 
 TOKEN = "Test-token-0123456789-abcdefghijkl"
 AUTH = {"Authorization": f"Bearer {TOKEN}"}
 
 
-def client_for(validation: ValidationSettings, tsa_urls: tuple[str, ...] = ()) -> TestClient:
-    return TestClient(create_app(Settings(token=TOKEN, tsa_urls=tsa_urls, validation=validation)))
+def client_for(
+    validation: ValidationSettings, tsa_urls: tuple[str, ...] = (), **options: Any
+) -> TestClient:
+    return TestClient(
+        create_app(Settings(token=TOKEN, tsa_urls=tsa_urls, validation=validation)), **options
+    )
+
+
+def client_with_tsas(
+    monkeypatch: pytest.MonkeyPatch,
+    validation: ValidationSettings,
+    tsas: dict[str, timestamps.TimeStamper],
+    **options: Any,
+) -> TestClient:
+    """A client whose timestamp authorities are `tsas`, by URL, in that order."""
+    monkeypatch.setattr(timestamps, "HTTPTimeStamper", lambda url, **_: tsas[url])
+    return client_for(validation, tuple(tsas), **options)
+
+
+def validate_pdf(
+    data: bytes,
+    settings: ValidationSettings,
+    base_length: int | None = None,
+    key_usage: KeyUsage = DEFAULT_KEY_USAGE,
+) -> dict[str, Any]:
+    return asyncio.run(validate_pdf_async(data, settings, base_length, key_usage))
 
 
 def _name(cn: str) -> x509.Name:
@@ -326,3 +363,161 @@ def sign(
 @pytest.fixture(scope="session")
 def pki() -> Pki:
     return Pki()
+
+
+def settings_with(pki: Pki) -> ValidationSettings:
+    return ValidationSettings(trust_roots=[pki.ca_asn1])
+
+
+def with_crl(monkeypatch: pytest.MonkeyPatch, crl: bytes, historical: bool = True) -> None:
+    """Every validation context holds `crl`, or with `historical` off only
+    those checking at the present."""
+
+    def context(**kwargs: Any) -> ValidationContext:
+        if historical or kwargs.get("moment") is None:
+            kwargs["crls"] = [*(kwargs.get("crls") or []), crl]
+        return ValidationContext(**kwargs)
+
+    monkeypatch.setattr(trust, "ValidationContext", context)
+
+
+def unanswered(stopped: threading.Event) -> Any:
+    """A coroutine function that waits for an answer that never comes,
+    setting `stopped` once it is cancelled."""
+
+    async def wait(*_: Any, **__: Any) -> Any:
+        try:
+            await asyncio.sleep(60)
+        finally:
+            stopped.set()
+
+    return wait
+
+
+def b64(data: bytes) -> str:
+    return base64.b64encode(data).decode()
+
+
+def prepared() -> bytes:
+    return prepare_fields(
+        blank_pdf(),
+        [
+            FieldRequest(name="Signer_a", page=-1, box=(300, 600, 547, 672)),
+            FieldRequest(name="Signer_b", page=-1, box=(300, 470, 547, 542)),
+        ],
+    )
+
+
+def token_sign(pki: Pki, data: bytes) -> bytes:
+    """What the helper does on the token: RSA PKCS#1 v1.5 over SHA-256."""
+    return pki.signer_key.sign(data, padding.PKCS1v15(), hashes.SHA256())
+
+
+def cert_b64(pki: Pki) -> str:
+    return b64(pki.signer_cert.public_bytes(serialization.Encoding.DER))
+
+
+def ca_b64(pki: Pki) -> str:
+    return b64(pki.ca.public_bytes(serialization.Encoding.DER))
+
+
+def _start_with(client: TestClient, pki: Pki, **details: str) -> Any:
+    return client.post(
+        "/sign/start",
+        headers=AUTH,
+        json={
+            "certificate": cert_b64(pki),
+            "chain": [ca_b64(pki)],
+            "fieldName": "Signer_a",
+            "pdf": b64(prepared()),
+            **details,
+        },
+    )
+
+
+DIGEST = hashlib.sha256(b"document").digest()
+
+
+class Down(timestamps.TimeStamper):
+    """A TSA that answers with an error, counting the requests."""
+
+    def __init__(self, error: Exception | None = None) -> None:
+        super().__init__()
+        self.error = error or TimestampRequestError("Timestamp server refused our request")
+        self.requests = 0
+
+    async def async_timestamp(self, message_digest: bytes, md_algorithm: str) -> Any:
+        self.requests += 1
+        raise self.error
+
+
+class Silent(timestamps.TimeStamper):
+    async def async_timestamp(self, message_digest: bytes, md_algorithm: str) -> Any:
+        await asyncio.sleep(60)
+
+
+PUBLIC_IP = "93.184.216.34"
+
+
+@pytest.fixture
+def network(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    """aiohttp's URL, redirect and DNS handling against an in-memory transport."""
+    state: dict[str, Any] = {
+        "requests": [],
+        "resolved": [],
+        "connected": [],
+        "answers": [PUBLIC_IP],
+        "responses": {},
+    }
+
+    async def resolve(self: Any, host: str, port: int = 0, family: int = socket.AF_INET) -> Any:
+        state["resolved"].append(host)
+        return [
+            {
+                "hostname": host,
+                "host": ip,
+                "port": port,
+                "family": socket.AF_INET6 if ":" in ip else socket.AF_INET,
+                "proto": socket.IPPROTO_TCP,
+                "flags": socket.AI_NUMERICHOST,
+            }
+            for ip in state["answers"]
+        ]
+
+    async def connect(self: Any, *_: Any, addr_infos: Any, req: Any, **__: Any) -> Any:
+        # Runs the connector's socket check too, but never connects that socket.
+        if self._socket_factory:
+            self._socket_factory(addr_infos[0]).close()
+        state["connected"].append(addr_infos[0][4][0])
+        protocol = self._factory()
+        status, headers, body = state["responses"].get(str(req.url), (200, {}, b"synthetic"))
+        head = f"HTTP/1.1 {status} Test\r\nContent-Length: {len(body)}\r\nConnection: close\r\n"
+        head += "".join(f"{key}: {value}\r\n" for key, value in headers.items())
+        response = (head + "\r\n").encode() + body
+
+        class Transport(asyncio.Transport):
+            closed = False
+            sent = False
+
+            def is_closing(self) -> bool:
+                return self.closed
+
+            def close(self) -> None:
+                self.closed = True
+
+            def write(self, data: Any) -> None:
+                if not self.sent:
+                    self.sent = True
+                    state["requests"].append(str(req.url))
+                    asyncio.get_running_loop().call_soon(protocol.data_received, response)
+
+            def get_extra_info(self, name: str, default: Any = None) -> Any:
+                return default
+
+        transport = Transport()
+        protocol.connection_made(transport)
+        return transport, protocol
+
+    monkeypatch.setattr(aiohttp.resolver.DefaultResolver, "resolve", resolve)
+    monkeypatch.setattr(aiohttp.TCPConnector, "_wrap_create_connection", connect)
+    return state

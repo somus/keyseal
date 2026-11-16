@@ -4,7 +4,6 @@ import asyncio
 import base64
 import io
 import json
-import os
 from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
@@ -15,64 +14,40 @@ from cryptography.hazmat.primitives.asymmetric import ec, padding
 from cryptography.hazmat.primitives.asymmetric.utils import decode_dss_signature
 from pyhanko.pdf_utils.reader import PdfFileReader
 from fastapi.testclient import TestClient
-from pyhanko.sign import timestamps
 
-from keyseal_service import app as app_module
-from keyseal_service.prepare import FieldRequest, prepare_fields
 from keyseal_service.remote_sign import (
     TIMESTAMP_MISMATCH,
     RemoteSignError,
     UnsupportedKeyError,
-    finalize,
     finish,
     start,
 )
 from keyseal_service.app import create_app
 from keyseal_service.appearance import SignedByStamp, SignedByStampStyle, reason_lines
 from keyseal_service.settings import Settings
-from keyseal_service.validate import ValidationSettings, validate_pdf
+from keyseal_service.trust import ValidationSettings
 
 from .conftest import (
     AUTH,
-    TOKEN,
     Pki,
+    _start_with,
+    b64,
     blank_pdf,
+    ca_b64,
+    cert_b64,
     certified_no_changes,
     client_for,
+    client_with_tsas,
     encrypted_pdf,
     misstamping,
+    prepared,
+    token_sign,
+    validate_pdf,
 )
-
-
-def b64(data: bytes) -> str:
-    return base64.b64encode(data).decode()
-
-
-def prepared() -> bytes:
-    return prepare_fields(
-        blank_pdf(),
-        [
-            FieldRequest(name="Signer_a", page=-1, box=(300, 600, 547, 672)),
-            FieldRequest(name="Signer_b", page=-1, box=(300, 470, 547, 542)),
-        ],
-    )
 
 
 def begin(pdf: bytes, field: str, cert: str, chain: list[str], rsa_padding: str = "pkcs1"):
     return start(pdf, field, cert, chain, SignedByStampStyle(), rsa_padding)  # type: ignore[arg-type]
-
-
-def token_sign(pki: Pki, data: bytes) -> bytes:
-    """What the helper does on the token: RSA PKCS#1 v1.5 over SHA-256."""
-    return pki.signer_key.sign(data, padding.PKCS1v15(), hashes.SHA256())
-
-
-def cert_b64(pki: Pki) -> str:
-    return b64(pki.signer_cert.public_bytes(serialization.Encoding.DER))
-
-
-def ca_b64(pki: Pki) -> str:
-    return b64(pki.ca.public_bytes(serialization.Encoding.DER))
 
 
 def test_deferred_signing_produces_a_valid_signature_in_the_field(pki: Pki) -> None:
@@ -185,21 +160,6 @@ def test_a_missing_or_filled_field_is_refused(pki: Pki) -> None:
         asyncio.run(begin(prepared(), "Nobody", cert_b64(pki), [ca_b64(pki)]))
 
 
-@pytest.mark.skipif(
-    os.environ.get("SIGNING_NETWORK_TESTS") != "1",
-    reason="needs the DigiCert TSA; set SIGNING_NETWORK_TESTS=1",
-)
-def test_timestamped_signature_and_long_term_finalisation(pki: Pki) -> None:
-    tsa = timestamps.HTTPTimeStamper("http://timestamp.digicert.com")
-    started = asyncio.run(begin(prepared(), "Signer_a", cert_b64(pki), [ca_b64(pki)]))
-    signed = asyncio.run(finish(started.state, token_sign(pki, started.to_sign), tsa))
-    settings = ValidationSettings(trust_roots=[pki.ca_asn1])
-    assert validate_pdf(signed, settings)["signatures"][0]["timestamped"] is True
-    final = asyncio.run(finalize(signed, tsa, settings.context()))
-    assert final.startswith(signed)
-    assert validate_pdf(final, settings)["status"] == "valid"
-
-
 def test_a_signature_timestamp_is_embedded_and_valid(pki: Pki) -> None:
     started = asyncio.run(begin(prepared(), "Signer_a", cert_b64(pki), [ca_b64(pki)]))
     tsa = pki.timestamper(datetime.now(UTC))
@@ -219,12 +179,11 @@ def test_a_timestamp_for_another_digest_is_refused(
     with pytest.raises(RemoteSignError, match=TIMESTAMP_MISMATCH):
         asyncio.run(finish(started.state, token_sign(pki, started.to_sign), tsa))
 
-    monkeypatch.setattr(
-        app_module.timestamps,
-        "HTTPTimeStamper",
-        lambda _url, **_: misstamping(pki.timestamper(datetime.now(UTC))),
+    client = client_with_tsas(
+        monkeypatch,
+        ValidationSettings(trust_roots=[pki.ca_asn1]),
+        {"https://tsa.invalid": misstamping(pki.timestamper(datetime.now(UTC)))},
     )
-    client = client_for(ValidationSettings(trust_roots=[pki.ca_asn1]), ("https://tsa.invalid",))
     body = _start_with(client, pki).json()
     finished = client.post(
         "/sign/finish",
@@ -429,20 +388,6 @@ def test_sign_finish_refuses_a_state_it_did_not_issue(pki: Pki) -> None:
 DETAILS = {"reason": " Approved as Director ", "location": "Mumbai", "contactInfo": "cs@example.org"}
 
 
-def _start_with(client: TestClient, pki: Pki, **details: str) -> Any:
-    return client.post(
-        "/sign/start",
-        headers=AUTH,
-        json={
-            "certificate": cert_b64(pki),
-            "chain": [ca_b64(pki)],
-            "fieldName": "Signer_a",
-            "pdf": b64(prepared()),
-            **details,
-        },
-    )
-
-
 def test_signature_details_land_in_the_signature_dictionary(
     pki: Pki, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -538,19 +483,10 @@ def test_a_pdf_that_cannot_be_signed_is_refused_with_the_reason(
 ) -> None:
     build, message, _ = UNSIGNABLE[kind]
     pdf = build(pki)
-    monkeypatch.setattr(
-        app_module.timestamps,
-        "HTTPTimeStamper",
-        lambda _url, **_: pki.timestamper(datetime.now(UTC)),
-    )
-    client = TestClient(
-        create_app(
-            Settings(
-                token=TOKEN,
-                tsa_urls=("https://tsa.invalid",),
-                validation=ValidationSettings(trust_roots=[pki.ca_asn1]),
-            )
-        ),
+    client = client_with_tsas(
+        monkeypatch,
+        ValidationSettings(trust_roots=[pki.ca_asn1]),
+        {"https://tsa.invalid": pki.timestamper(datetime.now(UTC))},
         raise_server_exceptions=False,
     )
     if path == "/prepare":
@@ -569,12 +505,3 @@ def test_a_pdf_that_cannot_be_signed_is_refused_with_the_reason(
         response = client.post(path, headers=AUTH, content=pdf)
     assert response.status_code == 422
     assert response.json() == {"detail": message}
-
-
-def test_a_certified_pdf_still_takes_revocation_data_and_document_timestamps(pki: Pki) -> None:
-    # PAdES lets a document certified with no changes allowed take a DSS and
-    # document timestamps, so /finalize and /retimestamp don't refuse it.
-    tsa = pki.timestamper(datetime.now(UTC))
-    settings = ValidationSettings(trust_roots=[pki.ca_asn1])
-    final = asyncio.run(finalize(certified_no_changes(prepared(), pki), tsa, settings.context()))
-    assert validate_pdf(final, settings)["status"] == "valid"

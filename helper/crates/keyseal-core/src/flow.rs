@@ -77,6 +77,14 @@ impl Failure {
             cancelled: true,
         }
     }
+
+    /// The failure of a `kind` job the signer cancelled.
+    fn job_cancelled(kind: Kind) -> Self {
+        Self::cancelled(match kind {
+            Kind::Sign => CANCELLED,
+            Kind::Enrol => ENROLMENT_CANCELLED,
+        })
+    }
 }
 
 impl From<String> for Failure {
@@ -288,10 +296,6 @@ fn run_link(
             store.trust(origin)?;
         }
     }
-    let cancelled = match link.kind {
-        Kind::Sign => CANCELLED,
-        Kind::Enrol => ENROLMENT_CANCELLED,
-    };
     let connecting = Progress {
         origin,
         kind: link.kind,
@@ -299,7 +303,7 @@ fn run_link(
         step: Step::Connecting,
     };
     if !ui.progress(connecting) {
-        return Err(Failure::cancelled(cancelled));
+        return Err(Failure::job_cancelled(link.kind));
     }
     let branding = manifest::branding(origin, &env.config_dir.join("manifests"));
     if let Some(branding) = &branding
@@ -364,22 +368,21 @@ fn sign(
     ui: &mut dyn Ui,
     open: Open,
 ) -> Result<Outcome, Failure> {
-    show_step(ui, view, Step::OpeningToken, CANCELLED)?;
+    show_step(ui, view, Step::OpeningToken)?;
     let mut chosen = None;
     let backend = open(key_usage(job), &mut || Ok(()))?.open(|tokens| {
-        let index = choose_token(ui, view, job, tokens, CANCELLED)?;
+        let index = choose_token(ui, view, job, tokens)?;
         chosen = Some(TokenSummary::of(&tokens[index], key_usage(job)).label);
         Ok(index)
     })?;
     let token = backend.token();
     // Cancelling once the token is open logs out, as declining the digests
     // does.
-    let reached =
-        |ui: &mut dyn Ui, step| show_step(ui, view, step, CANCELLED).inspect_err(|_| token.close());
+    let reached = |ui: &mut dyn Ui, step| show_step(ui, view, step).inspect_err(|_| token.close());
     let mut certificates = signing_certificates(token, job, false)?;
     let login_first = match &backend {
         Backend::Pkcs11(_) if certificates.is_empty() => {
-            log_in(ui, token, view, chosen.clone(), None, None, CANCELLED)?;
+            log_in(ui, token, view, chosen.clone(), None, None)?;
             certificates = signing_certificates(token, job, true)?;
             true
         }
@@ -396,15 +399,7 @@ fn sign(
     let subject = token::subject(&certificate.der);
     match &backend {
         Backend::Pkcs11(_) if !login_first => {
-            log_in(
-                ui,
-                token,
-                view,
-                chosen,
-                Some(subject),
-                Some(digests),
-                CANCELLED,
-            )?;
+            log_in(ui, token, view, chosen, Some(subject), Some(digests))?;
         }
         // The login-first path, and the certificate store before the
         // system's or vendor's PIN dialog.
@@ -416,7 +411,7 @@ fn sign(
             };
             if !ui.confirm_digest(&confirm) {
                 token.close();
-                return Err(Failure::cancelled(CANCELLED));
+                return Err(Failure::job_cancelled(view.kind));
             }
         }
     }
@@ -451,24 +446,24 @@ fn enrol(
     ui: &mut dyn Ui,
     open: Open,
 ) -> Result<Outcome, Failure> {
-    show_step(ui, view, Step::OpeningToken, ENROLMENT_CANCELLED)?;
+    show_step(ui, view, Step::OpeningToken)?;
     let found = open(key_usage(job), &mut || {
         if ui.confirm_enrol(view) {
             Ok(())
         } else {
-            Err(Failure::cancelled(ENROLMENT_CANCELLED))
+            Err(Failure::job_cancelled(view.kind))
         }
     })?;
     let mut chosen = None;
     let backend = found.open(|tokens| {
-        let index = choose_token(ui, view, job, tokens, ENROLMENT_CANCELLED)?;
+        let index = choose_token(ui, view, job, tokens)?;
         chosen = Some(TokenSummary::of(&tokens[index], key_usage(job)).label);
         Ok(index)
     })?;
     let token = backend.token();
     let certificate = match &backend {
         Backend::Pkcs11(_) => {
-            log_in(ui, token, view, chosen, None, None, ENROLMENT_CANCELLED)?;
+            log_in(ui, token, view, chosen, None, None)?;
             choose(
                 ui,
                 view,
@@ -487,11 +482,11 @@ fn enrol(
         )?,
     };
     let chain = chain(token, &certificate)?;
-    show_step(ui, view, Step::Signing, ENROLMENT_CANCELLED).inspect_err(|_| token.close())?;
+    show_step(ui, view, Step::Signing).inspect_err(|_| token.close())?;
     let proof = prove(client, job, token, &certificate, ui.window_handle());
     token.close();
     let proof = proof?;
-    show_step(ui, view, Step::CheckingCertificate, ENROLMENT_CANCELLED)?;
+    show_step(ui, view, Step::CheckingCertificate)?;
     client.enrol(&job.claim_nonce, &certificate.der, &chain, &proof)?;
     Ok(Outcome::Enrolled)
 }
@@ -534,7 +529,6 @@ fn log_in(
     token_label: Option<String>,
     certificate: Option<String>,
     digests: Option<Vec<String>>,
-    cancelled: &str,
 ) -> Result<(), Failure> {
     let mut prompt = PinPrompt {
         job,
@@ -552,7 +546,7 @@ fn log_in(
         }
         let pin = ui
             .prompt_pin(&prompt)
-            .ok_or_else(|| Failure::cancelled(cancelled))?;
+            .ok_or_else(|| Failure::job_cancelled(job.kind))?;
         match token.login(pin) {
             Ok(()) => return Ok(()),
             Err(LoginError::WrongPin) if ui.retries_pin() => prompt.wrong_pin = true,
@@ -563,9 +557,9 @@ fn log_in(
     }
 }
 
-/// Shows `step` of the claimed job in `view`; a failure saying `cancelled`
-/// when the signer cancelled.
-fn show_step(ui: &mut dyn Ui, view: &JobView, step: Step, cancelled: &str) -> Result<(), Failure> {
+/// Shows `step` of the claimed job in `view`; a cancelled failure when the
+/// signer cancelled.
+fn show_step(ui: &mut dyn Ui, view: &JobView, step: Step) -> Result<(), Failure> {
     let progress = Progress {
         origin: view.origin,
         kind: view.kind,
@@ -575,7 +569,7 @@ fn show_step(ui: &mut dyn Ui, view: &JobView, step: Step, cancelled: &str) -> Re
     if ui.progress(progress) {
         Ok(())
     } else {
-        Err(Failure::cancelled(cancelled))
+        Err(Failure::job_cancelled(view.kind))
     }
 }
 
@@ -807,7 +801,6 @@ fn choose_token(
     view: &JobView,
     job: &JobDescription,
     tokens: &[TokenInfo],
-    cancelled: &str,
 ) -> Result<usize, Failure> {
     if let Some(expected) = &job.expected_certificate_sha256 {
         let holders: Vec<usize> = (0..tokens.len())
@@ -831,7 +824,7 @@ fn choose_token(
         .collect();
     ui.choose_token(view, &summaries)
         .filter(|&index| index < tokens.len())
-        .ok_or_else(|| Failure::cancelled(cancelled))
+        .ok_or_else(|| Failure::job_cancelled(view.kind))
 }
 
 /// The key usage the job's certificate policy asks for, nonRepudiation
@@ -913,7 +906,7 @@ fn choose(
     let index = ui
         .choose_certificate(view, &summaries)
         .filter(|&index| index < certificates.len())
-        .ok_or_else(|| Failure::cancelled(CANCELLED))?;
+        .ok_or_else(|| Failure::job_cancelled(view.kind))?;
     Ok(certificates.remove(index))
 }
 
@@ -1589,6 +1582,14 @@ mod tests {
                 run_with(&format!("keyseal://{kind}?job={job}"), &mut ui, &env, &open).unwrap_err();
             let _ = std::fs::remove_dir_all(&config_dir);
             assert!(failure.cancelled, "{case}: {}", failure.message);
+            if cancel_at != Stage::Trust {
+                let message = if kind == "sign" {
+                    CANCELLED
+                } else {
+                    ENROLMENT_CANCELLED
+                };
+                assert_eq!(failure.message, message, "{case}");
+            }
             assert!(ui.errors.is_empty(), "{case}: {:?}", ui.errors);
             let requests = requests.lock().unwrap();
             let failures = requests.iter().filter(|r| r.ends_with("/failure")).count();
@@ -2445,7 +2446,7 @@ mod tests {
             info(2, "C", &[]),
         ];
         let choose = |expected: Option<&[u8]>, ui: &mut CancellingUi| {
-            choose_token(ui, &view, &job(expected), &tokens, CANCELLED)
+            choose_token(ui, &view, &job(expected), &tokens)
         };
 
         let mut ui = CancellingUi::new(Stage::Enrol);

@@ -19,6 +19,15 @@ lines under the new version with the release date.
 
 ### [Unreleased][helper-unreleased]
 
+#### Fixed
+
+- Cancelling the certificate choice in an enrolment reports "Enrolment
+  cancelled." to the server, instead of "Signing cancelled."
+- Headless runs, `keyseal list` and `keyseal doctor` print token labels,
+  certificate names, USB device names and error messages without control or
+  bidirectional characters, as the windows already showed them, so a token,
+  driver or server can't rearrange or hide text in the terminal.
+
 ### [0.6.0][helper-0.6.0] - 2026-11-16
 
 #### Added

@@ -22,7 +22,7 @@ use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
 use crate::cms::{self, DigestAlgorithm, KeyKind, SignatureAlgorithm};
-use crate::protocol::KeyUsage;
+use crate::protocol::{KeyUsage, plain};
 use crate::worker::{self, Backend, WorkerToken};
 
 #[derive(Debug)]
@@ -79,7 +79,7 @@ impl From<TokenError> for LoginError {
 }
 
 pub(crate) fn err(context: &str, error: impl std::fmt::Display) -> TokenError {
-    TokenError(format!("{context}: {error}"))
+    TokenError(plain(&format!("{context}: {error}")))
 }
 
 pub fn sha256_hex(data: &[u8]) -> String {
@@ -188,7 +188,7 @@ pub fn issuers(der: &[u8], mut others: Vec<Vec<u8>>) -> Vec<Vec<u8>> {
 /// The certificate's subject, for display (section 12.1).
 pub fn subject(der: &[u8]) -> String {
     x509_parser::parse_x509_certificate(der)
-        .map(|(_, certificate)| certificate.subject().to_string())
+        .map(|(_, certificate)| plain(&certificate.subject().to_string()))
         .unwrap_or_else(|_| "unreadable certificate".into())
 }
 
@@ -217,7 +217,9 @@ impl CertificateSummary {
             };
         };
         let name = |name: &x509_parser::x509::X509Name| {
-            crate::protocol::only(name.iter_common_name()).unwrap_or_else(|| name.to_string())
+            plain(
+                &crate::protocol::only(name.iter_common_name()).unwrap_or_else(|| name.to_string()),
+            )
         };
         let until = certificate.validity().not_after.to_datetime();
         let serial = certificate.raw_serial();
@@ -308,9 +310,7 @@ pub struct TokenSummary {
 
 impl TokenSummary {
     pub fn of(token: &TokenInfo, usage: KeyUsage) -> Self {
-        let model = format!("{} {}", token.manufacturer.trim(), token.model.trim())
-            .trim()
-            .to_owned();
+        let model = plain(format!("{} {}", token.manufacturer.trim(), token.model.trim()).trim());
         let mut names = Vec::new();
         for certificate in &token.certificates {
             let name = CertificateSummary::of(&certificate.der).name;
@@ -321,10 +321,10 @@ impl TokenSummary {
         Self {
             label: match token.label.trim() {
                 "" => model.clone(),
-                label => label.to_owned(),
+                label => plain(label),
             },
             model,
-            serial: token.serial.trim().to_owned(),
+            serial: plain(token.serial.trim()),
             names,
         }
     }
@@ -1054,6 +1054,47 @@ mod tests {
         assert_eq!(
             CertificateSummary::of(b"not a certificate").name,
             "unreadable certificate"
+        );
+    }
+
+    // control-names.der: a self-signed P-256 nonRepudiation certificate
+    // whose common name wraps "Asha\u{7} Rao" in bidi controls, made with
+    // `openssl req -x509 -utf8`.
+    const CONTROL_NAMES: &[u8] = include_bytes!("../tests/fixtures/control-names.der");
+
+    /// Names from a certificate or a driver come out without control or
+    /// bidi characters, for the windows and the terminal alike.
+    #[test]
+    fn summaries_drop_control_characters() {
+        let certificate = CertificateSummary::of(CONTROL_NAMES);
+        assert_eq!(certificate.name, "Asha Rao");
+        assert_eq!(certificate.issuer, "Asha Rao");
+        assert_eq!(subject(CONTROL_NAMES), "CN=Asha Rao");
+        let token = TokenInfo {
+            slot: 0,
+            label: "\u{202e}Office\u{7}".into(),
+            manufacturer: "Feitian\u{1b}".into(),
+            model: "\u{2066}ePass2003".into(),
+            serial: "\u{200f}01".into(),
+            certificates: vec![TokenCertificate {
+                der: CONTROL_NAMES.to_vec(),
+                sha256: sha256_hex(CONTROL_NAMES),
+                id: None,
+            }],
+        };
+        let summary = TokenSummary::of(&token, KeyUsage::NonRepudiation);
+        assert_eq!(
+            summary,
+            TokenSummary {
+                label: "Office".into(),
+                model: "Feitian ePass2003".into(),
+                serial: "01".into(),
+                names: vec!["Asha Rao".into()],
+            }
+        );
+        assert_eq!(
+            summary.to_string(),
+            "Office (Feitian ePass2003, serial number 01)"
         );
     }
 

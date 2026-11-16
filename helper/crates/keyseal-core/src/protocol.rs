@@ -469,7 +469,7 @@ impl JobClient {
             .and_then(|job| job.check(&self.url))
             .map_err(|e| ProtocolError {
                 status: Some(200),
-                message: format!("{} sent an invalid job: {e}.", self.origin),
+                message: format!("{} sent an invalid job: {}.", self.origin, plain(&e)),
             });
         if let (Err(error), Some(nonce)) = (&checked, nonce) {
             // Best effort: the caller shows the reason regardless.
@@ -605,7 +605,11 @@ impl JobClient {
         let body = self.read(sent, MAX_RESPONSE_BYTES)?;
         serde_json::from_slice(&body).map_err(|e| ProtocolError {
             status: Some(200),
-            message: format!("{} sent an invalid answer: {e}.", self.origin),
+            message: format!(
+                "{} sent an invalid answer: {}.",
+                self.origin,
+                plain(&e.to_string())
+            ),
         })
     }
 
@@ -618,7 +622,7 @@ impl JobClient {
         let origin = &self.origin;
         let unreachable = |e: ureq::Error| ProtocolError {
             status: None,
-            message: format!("Couldn't reach {origin}: {e}"),
+            message: format!("Couldn't reach {origin}: {}", plain(&e.to_string())),
         };
         let mut response = sent.map_err(unreachable)?;
         let status = response.status().as_u16();

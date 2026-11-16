@@ -1445,7 +1445,7 @@ mod tests {
         let _ = Command::new("/bin/chmod")
             .arg("-R")
             .arg("u+w")
-            .arg(&root)
+            .arg(&*root)
             .status();
     }
 }

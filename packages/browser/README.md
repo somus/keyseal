@@ -2,9 +2,15 @@
 
 Browser-side helper for pages that start a KeySeal job. It opens the `keyseal://` link without leaving the page, watches the job through the integrator's own status endpoint (polling by default, SSE optional), and tells the page when the helper hasn't picked up the job within about five seconds, so it can offer the download alongside the job's status while the job stays open.
 
-The package has no runtime dependencies. It does not create jobs or talk to the job endpoint; your backend does that (see [`@keyseal/server`](../server/)).
+The package has no runtime dependencies. It does not create jobs or talk to the job endpoint; your backend does that (see [`@keyseal/server`](../server/)). This README is its API reference; [docs/integrating.md](../../docs/integrating.md#4-start-the-helper-from-the-page) shows where it fits in an integration.
 
-The type declarations need TypeScript 4.7 or later. They are found through `exports` only, so `moduleResolution` must be `node16` or `nodenext`, or `bundler` from TypeScript 5.0.
+## Install
+
+```sh
+npm install @keyseal/browser
+```
+
+It ships ES modules for browsers. The type declarations need TypeScript 4.7 or later. They are found through `exports` only, so `moduleResolution` must be `node16` or `nodenext`, or `bundler` from TypeScript 5.0.
 
 ## API
 
@@ -20,7 +26,9 @@ signWithHelper(options: WatchOptions & { link: string; allowInsecureOrigins?: bo
 helperDownloadFor(source: PlatformSource): Promise<"macos" | "windows" | "linux-x64" | "linux-arm64" | "unsupported">;
 ```
 
-`launchHelper` throws a `TypeError` unless the link is `keyseal://sign?job=...` or `keyseal://enrol?job=...` with an `https` job URL on a domain name (not an IP address or `localhost`) of the form `<base>/v1/jobs/<token>`, without empty path segments (spec sections 3 and 4). `allowInsecureOrigins` also accepts `http://localhost` and `http://127.0.0.1`, for use with the helper's `KEYSEAL_ALLOW_INSECURE_ORIGINS=1` development override. The link opens in a hidden iframe, so an unregistered scheme cannot replace the page with an error page. Call it soon after the click that starts the job, since Chrome wants a recent user gesture before launching an app. A Content-Security-Policy must allow that frame: add `keyseal:` to `frame-src` (or to `child-src` or `default-src`, whichever applies), such as `frame-src 'self' keyseal:`. Otherwise the browser blocks the link without an error, and the helper never opens.
+The package also exports the types `JobState`, `JobStatus`, `PlatformSource`, `HelperPlatform` (the result of `helperDownloadFor`), `LaunchOptions`, `WatchOptions` and `JobSource`.
+
+`launchHelper` throws a `TypeError` unless the link is at most 2048 characters and is `keyseal://sign?job=...` or `keyseal://enrol?job=...` with an `https` job URL on a domain name (not an IP address or `localhost`) of the form `<base>/v1/jobs/<token>`, without empty path segments (spec sections 3 and 4). `allowInsecureOrigins` also accepts `http://localhost` and `http://127.0.0.1`, for use with the helper's `KEYSEAL_ALLOW_INSECURE_ORIGINS=1` development override. The link opens in a hidden iframe, removed after five seconds, so an unregistered scheme cannot replace the page with an error page. Call it soon after the click that starts the job, since Chrome wants a recent user gesture before launching an app. A Content-Security-Policy must allow that frame: add `keyseal:` to `frame-src` (or to `child-src` or `default-src`, whichever applies), such as `frame-src 'self' keyseal:`. Otherwise the browser blocks the link without an error, and the helper never opens.
 
 `WatchOptions`:
 
@@ -35,7 +43,7 @@ helperDownloadFor(source: PlatformSource): Promise<"macos" | "windows" | "linux-
 | `onChange` | | Called with each new status. |
 | `onNotClaimed` | | Called once if the helper hasn't picked up the job by `claimTimeoutMs`. Watching continues, and `onChange` still reports the claim when it comes. |
 
-`watchJob` resolves with the first `completed`, `failed` or `expired` status. It rejects with the abort reason on abort, with a `DOMException` named `TimeoutError` after `timeoutMs`, with any error `getStatus` throws, with a `TypeError` for a status whose `state` isn't one of the six above or whose `message` isn't a string, and with an `Error` if the event stream closes. Retry transient network errors inside `getStatus` if you want polling to survive them.
+`watchJob` resolves with the first `completed`, `failed` or `expired` status. Your status route can answer with `keyseal.status(id)` from `@keyseal/server` as it is: members other than `state` and `message` are ignored. It rejects with the abort reason on abort, or at once if `signal` is already aborted, with a `DOMException` named `TimeoutError` after `timeoutMs`, with any error `getStatus` throws, with a `TypeError` for a status whose `state` isn't one of the six above or whose `message` isn't a string, and with an `Error` if the event stream closes. Retry transient network errors inside `getStatus` if you want polling to survive them.
 
 `onNotClaimed` means the helper hasn't picked up the job yet, not that it isn't installed. An installed helper can take longer than `claimTimeoutMs`: the browser may ask whether to open KeySeal, and the first time a signer meets your site the helper asks them to trust its origin before it fetches the job (spec section 5), which they may take a while to read. So render a "Didn't open? Download the helper" link next to the job's status, never a screen that only offers the install, and hide the link once `onChange` reports a state other than `pending`.
 

@@ -38,12 +38,24 @@ The helper never talks to the signing service, and the PIN never leaves the sign
 | Reference server | [`examples/reference-server/`](examples/reference-server/) | A minimal integrator backend, and the target of the end-to-end test. |
 | Protocol | [`spec/`](spec/) | The `keyseal://` link, trust rules, manifest and job endpoint, with OpenAPI. |
 
-## Get started
+## Documentation
 
-- **Trying it out:** [docs/quickstart.md](docs/quickstart.md) signs a PDF without a USB token: Docker Compose runs the signing service and the reference server, and a SoftHSM software token stands in for the token.
-- **Integrating:** [docs/integrating.md](docs/integrating.md) walks through running the service, serving the job endpoint, creating jobs and starting the helper from your page.
-- **How it's built:** [docs/design.md](docs/design.md) covers the protocol flow, the trust model and the token access rules; [spec/protocol-v1.md](spec/protocol-v1.md) is the normative protocol.
-- **Working on keyseal:** [docs/development.md](docs/development.md) has the layout, prerequisites, checks and the end-to-end test.
+Integrating KeySeal into a web application, in order:
+
+1. **Decide whether it fits:** this page, then [docs/design.md](docs/design.md) for the protocol flow, the trust model and the token access rules.
+2. **Try it without hardware:** [docs/quickstart.md](docs/quickstart.md) signs a PDF with Docker Compose, the reference server and a SoftHSM software token.
+3. **Integrate it:** [docs/integrating.md](docs/integrating.md) walks through running the service, serving the job endpoint, creating jobs, starting the helper from your page and offering the download.
+4. **Look things up:** each part has one reference. [`@keyseal/server`](packages/server/README.md) for job creation, the adapter contract, limits and failures; [`@keyseal/browser`](packages/browser/README.md) for the page; [the signing service](service/README.md) for its routes, validation report and environment; [spec/](spec/) for the normative protocol and its OpenAPI.
+5. **Run it in production:** [docs/production.md](docs/production.md) covers the deployment, secrets, proxies, storage, logs and monitoring, versions and upgrades, handling failures, and a checklist before going live.
+6. **Tell your signers:** [docs/signers.md](docs/signers.md) is the page to send them to, for installing the helper, the security warnings, signing and troubleshooting.
+
+[examples/reference-server](examples/reference-server/) is a minimal backend wiring the pieces together, and [CHANGELOG.md](CHANGELOG.md) lists each component's releases.
+
+For other readers:
+
+- **Security reviewers:** the trust model and its limits in [docs/design.md](docs/design.md#trust-model), the protocol's [security considerations](spec/protocol-v1.md#14-security-considerations), what is signed and by whom in [docs/code-signing-policy.md](docs/code-signing-policy.md), and how to report a vulnerability in [SECURITY.md](SECURITY.md).
+- **Contributors:** [docs/development.md](docs/development.md) has the layout, prerequisites, checks and the end-to-end test, and [CONTRIBUTING.md](CONTRIBUTING.md) the process.
+- **Maintainers:** [docs/releasing.md](docs/releasing.md) covers releasing each component and cutting, reproducing and signing a helper release.
 
 ## Supported tokens and keys
 
@@ -71,7 +83,7 @@ The helper sends nothing about you or your computer to the KeySeal project. It t
 
 ## Status
 
-Released. The helper, both packages, the signing service and the catalogue work end to end, including signing with real DSC tokens on macOS, CNG signing on Windows 11 and an automated end-to-end test with SoftHSM. Still to come: macOS notarization and Windows code signing ([docs/releasing.md](docs/releasing.md)).
+Released. The helper, both packages, the signing service and the catalogue work end to end, including signing with real DSC tokens on macOS, CNG signing on Windows 11 and an automated end-to-end test with SoftHSM. Still to come: macOS notarization and Windows code signing ([docs/code-signing-policy.md](docs/code-signing-policy.md)).
 
 ## Security
 

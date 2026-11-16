@@ -38,7 +38,7 @@ impl DigestAlgorithm {
     /// The DER DigestInfo of `data`'s digest, which an RSA PKCS#1 v1.5
     /// signature pads and signs (RFC 8017 section 9.2): the AlgorithmIdentifier
     /// with NULL parameters, then the digest as an OCTET STRING.
-    pub fn digest_info(self, data: &[u8]) -> Vec<u8> {
+    pub(crate) fn digest_info(self, data: &[u8]) -> Vec<u8> {
         let prefix: &[u8] = match self {
             Self::Sha256 => &[
                 0x30, 0x31, 0x30, 0x0d, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02,
@@ -78,7 +78,7 @@ const BRAINPOOL_P384R1: Oid<'static> = oid!(1.3.36.3.3.2.8.1.1.11);
 
 impl KeyKind {
     /// The kind of key in a DER certificate's SubjectPublicKeyInfo.
-    pub fn of_certificate(der: &[u8]) -> Result<Self, String> {
+    pub(crate) fn of_certificate(der: &[u8]) -> Result<Self, String> {
         let (_, certificate) = x509_parser::parse_x509_certificate(der)
             .map_err(|e| format!("Couldn't read the certificate: {e}"))?;
         let spki = certificate.public_key();
@@ -125,7 +125,7 @@ impl KeyKind {
 
     /// The length of an ECDSA signature's r||s for the key's curve; `None`
     /// for RSA.
-    pub fn ecdsa_len(self) -> Option<usize> {
+    pub(crate) fn ecdsa_len(self) -> Option<usize> {
         match self {
             Self::Rsa => None,
             Self::P256 | Self::BrainpoolP256r1 => Some(64),
@@ -174,7 +174,7 @@ fn only(input: &[u8], tag: Tag) -> Result<Any<'_>, String> {
 /// `digest`-sized messageDigest and a signing-certificate-v2 naming the
 /// certificate whose DER has SHA-256 `certificate_sha256`. Returns the
 /// messageDigest.
-pub fn check_signed_attributes(
+pub(crate) fn check_signed_attributes(
     to_sign: &[u8],
     digest: DigestAlgorithm,
     certificate_sha256: &[u8],
@@ -325,7 +325,7 @@ fn der_unsigned(bytes: &[u8]) -> Vec<u8> {
 
 /// CKM_ECDSA returns r||s, `len` bytes for the curve (64 for P-256, 96 for
 /// P-384); CMS carries ECDSA-Sig-Value ::= SEQUENCE { r INTEGER, s INTEGER }.
-pub fn ecdsa_signature(raw: &[u8], len: usize) -> Result<Vec<u8>, String> {
+pub(crate) fn ecdsa_signature(raw: &[u8], len: usize) -> Result<Vec<u8>, String> {
     if raw.len() != len {
         return Err(format!(
             "The token returned a {}-byte ECDSA signature where the key's curve gives {len} bytes.",

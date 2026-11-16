@@ -17,7 +17,7 @@ use std::time::Duration;
 
 use keyseal_core::cms::{DigestAlgorithm, SignatureAlgorithm};
 use keyseal_core::token::{Driver, LoginError};
-use keyseal_core::worker::{self, Backend, WorkerToken};
+use keyseal_core::worker::{self, Runner, WorkerToken};
 use serde_json::{Value, json};
 use zeroize::Zeroizing;
 
@@ -256,7 +256,7 @@ fn worker_runs_softhsm() {
         return;
     };
     if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
-        assert_eq!(worker::backend_for(&module).unwrap(), Backend::Worker);
+        assert_eq!(worker::runner_for(&module).unwrap(), Runner::Worker);
     }
     round_trip(&dir, &worker, &module);
     raw_session(&worker, &module);

@@ -1,6 +1,6 @@
 //! `keyseal doctor`: what the helper sees, as text for a support request
 //! and as the rows the settings window shows. [`run`] looks at the system
-//! the way a job would, loading drivers through [`flow::open_backend`];
+//! the way a job would, loading drivers through [`backend::open_backend`];
 //! [`in_child`] runs it in a `keyseal doctor --json` process, so a running
 //! app never initialises a driver outside a job.
 
@@ -10,8 +10,9 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
-use crate::catalogue::{self, Source};
-use crate::flow;
+use crate::backend;
+use crate::catalogue::{self, Provenance};
+use crate::certificate;
 use crate::modules::{self, Attempt, Candidate};
 use crate::origin;
 use crate::protocol::KeyUsage;
@@ -146,7 +147,7 @@ struct Facts {
     proxies: Vec<&'static str>,
     /// The version downloaded now, or why the download failed.
     refreshed: Option<Result<u64, String>>,
-    catalogue: (u64, String, Source),
+    catalogue: (u64, String, Provenance),
     devices: Result<Vec<Device>, String>,
     /// Each candidate and whether it is installed.
     candidates: Result<Vec<(Candidate, bool)>, String>,
@@ -223,7 +224,7 @@ fn gather(gpu: Result<Option<String>, String>) -> Facts {
         // several.
         let open = |index: usize, tried: &mut Vec<(Attempt, Result<(), String>)>| {
             let mut names = Vec::new();
-            let backend = flow::open_backend(
+            let backend = backend::open_backend(
                 KeyUsage::DigitalSignature,
                 &mut || Ok(()),
                 &mut |attempt, outcome| {
@@ -245,7 +246,7 @@ fn gather(gpu: Result<Option<String>, String>) -> Facts {
             });
             (backend, names)
         };
-        let read = |backend: &flow::Backend, name: Option<String>| {
+        let read = |backend: &backend::Backend, name: Option<String>| {
             let token = backend.token();
             OpenedToken {
                 name,
@@ -255,7 +256,7 @@ fn gather(gpu: Result<Option<String>, String>) -> Facts {
                     .map(|certificates| {
                         certificates
                             .iter()
-                            .map(|c| (c.sha256.clone(), token::subject(&c.der)))
+                            .map(|c| (c.sha256.clone(), certificate::subject(&c.der)))
                             .collect()
                     })
                     .map_err(|e| e.0),
@@ -267,9 +268,9 @@ fn gather(gpu: Result<Option<String>, String>) -> Facts {
                 let used = tried.iter().find(|(_, outcome)| outcome.is_ok());
                 let module = match used {
                     Some((Attempt::Module(candidate), _)) => {
-                        let runs = match worker::backend_for(&candidate.path) {
-                            Ok(worker::Backend::InProcess) => Ok(None),
-                            Ok(worker::Backend::Worker) => {
+                        let runs = match worker::runner_for(&candidate.path) {
+                            Ok(worker::Runner::InProcess) => Ok(None),
+                            Ok(worker::Runner::Worker) => {
                                 worker::locate().map(Some).map_err(|e| e.0)
                             }
                             Err(e) => Err(e.0),
@@ -382,8 +383,8 @@ fn write(facts: &Facts, lines: &mut Vec<String>) -> Result<Status, String> {
     }
     let (version, generated_at, source) = &facts.catalogue;
     let copy = match source {
-        Source::Embedded => "embedded",
-        Source::Fetched => "downloaded",
+        Provenance::Embedded => "embedded",
+        Provenance::Fetched => "downloaded",
     };
     lines.push(format!(
         "Driver catalogue: version {version} of {generated_at} ({copy})"
@@ -466,7 +467,7 @@ fn drivers(facts: &Facts) -> Vec<Driver> {
             .map(|(_, outcome)| match outcome {
                 Ok(()) => DriverState::Used,
                 Err(message) if message == token::NO_TOKEN => DriverState::NoToken,
-                Err(message) if message == flow::NO_STORE_CERTIFICATE => DriverState::Empty,
+                Err(message) if message == backend::NO_STORE_CERTIFICATE => DriverState::Empty,
                 Err(message) => DriverState::Failed(message.clone()),
             })
     };
@@ -539,7 +540,7 @@ mod tests {
             insecure: false,
             proxies: vec![],
             refreshed: None,
-            catalogue: (3, "2026-10-01".into(), Source::Embedded),
+            catalogue: (3, "2026-10-01".into(), Provenance::Embedded),
             devices: Ok(vec![Device {
                 id: "2ccf:080a".into(),
                 product: Some("HYP2003".into()),
@@ -634,7 +635,7 @@ mod tests {
         let known = no_token.candidates.as_ref().unwrap()[1].0.clone();
         no_token.tried = vec![
             (Attempt::Module(known), Err(token::NO_TOKEN.into())),
-            (Attempt::Store, Err(flow::NO_STORE_CERTIFICATE.into())),
+            (Attempt::Store, Err(backend::NO_STORE_CERTIFICATE.into())),
         ];
         no_token.opened = Ok(None);
         let no_token = report(&no_token);
@@ -642,7 +643,7 @@ mod tests {
         assert!(no_token.text.ends_with(&format!(
             "{}: {}\nTokens: none plugged in\n",
             Attempt::Store,
-            flow::NO_STORE_CERTIFICATE
+            backend::NO_STORE_CERTIFICATE
         )));
         assert_eq!(no_token.drivers[1].state, DriverState::NoToken);
         // An empty certificate store found nothing; it didn't fail.

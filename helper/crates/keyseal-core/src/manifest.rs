@@ -10,7 +10,7 @@ use ureq::Agent;
 
 use crate::origin::Origin;
 use crate::protocol::{VERSION_HEADER, plain};
-use crate::token::sha256_hex;
+use crate::sha256_hex;
 
 const BUDGET: Duration = Duration::from_secs(2);
 const MAX_MANIFEST_BYTES: u64 = 16_384;
@@ -59,7 +59,7 @@ impl Manifest {
     }
 
     /// Whether this helper is older than `minHelperVersion` (section 6.2).
-    pub fn needs_newer_helper(&self) -> bool {
+    pub(crate) fn needs_newer_helper(&self) -> bool {
         let minimum = self
             .min_helper_version
             .as_deref()

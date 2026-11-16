@@ -5,6 +5,8 @@ use std::sync::mpsc;
 
 #[cfg(feature = "gallery")]
 use gpui_kit::App;
+#[cfg(feature = "gallery")]
+use keyseal_core::certificate::CertificateSummary;
 use keyseal_core::doctor::{Driver, DriverState, Report, Status};
 #[cfg(feature = "gallery")]
 use keyseal_core::flow::Step;
@@ -13,7 +15,7 @@ use keyseal_core::modules;
 #[cfg(feature = "gallery")]
 use keyseal_core::protocol::Kind;
 #[cfg(feature = "gallery")]
-use keyseal_core::token::{CertificateSummary, TokenSummary};
+use keyseal_core::token::TokenSummary;
 #[cfg(feature = "gallery")]
 use keyseal_core::trust::TrustStore;
 
@@ -220,7 +222,8 @@ pub(crate) fn gallery(view: &str, cx: &mut App) {
                 "message-expired" => {
                     let expired =
                         include_bytes!("../../../keyseal-core/tests/fixtures/expired.der");
-                    keyseal_core::token::outside_validity(expired, i64::MAX).unwrap_or_default()
+                    keyseal_core::certificate::outside_validity(expired, i64::MAX)
+                        .unwrap_or_default()
                 }
                 "message-link" => keyseal_core::protocol::DAMAGED_LINK.into(),
                 _ => keyseal_core::flow::INTERNAL_ERROR.into(),

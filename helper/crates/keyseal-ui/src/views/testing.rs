@@ -1,8 +1,8 @@
 //! What the windows' tests share.
 
 use gpui_kit::{AnyWindowHandle, TestAppContext};
+use keyseal_core::certificate::CertificateSummary;
 use keyseal_core::protocol::Kind;
-use keyseal_core::token::CertificateSummary;
 
 use keyseal_core::doctor::{Report, Status};
 

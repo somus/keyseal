@@ -13,9 +13,10 @@ use gpui_kit::{
     SharedString, StatefulInteractiveElement, Styled, Subscription, TestSupportExt, Window, div,
     prelude::FluentBuilder, px, rgb, size,
 };
+use keyseal_core::certificate::CertificateSummary;
 use keyseal_core::flow::Step;
 use keyseal_core::protocol::Kind;
-use keyseal_core::token::{CertificateSummary, TokenSummary};
+use keyseal_core::token::TokenSummary;
 use zeroize::Zeroizing;
 
 use super::widgets::{
@@ -756,9 +757,10 @@ mod tests {
     use gpui_kit::test::{TestQueryExt, TestWindowExt};
     use gpui_kit::{AppContext, ScrollDelta, TestAppContext, VisualTestContext, point, px};
 
+    use keyseal_core::certificate::CertificateSummary;
     use keyseal_core::flow::Step;
     use keyseal_core::preferences::Preferences;
-    use keyseal_core::token::{CertificateSummary, TokenSummary};
+    use keyseal_core::token::TokenSummary;
 
     use crate::views::testing::{
         DIGEST, certificate, job, log, open_windows, pass_input_delay, probe, setup, temp_dir,

@@ -48,11 +48,11 @@ impl Preferences {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::TempDir;
 
     #[test]
     fn preferences_round_trip_and_default_when_missing_or_damaged() {
-        let dir = std::env::temp_dir().join(format!("keyseal-preferences-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = TempDir::new("preferences");
         assert_eq!(Preferences::load(&dir), Preferences::default());
         assert!(Preferences::load(&dir).translucent_windows);
         assert!(!Preferences::load(&dir).always_show_details);
@@ -82,6 +82,5 @@ mod tests {
 
         std::fs::write(dir.join("preferences.json"), b"{not json").unwrap();
         assert_eq!(Preferences::load(&dir), Preferences::default());
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

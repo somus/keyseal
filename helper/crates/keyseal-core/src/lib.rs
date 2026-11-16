@@ -9,19 +9,22 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use sha2::{Digest, Sha256};
 use ureq::Agent;
 use ureq::tls::{RootCerts, TlsConfig};
 
+pub mod backend;
 pub mod catalogue;
+pub mod certificate;
 pub mod cms;
 #[cfg(windows)]
-pub mod cng;
+mod cng;
 pub mod doctor;
-pub mod document;
+mod document;
 pub mod flow;
 pub mod install;
 #[cfg(target_os = "macos")]
-pub mod keychain;
+mod keychain;
 #[cfg(target_os = "macos")]
 pub mod macos;
 pub mod manifest;
@@ -30,7 +33,9 @@ pub mod origin;
 pub mod preferences;
 pub mod protocol;
 #[cfg(any(windows, target_os = "macos", test))]
-pub mod store;
+mod store;
+#[cfg(test)]
+mod testing;
 pub mod token;
 pub mod trust;
 pub mod update;
@@ -38,6 +43,11 @@ pub mod worker;
 
 /// The helper's version, sent as `X-KeySeal-Version`.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// The SHA-256 of `data` as lowercase hex.
+pub fn sha256_hex(data: &[u8]) -> String {
+    hex::encode(Sha256::digest(data))
+}
 
 /// Where the helper keeps the trust store and manifest cache:
 /// `KEYSEAL_CONFIG_DIR`, or `keyseal` in the platform config directory.
@@ -70,7 +80,7 @@ pub fn create_private_dir(dir: &Path) -> std::io::Result<()> {
 
 /// Writes a file in the config directory: on Unix readable only by the
 /// user (0600), tightening a file that already exists.
-pub fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+pub(crate) fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create(true).truncate(true);
     #[cfg(unix)]
@@ -128,13 +138,12 @@ pub(crate) fn download(
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+    use crate::testing::TempDir;
     use std::os::unix::fs::PermissionsExt;
 
     #[test]
     fn config_files_are_private() {
-        let dir = std::env::temp_dir().join(format!("keyseal-private-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = TempDir::new("private");
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
         let file = dir.join("trust.json");
         std::fs::write(&file, b"old").unwrap();
@@ -152,6 +161,5 @@ mod tests {
         assert_eq!(mode(&file), 0o600);
         assert_eq!(mode(&nested.join("a.json")), 0o600);
         assert_eq!(std::fs::read(&file).unwrap(), b"new");
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

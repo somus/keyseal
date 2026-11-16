@@ -151,10 +151,12 @@ mod tests {
     use security_framework::os::macos::keychain::CreateOptions;
 
     use super::*;
+    use crate::certificate;
     use crate::cms::SignatureAlgorithm;
     use crate::protocol::KeyUsage;
     use crate::store::Store;
-    use crate::token::{self, TokenBackend};
+    use crate::testing::TempDir;
+    use crate::token::TokenBackend;
 
     const RSA: &[u8] = include_bytes!("../tests/fixtures/keychain-rsa.p12");
     const P256: &[u8] = include_bytes!("../tests/fixtures/keychain-p256.p12");
@@ -176,13 +178,6 @@ mod tests {
         Keychain {
             scope: Scope::Files(vec![file]),
         }
-    }
-
-    fn temp_dir(test: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("keyseal-{test}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
     }
 
     /// Verifies `signature` over `hash` with the certificate's public key.
@@ -232,11 +227,14 @@ mod tests {
 
     #[test]
     fn signs_with_keychain_identities() {
-        let dir = temp_dir("sign");
+        let dir = TempDir::new("keychain-sign");
         let store = Store::new(keychain(&dir), KeyUsage::NonRepudiation);
         let offered = store.certificates(false).unwrap();
         assert_eq!(offered.len(), 2, "both test identities are offered");
-        let subjects: Vec<String> = offered.iter().map(|c| token::subject(&c.der)).collect();
+        let subjects: Vec<String> = offered
+            .iter()
+            .map(|c| certificate::subject(&c.der))
+            .collect();
         let pick = |name: &str| {
             offered[subjects.iter().position(|s| s.contains(name)).unwrap()]
                 .der
@@ -305,7 +303,6 @@ mod tests {
                 )
                 .is_err()
         );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A token CryptoTokenKit exposes, as the virtual PIV card that
@@ -318,7 +315,10 @@ mod tests {
         let offered = Store::new(Keychain::tokens(), KeyUsage::NonRepudiation)
             .certificates(false)
             .unwrap();
-        let subjects: Vec<String> = offered.iter().map(|c| token::subject(&c.der)).collect();
+        let subjects: Vec<String> = offered
+            .iter()
+            .map(|c| certificate::subject(&c.der))
+            .collect();
         assert!(
             subjects
                 .iter()
@@ -331,12 +331,11 @@ mod tests {
     /// store offers nothing for them.
     #[test]
     fn software_keys_are_not_on_a_token() {
-        let dir = temp_dir("software");
+        let dir = TempDir::new("keychain-software");
         let keychain = keychain(&dir);
         for identity in keychain.identities().unwrap() {
             let key = identity.private_key().unwrap();
             assert!(!Keychain::tokens().on_token(&key));
         }
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

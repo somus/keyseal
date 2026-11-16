@@ -17,7 +17,7 @@ use objc2_foundation::{
 };
 
 /// The app bundle `exe` runs from: `KeySeal.app/Contents/MacOS/keyseal`.
-pub fn bundle(exe: &Path) -> Option<&Path> {
+pub(crate) fn bundle(exe: &Path) -> Option<&Path> {
     exe.ancestors()
         .nth(3)
         .filter(|path| path.extension().is_some_and(|ext| ext == "app"))
@@ -30,7 +30,7 @@ unsafe extern "C" {
 
 /// Registers `bundle` with Launch Services now, which is what makes its
 /// `CFBundleURLTypes` claim `keyseal://`.
-pub fn register(bundle: &Path) -> Result<(), String> {
+pub(crate) fn register(bundle: &Path) -> Result<(), String> {
     let path = bundle.to_str().ok_or("The app path isn't valid UTF-8.")?;
     let url = NSURL::fileURLWithPath(&NSString::from_str(path));
     // NSURL is toll-free bridged to CFURLRef.

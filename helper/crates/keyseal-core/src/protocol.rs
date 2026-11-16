@@ -9,15 +9,11 @@ use serde::de::DeserializeOwned;
 use serde_json::json;
 use ureq::Agent;
 use url::Url;
-use x509_parser::der_parser::asn1_rs::Tag;
-use x509_parser::extensions::ParsedExtension;
-use x509_parser::oid_registry::OID_X509_EXT_CERTIFICATE_POLICIES;
-use x509_parser::x509::AttributeTypeAndValue;
 
 use crate::cms::{DigestAlgorithm, SignatureAlgorithm};
 use crate::origin::Origin;
 
-pub const VERSION_HEADER: &str = "X-KeySeal-Version";
+pub(crate) const VERSION_HEADER: &str = "X-KeySeal-Version";
 const ENROL_PROOF_LABEL: &str = "KeySeal enrol proof v1";
 const MAX_LINK_BYTES: usize = 2048;
 /// Job endpoint requests wait this long. Round 1 and the server's finish
@@ -33,9 +29,9 @@ const DOCUMENT_TIMEOUT: Duration = Duration::from_secs(60);
 /// helper waits for it before it exits.
 const REPORT_TIMEOUT: Duration = Duration::from_secs(10);
 pub const MAX_DOCUMENT_BYTES: u64 = 67_108_864;
-pub const MAX_JOB_DOCUMENT_BYTES: u64 = 268_435_456;
+pub(crate) const MAX_JOB_DOCUMENT_BYTES: u64 = 268_435_456;
 /// A sign job's documents (section 8.2).
-pub const MAX_DOCUMENTS: usize = 20;
+const MAX_DOCUMENTS: usize = 20;
 const MAX_CHAIN: usize = 8;
 const MAX_FAILURE_CHARS: usize = 500;
 /// Limits of a certificate policy (section 8.2).
@@ -58,7 +54,7 @@ pub struct Link {
 }
 
 /// `^[A-Za-z0-9_-]{20,128}$`, the token and claim nonce charset.
-pub fn is_token(value: &str) -> bool {
+fn is_token(value: &str) -> bool {
     (20..=128).contains(&value.len())
         && value
             .bytes()
@@ -216,85 +212,6 @@ impl CertificatePolicy {
         }
         Ok(())
     }
-
-    /// Whether the DER certificate satisfies every member present. The
-    /// issuer CN is read from the certificate's issuer name; the server's
-    /// chain check binds it to the CA that signed the certificate.
-    pub fn accepts(&self, der: &[u8]) -> bool {
-        let Ok((_, certificate)) = x509_parser::parse_x509_certificate(der) else {
-            return false;
-        };
-        if let Some(oids) = &self.policy_oids {
-            let found = match certificate.get_extension_unique(&OID_X509_EXT_CERTIFICATE_POLICIES) {
-                Ok(Some(extension)) => match extension.parsed_extension() {
-                    ParsedExtension::CertificatePolicies(policies) => policies
-                        .iter()
-                        .map(|policy| policy.policy_id.to_id_string())
-                        .collect(),
-                    _ => Vec::new(),
-                },
-                _ => Vec::new(),
-            };
-            if !oids.iter().any(|oid| found.contains(oid)) {
-                return false;
-            }
-        }
-        if let Some(names) = &self.issuer_common_names
-            && !only(certificate.issuer().iter_common_name())
-                .is_some_and(|name| names.contains(&name))
-        {
-            return false;
-        }
-        if let Some(organization) = &self.subject_organization
-            && only(certificate.subject().iter_organization()).as_ref() != Some(organization)
-        {
-            return false;
-        }
-        true
-    }
-}
-
-/// The string value of a name's only attribute of one type; `None` when it
-/// has none, several, or one that isn't a string type.
-pub(crate) fn only<'a>(
-    mut values: impl Iterator<Item = &'a AttributeTypeAndValue<'a>>,
-) -> Option<String> {
-    let value = values.next()?;
-    if values.next().is_some() {
-        return None;
-    }
-    directory_string(value)
-}
-
-/// A DirectoryString in any of its encodings. x509-parser's `as_str` reads
-/// only the UTF-8 compatible ones, and some CAs still issue names as
-/// BMPString or TeletexString, which the server's parser reads too.
-fn directory_string(value: &AttributeTypeAndValue) -> Option<String> {
-    let data = value.attr_value().data;
-    match value.attr_value().tag() {
-        Tag::NumericString
-        | Tag::PrintableString
-        | Tag::VisibleString
-        | Tag::Utf8String
-        | Tag::Ia5String => std::str::from_utf8(data).ok().map(str::to_owned),
-        Tag::BmpString if data.len() % 2 == 0 => char::decode_utf16(
-            data.as_chunks::<2>()
-                .0
-                .iter()
-                .map(|&pair| u16::from_be_bytes(pair)),
-        )
-        .collect::<Result<String, _>>()
-        .ok(),
-        Tag::UniversalString if data.len() % 4 == 0 => data
-            .as_chunks::<4>()
-            .0
-            .iter()
-            .map(|&quad| char::from_u32(u32::from_be_bytes(quad)))
-            .collect(),
-        // TeletexString, read as Latin-1 the way OpenSSL and Node do.
-        Tag::T61String => Some(data.iter().map(|&byte| char::from(byte)).collect()),
-        _ => None,
-    }
 }
 
 /// A dotted-decimal OID (section 8.2): a first arc of 0 to 2, then at least
@@ -416,6 +333,12 @@ impl std::fmt::Display for ProtocolError {
 
 impl std::error::Error for ProtocolError {}
 
+impl From<ProtocolError> for String {
+    fn from(error: ProtocolError) -> Self {
+        error.message
+    }
+}
+
 /// What each status of section 8.8 means for the user.
 fn meaning(status: u16) -> &'static str {
     match status {
@@ -508,7 +431,7 @@ impl JobClient {
     /// ended by a zero byte but the last. It starts with `K`, never DER
     /// SignedAttributes' 0x31, so a proof and a document signature can't
     /// stand in for each other.
-    pub fn enrol_proof_message(&self, nonce: &str, certificate_sha256: &str) -> Vec<u8> {
+    pub(crate) fn enrol_proof_message(&self, nonce: &str, certificate_sha256: &str) -> Vec<u8> {
         [
             ENROL_PROOF_LABEL,
             self.url.as_str(),
@@ -904,72 +827,5 @@ mod tests {
                 "{policy}"
             );
         }
-    }
-
-    /// `policy.der` is issued by "KeySeal Test Sub CA" to O "Acme, Inc."
-    /// with policy OIDs 2.16.356.100.2.2 and 2.16.356.100.2.3;
-    /// `non-repudiation.der` is self-signed with neither O nor policies.
-    #[test]
-    fn matches_certificate_policies() {
-        const POLICY: &[u8] = include_bytes!("../tests/fixtures/policy.der");
-        const PLAIN: &[u8] = include_bytes!("../tests/fixtures/non-repudiation.der");
-        let accepts = |policy: serde_json::Value, der: &[u8]| {
-            serde_json::from_value::<CertificatePolicy>(policy)
-                .unwrap()
-                .accepts(der)
-        };
-        assert!(accepts(
-            json!({ "policyOids": ["2.16.356.100.2.3"] }),
-            POLICY
-        ));
-        assert!(accepts(
-            json!({ "policyOids": ["1.2.3", "2.16.356.100.2.2"] }),
-            POLICY
-        ));
-        assert!(!accepts(
-            json!({ "policyOids": ["2.16.356.100.2.1"] }),
-            POLICY
-        ));
-        assert!(!accepts(
-            json!({ "policyOids": ["2.16.356.100.2.3"] }),
-            PLAIN
-        ));
-        assert!(accepts(
-            json!({ "issuerCommonNames": ["Other CA", "KeySeal Test Sub CA"] }),
-            POLICY
-        ));
-        assert!(!accepts(
-            json!({ "issuerCommonNames": ["keyseal test sub ca"] }),
-            POLICY
-        ));
-        assert!(accepts(
-            json!({ "issuerCommonNames": ["signr test non-repudiation"] }),
-            PLAIN
-        ));
-        assert!(accepts(
-            json!({ "subjectOrganization": "Acme, Inc." }),
-            POLICY
-        ));
-        assert!(!accepts(json!({ "subjectOrganization": "Acme" }), POLICY));
-        assert!(!accepts(json!({ "subjectOrganization": "Acme" }), PLAIN));
-        // `bmp-names.der` names its issuer and organization as BMPString.
-        const BMP: &[u8] = include_bytes!("../tests/fixtures/bmp-names.der");
-        assert!(accepts(
-            json!({ "issuerCommonNames": ["KeySeal BMP CA"], "subjectOrganization": "Acme BMP" }),
-            BMP
-        ));
-        let all = json!({
-            "policyOids": ["2.16.356.100.2.3"],
-            "issuerCommonNames": ["KeySeal Test Sub CA"],
-            "subjectOrganization": "Acme, Inc.",
-        });
-        assert!(accepts(all.clone(), POLICY));
-        let mut wrong = all;
-        wrong["subjectOrganization"] = json!("Acme Inc.");
-        assert!(!accepts(wrong, POLICY));
-        assert!(!accepts(
-            json!({ "subjectOrganization": "Acme, Inc." }),
-            b"not DER"
-        ));
     }
 }

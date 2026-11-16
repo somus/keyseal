@@ -18,28 +18,22 @@
 //! confirmation, after round 1, is the gate.
 
 use std::path::PathBuf;
-use std::time::Duration;
 
 use zeroize::Zeroizing;
 
+use crate::backend::{Backend, BeforeStore, Found, open_backend};
+use crate::certificate::{self, CertificateSummary};
 use crate::cms::{self, DigestAlgorithm, KeyKind, SignatureAlgorithm};
-#[cfg(windows)]
-use crate::cng::CngStore;
 use crate::document;
-#[cfg(target_os = "macos")]
-use crate::keychain::Keychain;
 use crate::manifest::{self, Branding};
-use crate::modules::{self, Attempt, Source};
 use crate::origin::Origin;
 use crate::protocol::{
     self, DocumentEntry, JobClient, JobDescription, KeyUsage, Kind, PreparedSignature,
     ProtocolError,
 };
-#[cfg(any(windows, target_os = "macos"))]
-use crate::store::Store;
 use crate::token::{
-    self, CertificateSummary, Driver, LoginError, PinWarning, TokenBackend, TokenCertificate,
-    TokenError, TokenInfo, TokenSummary,
+    self, LoginError, PinWarning, TokenBackend, TokenCertificate, TokenError, TokenInfo,
+    TokenSummary,
 };
 use crate::trust::TrustStore;
 
@@ -49,18 +43,6 @@ const ENROLMENT_CANCELLED: &str = "Enrolment cancelled.";
 pub const SEVERAL_TOKENS: &str = "More than one token is plugged in, and KeySeal can't ask which one to use without its windows. Unplug the tokens you aren't signing with, then try again.";
 /// The error for a panic in the job; the front end logs the panic itself.
 pub const INTERNAL_ERROR: &str = "KeySeal stopped because of a problem in KeySeal itself. Start again from the website. If it happens again, contact your support team.";
-
-impl From<TokenError> for String {
-    fn from(error: TokenError) -> Self {
-        error.0
-    }
-}
-
-impl From<ProtocolError> for String {
-    fn from(error: ProtocolError) -> Self {
-        error.message
-    }
-}
 
 /// Why a job didn't finish. `cancelled` is set when the user declined a
 /// prompt; front ends report it without an error window.
@@ -239,10 +221,6 @@ pub enum Outcome {
     Enrolled,
 }
 
-/// Called before the system's certificate store is read; an error stops
-/// the job.
-type BeforeStore<'a> = &'a mut dyn FnMut() -> Result<(), Failure>;
-
 /// Finds where the key is, for a job that asks for `KeyUsage`.
 type Open<'a> = &'a dyn Fn(KeyUsage, BeforeStore) -> Result<Found, Failure>;
 
@@ -396,7 +374,7 @@ fn sign(
     reached(ui, Step::Downloading)?;
     check_documents(client, view.origin, job, &prepared, &digests)?;
     let digests: Vec<String> = digests.iter().map(hex::encode).collect();
-    let subject = token::subject(&certificate.der);
+    let subject = certificate::subject(&certificate.der);
     match &backend {
         Backend::Pkcs11(_) if !login_first => {
             log_in(ui, token, view, chosen, Some(subject), Some(digests))?;
@@ -573,227 +551,6 @@ fn show_step(ui: &mut dyn Ui, view: &JobView, step: Step) -> Result<(), Failure>
     }
 }
 
-/// Where the job's key is.
-pub enum Backend {
-    /// A PKCS#11 token, in this process or in the token worker.
-    Pkcs11(Box<dyn TokenBackend>),
-    /// The system's certificate store: CNG on Windows, CryptoTokenKit on
-    /// macOS.
-    #[cfg(any(windows, target_os = "macos", test))]
-    Store(Box<dyn TokenBackend>),
-}
-
-impl Backend {
-    pub fn token(&self) -> &dyn TokenBackend {
-        match self {
-            Self::Pkcs11(token) => &**token,
-            #[cfg(any(windows, target_os = "macos", test))]
-            Self::Store(store) => &**store,
-        }
-    }
-}
-
-/// The error of a certificate store attempt that finds no signing
-/// certificate on a token.
-pub(crate) const NO_STORE_CERTIFICATE: &str =
-    "The certificate store holds no signing certificate on a token or smart card.";
-
-/// Where the job's key may be: tokens the PKCS#11 drivers reached, one of
-/// which is then opened, or the certificate store.
-pub enum Found {
-    Tokens(Tokens),
-    Backend(Backend),
-}
-
-/// Tokens the PKCS#11 drivers reached, none opened yet.
-pub struct Tokens {
-    drivers: Vec<Box<dyn Driver>>,
-    tokens: Vec<TokenInfo>,
-    /// The index in `drivers` of each token's driver.
-    driver_of: Vec<usize>,
-}
-
-impl Tokens {
-    /// Adds `driver` and its `tokens`, leaving out a token an earlier driver
-    /// listed: one with the same serial number, which is one token two
-    /// drivers reach.
-    fn add(&mut self, driver: Box<dyn Driver>, tokens: Vec<TokenInfo>) {
-        let earlier: Vec<String> = self
-            .tokens
-            .iter()
-            .map(|token| token.serial.trim().to_owned())
-            .filter(|serial| !serial.is_empty())
-            .collect();
-        let new: Vec<TokenInfo> = tokens
-            .into_iter()
-            .filter(|token| !earlier.iter().any(|serial| serial == token.serial.trim()))
-            .collect();
-        if new.is_empty() {
-            return;
-        }
-        for token in new {
-            self.tokens.push(token);
-            self.driver_of.push(self.drivers.len());
-        }
-        self.drivers.push(driver);
-    }
-}
-
-impl Found {
-    /// The backend: the certificate store, or the token `choose` picks when
-    /// there are several, opened.
-    pub fn open(
-        self,
-        choose: impl FnOnce(&[TokenInfo]) -> Result<usize, Failure>,
-    ) -> Result<Backend, Failure> {
-        let mut found = match self {
-            Self::Tokens(found) => found,
-            Self::Backend(backend) => return Ok(backend),
-        };
-        let index = match found.tokens.len() {
-            1 => 0,
-            _ => {
-                // Read only now: a job with one token talks to it as it did
-                // before there was a choice.
-                for (token, &driver) in found.tokens.iter_mut().zip(&found.driver_of) {
-                    token.certificates = found.drivers[driver].shown(token.slot);
-                }
-                choose(&found.tokens)?
-            }
-        };
-        let slot = found.tokens[index].slot;
-        let driver = found
-            .drivers
-            .into_iter()
-            .nth(found.driver_of[index])
-            .expect("every token has its driver");
-        Ok(Backend::Pkcs11(driver.open(slot)?))
-    }
-}
-
-/// What one attempt reached.
-enum Reached {
-    Tokens(Box<dyn Driver>, Vec<TokenInfo>),
-    /// The certificate store.
-    #[cfg(any(windows, target_os = "macos", test))]
-    Backend(Backend),
-}
-
-/// Finds the tokens [`modules::attempts`] reach, as [`open_first`] says;
-/// the certificate store counts only when it holds a certificate with
-/// `usage`. `before_store` runs before the certificate store is read;
-/// `seen` hears how each attempt went.
-pub fn open_backend(
-    usage: KeyUsage,
-    before_store: BeforeStore,
-    seen: &mut dyn FnMut(&Attempt, Result<(), &str>),
-) -> Result<Found, Failure> {
-    let open = |attempt: &Attempt, wait| open_attempt(attempt, wait, usage);
-    open_first(&modules::attempts()?, &open, before_store, seen)
-}
-
-#[cfg_attr(not(any(windows, target_os = "macos")), allow(unused_variables))]
-fn open_attempt(attempt: &Attempt, wait: Duration, usage: KeyUsage) -> Result<Reached, String> {
-    match attempt {
-        Attempt::Module(candidate) => {
-            let (driver, tokens) = token::tokens(&candidate.path, wait)?;
-            Ok(Reached::Tokens(driver, tokens))
-        }
-        #[cfg(any(windows, target_os = "macos"))]
-        Attempt::Store => {
-            #[cfg(windows)]
-            let store = Store::new(CngStore, usage);
-            #[cfg(target_os = "macos")]
-            let store = Store::new(Keychain::tokens(), usage);
-            if store.certificates(false)?.is_empty() {
-                return Err(NO_STORE_CERTIFICATE.into());
-            }
-            Ok(Reached::Backend(Backend::Store(Box::new(store))))
-        }
-        #[cfg(not(any(windows, target_os = "macos")))]
-        Attempt::Store => Err(NO_STORE_CERTIFICATE.into()),
-    }
-}
-
-/// Tries `attempts` in order and moves on when one fails: a module that
-/// doesn't load or sees no token, or a store without a signing
-/// certificate. The drivers of plugged-in tokens are all listed, every
-/// token of each, since the signer may have plugged in several. Any other
-/// attempt that reaches a token ends the search with every token of it:
-/// the configured module because the signer chose that driver, and the
-/// rest because drivers can hang or crash, so they aren't loaded once a
-/// token is found. Only the driver of a plugged-in token gets
-/// [`token::SLOT_WAIT`] for its token to appear; the others are looked at
-/// once. When all fail, the first failure that isn't "nothing there"; else
-/// no token when a module loaded, else no driver.
-fn open_first(
-    attempts: &[Attempt],
-    open: &dyn Fn(&Attempt, Duration) -> Result<Reached, String>,
-    before_store: BeforeStore,
-    seen: &mut dyn FnMut(&Attempt, Result<(), &str>),
-) -> Result<Found, Failure> {
-    let mut failure = None;
-    let mut module_found = false;
-    let mut found = Tokens {
-        drivers: Vec::new(),
-        tokens: Vec::new(),
-        driver_of: Vec::new(),
-    };
-    for attempt in attempts {
-        let source = match attempt {
-            Attempt::Module(candidate) => Some(&candidate.source),
-            Attempt::Store => None,
-        };
-        let plugged_in = matches!(source, Some(Source::UsbMatch(_)));
-        if !plugged_in && !found.tokens.is_empty() {
-            break;
-        }
-        if source.is_none() {
-            before_store()?;
-        } else {
-            module_found = true;
-        }
-        let wait = if plugged_in {
-            token::SLOT_WAIT
-        } else {
-            Duration::ZERO
-        };
-        match open(attempt, wait) {
-            #[cfg(any(windows, target_os = "macos", test))]
-            Ok(Reached::Backend(backend)) => {
-                seen(attempt, Ok(()));
-                return Ok(Found::Backend(backend));
-            }
-            Ok(Reached::Tokens(driver, tokens)) => {
-                seen(attempt, Ok(()));
-                found.add(driver, tokens);
-                if !plugged_in {
-                    break;
-                }
-            }
-            Err(message) => {
-                seen(attempt, Err(&message));
-                if failure.is_none()
-                    && message != token::NO_TOKEN
-                    && message != NO_STORE_CERTIFICATE
-                {
-                    failure = Some(message);
-                }
-            }
-        }
-    }
-    if !found.tokens.is_empty() {
-        return Ok(Found::Tokens(found));
-    }
-    Err(Failure::from(failure.unwrap_or_else(|| {
-        if module_found {
-            token::NO_TOKEN.into()
-        } else {
-            format!("{} Install your token's driver.", modules::NO_DRIVER)
-        }
-    })))
-}
-
 /// The token to use among several: the only one showing the certificate
 /// the job expects, else the signer's choice.
 fn choose_token(
@@ -849,12 +606,12 @@ fn signing_certificates(
 ) -> Result<Vec<TokenCertificate>, String> {
     let usage = key_usage(job);
     let mut found = token.certificates(logged_in)?;
-    found.retain(|certificate| token::is_signing_certificate(&certificate.der, usage));
+    found.retain(|certificate| certificate::is_signing_certificate(&certificate.der, usage));
     let now = x509_parser::time::ASN1Time::now().timestamp();
     let outside = found
         .iter()
-        .find_map(|certificate| token::outside_validity(&certificate.der, now));
-    found.retain(|certificate| token::outside_validity(&certificate.der, now).is_none());
+        .find_map(|certificate| certificate::outside_validity(&certificate.der, now));
+    found.retain(|certificate| certificate::outside_validity(&certificate.der, now).is_none());
     match outside {
         Some(reason) if found.is_empty() => Err(reason),
         _ => Ok(found),
@@ -884,7 +641,7 @@ fn choose(
     if let Some(policy) = &job.certificate_policy
         && !certificates.is_empty()
     {
-        certificates.retain(|c| policy.accepts(&c.der));
+        certificates.retain(|c| certificate::meets_policy(policy, &c.der));
         if certificates.is_empty() {
             return Err(format!(
                 "None of the certificates on this token are accepted by {} for this job.",
@@ -920,7 +677,7 @@ fn chain(token: &dyn TokenBackend, chosen: &TokenCertificate) -> Result<Vec<Vec<
         .filter(|c| c.sha256 != chosen.sha256)
         .map(|c| c.der)
         .collect();
-    Ok(token::issuers(&chosen.der, others))
+    Ok(certificate::issuers(&chosen.der, others))
 }
 
 /// Section 8.4: every prepared PDF hashes to the messageDigest about to be
@@ -998,6 +755,7 @@ mod tests {
     use std::io::{BufRead, BufReader, Read, Write};
     use std::net::TcpListener;
     use std::sync::{Arc, Mutex};
+    use std::time::Duration;
 
     use base64::Engine;
     use base64::engine::general_purpose::STANDARD;
@@ -1006,11 +764,12 @@ mod tests {
     use x509_parser::asn1_rs::oid;
 
     use super::*;
+    use crate::backend::Tokens;
     use crate::cms::der_tlv;
+    use crate::testing::{FakeDriver, FakeToken, RSA, TempDir, info};
 
     const TOKEN: &str = "q3Jm0f_2vX9kLr8aTq1bNw4uYc7eHs5dPz6iGo0tRk";
     const NONCE: &str = "Zx8m_Q2aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-    const RSA: &[u8] = include_bytes!("../tests/fixtures/rsa-non-repudiation.der");
     const P256: &[u8] = include_bytes!("../tests/fixtures/non-repudiation.der");
     /// Valid from 1 January 2020 to 1 January 2021.
     const EXPIRED: &[u8] = include_bytes!("../tests/fixtures/expired.der");
@@ -1107,135 +866,6 @@ mod tests {
         fn progress(&mut self, progress: Progress) -> bool {
             self.steps.push((progress.step, progress.job.is_some()));
             self.cancel_at != Stage::Progress(progress.step)
-        }
-    }
-
-    type SignCall = (Vec<Vec<u8>>, DigestAlgorithm, SignatureAlgorithm);
-
-    /// A token showing `public` before login and `private` after.
-    struct FakeToken {
-        public: Vec<&'static [u8]>,
-        private: Vec<&'static [u8]>,
-        logged_in: Cell<bool>,
-        /// How many items each `sign` call got, shared with the test.
-        signed: Arc<Mutex<Vec<usize>>>,
-        /// What each `sign` call got: its items, digest and scheme.
-        sign_calls: Arc<Mutex<Vec<SignCall>>>,
-        /// What each login answers, in order; then it succeeds.
-        logins: std::cell::RefCell<std::collections::VecDeque<LoginError>>,
-        /// How many logins were made, shared with the test.
-        attempts: Arc<Mutex<usize>>,
-        /// The token's flags after as many logins as the index; none after
-        /// the last.
-        warnings: Vec<Option<PinWarning>>,
-    }
-
-    impl FakeToken {
-        fn new(public: Vec<&'static [u8]>, private: Vec<&'static [u8]>) -> Self {
-            Self {
-                public,
-                private,
-                logged_in: Cell::new(false),
-                signed: Arc::default(),
-                sign_calls: Arc::default(),
-                logins: Default::default(),
-                attempts: Arc::default(),
-                warnings: Vec::new(),
-            }
-        }
-    }
-
-    impl TokenBackend for FakeToken {
-        fn pin_pad(&self) -> bool {
-            false
-        }
-        fn pin_warning(&self) -> Option<PinWarning> {
-            let attempts = *self.attempts.lock().unwrap();
-            self.warnings.get(attempts).copied().flatten()
-        }
-        fn certificates(&self, _: bool) -> Result<Vec<TokenCertificate>, TokenError> {
-            let visible = if self.logged_in.get() {
-                &self.private
-            } else {
-                &self.public
-            };
-            Ok(visible
-                .iter()
-                .map(|der| TokenCertificate {
-                    der: der.to_vec(),
-                    sha256: token::sha256_hex(der),
-                    id: None,
-                })
-                .collect())
-        }
-        fn login(&self, _: Zeroizing<String>) -> Result<(), LoginError> {
-            *self.attempts.lock().unwrap() += 1;
-            if let Some(error) = self.logins.borrow_mut().pop_front() {
-                return Err(error);
-            }
-            self.logged_in.set(true);
-            Ok(())
-        }
-        fn sign(
-            &self,
-            _: &[u8],
-            data: &[Vec<u8>],
-            digest: DigestAlgorithm,
-            scheme: SignatureAlgorithm,
-            _: Option<isize>,
-        ) -> Result<Vec<Vec<u8>>, TokenError> {
-            self.signed.lock().unwrap().push(data.len());
-            self.sign_calls
-                .lock()
-                .unwrap()
-                .push((data.to_vec(), digest, scheme));
-            Ok(data.iter().map(|_| vec![1]).collect())
-        }
-        fn close(&self) {}
-    }
-
-    /// A driver whose tokens are `tokens`, by slot.
-    #[derive(Default)]
-    struct FakeDriver {
-        tokens: Vec<Option<FakeToken>>,
-        /// The slots whose certificates were read, shared with the test.
-        shown: Arc<Mutex<Vec<u64>>>,
-    }
-
-    impl Driver for FakeDriver {
-        fn shown(&self, slot: u64) -> Vec<TokenCertificate> {
-            self.shown.lock().unwrap().push(slot);
-            self.tokens
-                .get(slot as usize)
-                .and_then(Option::as_ref)
-                .and_then(|token| token.certificates(false).ok())
-                .unwrap_or_default()
-        }
-        fn open(mut self: Box<Self>, slot: u64) -> Result<Box<dyn TokenBackend>, TokenError> {
-            let token = self.tokens.get_mut(slot as usize).and_then(Option::take);
-            Ok(Box::new(
-                token.unwrap_or_else(|| FakeToken::new(vec![RSA], vec![])),
-            ))
-        }
-    }
-
-    /// A token in `slot` with the serial number `serial`, showing
-    /// `certificates` before login.
-    fn info(slot: u64, serial: &str, certificates: &[&[u8]]) -> TokenInfo {
-        TokenInfo {
-            slot,
-            label: format!("Token {slot}"),
-            manufacturer: "SoftHSM project".into(),
-            model: "SoftHSM v2".into(),
-            serial: serial.into(),
-            certificates: certificates
-                .iter()
-                .map(|der| TokenCertificate {
-                    der: der.to_vec(),
-                    sha256: token::sha256_hex(der),
-                    id: None,
-                })
-                .collect(),
         }
     }
 
@@ -1559,11 +1189,10 @@ mod tests {
         ] {
             let case = format!("{kind} {in_store} {public:?} {private:?} {cancel_at:?}");
             let (origin, requests) = serve(kind, serde_json::Value::Null);
-            let config_dir =
-                std::env::temp_dir().join(format!("keyseal-cancel-{}", std::process::id()));
+            let config_dir = TempDir::new("cancel");
             let env = Environment {
                 allow_insecure: true,
-                config_dir: config_dir.clone(),
+                config_dir: config_dir.to_path_buf(),
             };
             let job: String = url::form_urlencoded::byte_serialize(
                 format!("{origin}/api/keyseal/v1/jobs/{TOKEN}").as_bytes(),
@@ -1580,7 +1209,6 @@ mod tests {
             };
             let failure =
                 run_with(&format!("keyseal://{kind}?job={job}"), &mut ui, &env, &open).unwrap_err();
-            let _ = std::fs::remove_dir_all(&config_dir);
             assert!(failure.cancelled, "{case}: {}", failure.message);
             if cancel_at != Stage::Trust {
                 let message = if kind == "sign" {
@@ -1636,11 +1264,10 @@ mod tests {
             ),
         ] {
             let (origin, _) = serve(kind, serde_json::Value::Null);
-            let config_dir =
-                std::env::temp_dir().join(format!("keyseal-steps-{}", std::process::id()));
+            let config_dir = TempDir::new("steps");
             let env = Environment {
                 allow_insecure: true,
-                config_dir: config_dir.clone(),
+                config_dir: config_dir.to_path_buf(),
             };
             let job: String = url::form_urlencoded::byte_serialize(
                 format!("{origin}/api/keyseal/v1/jobs/{TOKEN}").as_bytes(),
@@ -1654,7 +1281,6 @@ mod tests {
                 )))))
             };
             let result = run_with(&format!("keyseal://{kind}?job={job}"), &mut ui, &env, &open);
-            let _ = std::fs::remove_dir_all(&config_dir);
             assert!(result.is_ok(), "{kind}: {:?}", result.err());
             let steps: Vec<Step> = ui.steps.iter().map(|(step, _)| *step).collect();
             assert_eq!(steps, expected, "{kind}");
@@ -1662,122 +1288,6 @@ mod tests {
             assert!(!with_job[0], "{kind}");
             assert!(with_job[1..].iter().all(|&job| job), "{kind}");
         }
-    }
-
-    /// Each attempt fails over to the next: a module that doesn't load, one
-    /// that sees no token, then the certificate store, which the enrol hook
-    /// precedes.
-    #[test]
-    fn opens_the_first_attempt_that_reaches_a_token() {
-        let module = |name: &str| {
-            Attempt::Module(modules::Candidate {
-                path: name.into(),
-                source: modules::Source::Known,
-            })
-        };
-        let (broken, empty, working) = (module("/broken"), module("/empty"), module("/working"));
-        let token = || Box::new(FakeToken::new(vec![RSA], vec![]));
-        let events = std::cell::RefCell::new(Vec::new());
-        let open = |attempt: &Attempt, _: Duration| {
-            events.borrow_mut().push(format!("open {attempt}"));
-            match attempt {
-                Attempt::Module(candidate) if candidate.path.ends_with("broken") => {
-                    Err("Couldn't load the token driver".to_owned())
-                }
-                Attempt::Module(candidate) if candidate.path.ends_with("empty") => {
-                    Err(token::NO_TOKEN.to_owned())
-                }
-                Attempt::Module(_) => Ok(Reached::Tokens(
-                    Box::new(FakeDriver::default()),
-                    vec![info(0, "", &[])],
-                )),
-                Attempt::Store => Ok(Reached::Backend(Backend::Store(token()))),
-            }
-        };
-        let run = |attempts: &[Attempt], allow_store: bool| {
-            events.borrow_mut().clear();
-            let result = open_first(
-                attempts,
-                &open,
-                &mut || {
-                    events.borrow_mut().push("before the store".into());
-                    if allow_store {
-                        Ok(())
-                    } else {
-                        Err(Failure::cancelled(CANCELLED))
-                    }
-                },
-                &mut |attempt, outcome| {
-                    events
-                        .borrow_mut()
-                        .push(format!("{attempt}: {}", outcome.err().unwrap_or("ok")))
-                },
-            );
-            (result, events.borrow().clone())
-        };
-
-        let (result, seen) = run(&[broken.clone(), empty.clone(), Attempt::Store], true);
-        assert!(matches!(result, Ok(Found::Backend(Backend::Store(_)))));
-        assert_eq!(
-            seen,
-            [
-                "open /broken [known drivers]",
-                "/broken [known drivers]: Couldn't load the token driver",
-                "open /empty [known drivers]",
-                &format!("/empty [known drivers]: {}", token::NO_TOKEN),
-                "before the store",
-                &format!("open {}", Attempt::Store),
-                &format!("{}: ok", Attempt::Store),
-            ]
-        );
-
-        let (result, seen) = run(&[empty.clone(), working, Attempt::Store], true);
-        assert!(matches!(result, Ok(Found::Tokens(_))));
-        let store = Attempt::Store.to_string();
-        assert!(
-            !seen
-                .iter()
-                .any(|event| event.contains(&store) || event == "before the store"),
-            "{seen:?}"
-        );
-
-        // The user declines before the store is read.
-        let (result, seen) = run(&[empty.clone(), Attempt::Store], false);
-        assert!(result.is_err_and(|failure| failure.cancelled));
-        assert_eq!(seen.last().map(String::as_str), Some("before the store"));
-
-        let failure = |attempts: &[Attempt]| run(attempts, true).0.err().unwrap().message;
-        assert_eq!(
-            failure(&[empty.clone(), broken]),
-            "Couldn't load the token driver"
-        );
-        assert_eq!(failure(&[empty]), token::NO_TOKEN);
-        assert!(failure(&[]).starts_with(modules::NO_DRIVER));
-    }
-
-    /// Of three drivers without a token, only the one of a plugged-in token
-    /// waits for it, so the search takes one wait at most.
-    #[test]
-    fn waits_for_a_token_only_with_a_plugged_in_driver() {
-        let module = |name: &str, source| {
-            Attempt::Module(modules::Candidate {
-                path: name.into(),
-                source,
-            })
-        };
-        let attempts = [
-            module("/configured", modules::Source::Config),
-            module("/plugged-in", modules::Source::UsbMatch("Token".into())),
-            module("/known", modules::Source::Known),
-        ];
-        let waited = Cell::new(Duration::ZERO);
-        let open = |_: &Attempt, wait: Duration| {
-            waited.set(waited.get() + wait);
-            Err(token::NO_TOKEN.to_owned())
-        };
-        let failure = open_first(&attempts, &open, &mut || Ok(()), &mut |_, _| {}).err();
-        assert_eq!(failure.unwrap().message, token::NO_TOKEN);
-        assert_eq!(waited.get(), token::SLOT_WAIT);
     }
 
     /// A certificate policy narrows the choice before the user sees it, and
@@ -1807,7 +1317,7 @@ mod tests {
             ders.iter()
                 .map(|der| TokenCertificate {
                     der: der.to_vec(),
-                    sha256: token::sha256_hex(der),
+                    sha256: crate::sha256_hex(der),
                     id: None,
                 })
                 .collect::<Vec<_>>()
@@ -1838,11 +1348,10 @@ mod tests {
         );
 
         let (origin, requests) = serve("sign", json!({ "policyOids": ["2.16.356.100.2.3"] }));
-        let config_dir =
-            std::env::temp_dir().join(format!("keyseal-policy-{}", std::process::id()));
+        let config_dir = TempDir::new("policy");
         let env = Environment {
             allow_insecure: true,
-            config_dir: config_dir.clone(),
+            config_dir: config_dir.to_path_buf(),
         };
         let link: String = url::form_urlencoded::byte_serialize(
             format!("{origin}/api/keyseal/v1/jobs/{TOKEN}").as_bytes(),
@@ -1856,7 +1365,6 @@ mod tests {
         };
         let failure =
             run_with(&format!("keyseal://sign?job={link}"), &mut ui, &env, &open).unwrap_err();
-        let _ = std::fs::remove_dir_all(&config_dir);
         assert!(
             failure
                 .message
@@ -1886,11 +1394,10 @@ mod tests {
             ),
         ] {
             let (origin, _requests) = serve("sign", policy);
-            let config_dir = std::env::temp_dir()
-                .join(format!("keyseal-usage-{}-{expected:?}", std::process::id()));
+            let config_dir = TempDir::new(&format!("usage-{expected:?}"));
             let env = Environment {
                 allow_insecure: true,
-                config_dir: config_dir.clone(),
+                config_dir: config_dir.to_path_buf(),
             };
             let link: String = url::form_urlencoded::byte_serialize(
                 format!("{origin}/api/keyseal/v1/jobs/{TOKEN}").as_bytes(),
@@ -1903,7 +1410,6 @@ mod tests {
             };
             let mut ui = CancellingUi::new(Stage::Choose);
             let _ = run_with(&format!("keyseal://sign?job={link}"), &mut ui, &env, &open);
-            let _ = std::fs::remove_dir_all(&config_dir);
             assert_eq!(asked.get(), Some(expected));
         }
     }
@@ -1941,10 +1447,10 @@ mod tests {
     /// Runs an enrol link against `served` with `token`, from a PKCS#11
     /// token or the certificate store.
     fn run_enrol(served: &Served, token: FakeToken, in_store: bool) -> Result<Outcome, Failure> {
-        let config_dir = std::env::temp_dir().join(format!("keyseal-enrol-{}", std::process::id()));
+        let config_dir = TempDir::new("enrol");
         let env = Environment {
             allow_insecure: true,
-            config_dir: config_dir.clone(),
+            config_dir: config_dir.to_path_buf(),
         };
         let link: String = url::form_urlencoded::byte_serialize(
             format!("{}/api/keyseal/v1/jobs/{TOKEN}", served.origin).as_bytes(),
@@ -1961,9 +1467,7 @@ mod tests {
         };
         // Enrol never reaches this step, so nothing is cancelled.
         let mut ui = CancellingUi::new(Stage::Progress(Step::Sending));
-        let result = run_with(&format!("keyseal://enrol?job={link}"), &mut ui, &env, &open);
-        let _ = std::fs::remove_dir_all(&config_dir);
-        result
+        run_with(&format!("keyseal://enrol?job={link}"), &mut ui, &env, &open)
     }
 
     /// Enrol signs one proof, the helper's own message binding the job URL,
@@ -1992,7 +1496,7 @@ mod tests {
                 let message = format!(
                     "KeySeal enrol proof v1\0{}/api/keyseal/v1/jobs/{TOKEN}\0{NONCE}\0{}",
                     served.origin,
-                    token::sha256_hex(certificate)
+                    crate::sha256_hex(certificate)
                 );
                 assert_eq!(
                     *calls.lock().unwrap(),
@@ -2052,11 +1556,10 @@ mod tests {
         mut ui: CancellingUi,
         name: &str,
     ) -> (Result<Outcome, Failure>, CancellingUi, Vec<usize>) {
-        let config_dir =
-            std::env::temp_dir().join(format!("keyseal-{name}-{}", std::process::id()));
+        let config_dir = TempDir::new(name);
         let env = Environment {
             allow_insecure: true,
-            config_dir: config_dir.clone(),
+            config_dir: config_dir.to_path_buf(),
         };
         let link: String = url::form_urlencoded::byte_serialize(
             format!("{origin}/api/keyseal/v1/jobs/{TOKEN}").as_bytes(),
@@ -2070,7 +1573,6 @@ mod tests {
             ))))
         };
         let result = run_with(&format!("keyseal://sign?job={link}"), &mut ui, &env, &open);
-        let _ = std::fs::remove_dir_all(&config_dir);
         let signed = signed.lock().unwrap().clone();
         (result, ui, signed)
     }
@@ -2289,10 +1791,10 @@ mod tests {
     #[test]
     fn a_panic_in_the_job_is_shown_and_reported() {
         let served = serve_documents("sign", serde_json::Value::Null, 1, None);
-        let config_dir = std::env::temp_dir().join(format!("keyseal-panic-{}", std::process::id()));
+        let config_dir = TempDir::new("panic");
         let env = Environment {
             allow_insecure: true,
-            config_dir: config_dir.clone(),
+            config_dir: config_dir.to_path_buf(),
         };
         let link: String = url::form_urlencoded::byte_serialize(
             format!("{}/api/keyseal/v1/jobs/{TOKEN}", served.origin).as_bytes(),
@@ -2301,7 +1803,6 @@ mod tests {
         let mut ui = CancellingUi::new(Stage::Enrol);
         let open = |_: KeyUsage, _: BeforeStore| -> Result<Found, Failure> { panic!("broken") };
         let result = run_with(&format!("keyseal://sign?job={link}"), &mut ui, &env, &open);
-        let _ = std::fs::remove_dir_all(&config_dir);
         assert_eq!(result.unwrap_err().message, INTERNAL_ERROR);
         assert_eq!(ui.errors, [INTERNAL_ERROR]);
         assert_eq!(failures(&served), 1);
@@ -2319,7 +1820,7 @@ mod tests {
         assert_eq!(signed, [1]);
         assert!(ui.errors.is_empty(), "{:?}", ui.errors);
 
-        let expired = token::outside_validity(EXPIRED, i64::MAX).unwrap();
+        let expired = certificate::outside_validity(EXPIRED, i64::MAX).unwrap();
         for (public, private, prompts) in [(vec![EXPIRED], vec![], 0), (vec![], vec![EXPIRED], 1)] {
             let served = serve_documents("sign", serde_json::Value::Null, 1, None);
             let (result, ui, signed) = run_sign(&served.origin, public, private, "expired");
@@ -2332,87 +1833,6 @@ mod tests {
             assert!(signed.is_empty());
             assert_eq!(failures(&served), 1);
         }
-    }
-
-    /// The drivers of plugged-in tokens are all listed; any other driver
-    /// that reaches a token ends the search, with every token of it, and
-    /// the configured module comes first. A token two drivers reach is
-    /// listed once, through the earlier one.
-    #[test]
-    fn collects_tokens_from_plugged_in_drivers_and_the_first_other() {
-        let module = |name: &str, source| {
-            Attempt::Module(modules::Candidate {
-                path: name.into(),
-                source,
-            })
-        };
-        let opened = std::cell::RefCell::new(Vec::new());
-        let open = |attempt: &Attempt, _: Duration| {
-            opened.borrow_mut().push(attempt.to_string());
-            let serials: &[&str] = match attempt {
-                Attempt::Module(candidate) => match candidate.path.to_str().unwrap() {
-                    "/configured" => &["A"],
-                    "/plugged-in" => &["A", "B"],
-                    "/other-plugged-in" => &[" A ", "", ""],
-                    "/two" => &["C", "D"],
-                    "/three" => &["E"],
-                    _ => &[],
-                },
-                Attempt::Store => &["store"],
-            };
-            if serials.is_empty() {
-                return Err(token::NO_TOKEN.to_owned());
-            }
-            let tokens = (0..serials.len())
-                .map(|slot| info(slot as u64, serials[slot], &[]))
-                .collect();
-            Ok(Reached::Tokens(Box::new(FakeDriver::default()), tokens))
-        };
-        let found = |attempts: &[Attempt]| {
-            opened.borrow_mut().clear();
-            match open_first(attempts, &open, &mut || Ok(()), &mut |_, _| {}) {
-                Ok(Found::Tokens(found)) => {
-                    let serials: Vec<String> =
-                        found.tokens.iter().map(|t| t.serial.clone()).collect();
-                    (serials, found.driver_of, opened.borrow().len())
-                }
-                _ => panic!("no tokens"),
-            }
-        };
-        let plugged_in = |name: &str| module(name, modules::Source::UsbMatch("Token".into()));
-        let known = |name: &str| module(name, modules::Source::Known);
-
-        let (serials, drivers, tried) = found(&[
-            module("/configured", modules::Source::Config),
-            plugged_in("/plugged-in"),
-            known("/two"),
-            Attempt::Store,
-        ]);
-        assert_eq!(serials, ["A"]);
-        assert_eq!(drivers, [0]);
-        assert_eq!(tried, 1);
-
-        let (serials, drivers, tried) = found(&[
-            module("/empty", modules::Source::Config),
-            plugged_in("/plugged-in"),
-            plugged_in("/empty"),
-            plugged_in("/other-plugged-in"),
-            known("/two"),
-            Attempt::Store,
-        ]);
-        assert_eq!(serials, ["A", "B", "", ""]);
-        assert_eq!(drivers, [0, 0, 1, 1]);
-        assert_eq!(tried, 4);
-
-        let (serials, drivers, tried) = found(&[
-            known("/empty"),
-            known("/two"),
-            known("/three"),
-            Attempt::Store,
-        ]);
-        assert_eq!(serials, ["C", "D"]);
-        assert_eq!(drivers, [0, 0]);
-        assert_eq!(tried, 2);
     }
 
     /// Among several tokens, the only one showing the expected certificate
@@ -2436,7 +1856,7 @@ mod tests {
                 "title": "Enrolment",
                 "signer": "Asha Rao",
                 "claimNonce": NONCE,
-                "expectedCertificateSha256": expected.map(token::sha256_hex),
+                "expectedCertificateSha256": expected.map(crate::sha256_hex),
             }))
             .unwrap()
         };
@@ -2506,11 +1926,10 @@ mod tests {
                     driver_of: vec![0; count as usize],
                 }))
             };
-            let config_dir =
-                std::env::temp_dir().join(format!("keyseal-tokens-{}", std::process::id()));
+            let config_dir = TempDir::new("tokens");
             let env = Environment {
                 allow_insecure: true,
-                config_dir: config_dir.clone(),
+                config_dir: config_dir.to_path_buf(),
             };
             let link: String = url::form_urlencoded::byte_serialize(
                 format!("{}/api/keyseal/v1/jobs/{TOKEN}", served.origin).as_bytes(),
@@ -2519,7 +1938,6 @@ mod tests {
             let mut ui = CancellingUi::new(Stage::Enrol);
             ui.token_answer = answer;
             let result = run_with(&format!("keyseal://sign?job={link}"), &mut ui, &env, &open);
-            let _ = std::fs::remove_dir_all(&config_dir);
             assert_eq!(result.unwrap(), Outcome::Signed);
             let signed: Vec<Vec<usize>> = signed
                 .iter()

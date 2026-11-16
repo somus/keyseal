@@ -482,6 +482,7 @@ fn uninstall_linux(bin: &Path, data: &Path, host: &mut dyn Host) -> Result<(), S
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::TempDir;
 
     #[derive(Default)]
     struct Recorder(Vec<String>);
@@ -498,19 +499,11 @@ mod tests {
         }
     }
 
-    fn temp_dir(name: &str) -> PathBuf {
-        let dir =
-            std::env::temp_dir().join(format!("keyseal-install-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
-    }
-
     // A Windows temp path has backslashes, which no desktop entry takes.
     #[cfg(unix)]
     #[test]
     fn installs_and_uninstalls_on_linux() {
-        let home = temp_dir("linux");
+        let home = TempDir::new("install-linux");
         let source = home.join("Downloads/keyseal");
         std::fs::create_dir_all(source.parent().unwrap()).unwrap();
         std::fs::write(&source, b"binary").unwrap();
@@ -549,7 +542,6 @@ mod tests {
         assert!(!data.join(ICON_PATH).exists());
         assert_eq!(host.0.len(), 1);
         uninstall_linux(&bin, &data, &mut Recorder::default()).unwrap();
-        let _ = std::fs::remove_dir_all(&home);
     }
 
     #[test]
@@ -579,7 +571,7 @@ mod tests {
 
     #[test]
     fn installs_and_uninstalls_on_windows() {
-        let local = temp_dir("windows");
+        let local = TempDir::new("install-windows");
         let programs = local.join("Programs");
         let source = local
             .join("Downloads")
@@ -636,14 +628,13 @@ mod tests {
         );
         assert!(!local.join("keyseal").exists());
         assert!(!programs.join("KeySeal.lnk").exists());
-        let _ = std::fs::remove_dir_all(&local);
     }
 
     /// The first start after an update registers the installed copy as an
     /// install does, and never installs a copy run from elsewhere.
     #[test]
     fn registers_the_installed_copy_again_after_an_update() {
-        let local = temp_dir("windows-updated");
+        let local = TempDir::new("install-windows-updated");
         let programs = local.join("Programs");
         let installed = windows_target(&local);
         std::fs::create_dir_all(installed.parent().unwrap()).unwrap();
@@ -671,7 +662,6 @@ mod tests {
             )]
         );
         assert_eq!(std::fs::read(&installed).unwrap(), b"updated");
-        let _ = std::fs::remove_dir_all(&local);
     }
 
     /// A folder that can't be removed now, as one holding the running
@@ -681,7 +671,7 @@ mod tests {
     #[test]
     fn defers_removing_the_install_folder() {
         use std::os::unix::fs::PermissionsExt;
-        let local = temp_dir("windows-deferred");
+        let local = TempDir::new("install-windows-deferred");
         let dir = local.join("keyseal");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("keyseal.exe"), b"exe").unwrap();
@@ -706,7 +696,6 @@ mod tests {
         assert!(cleanup.contains(&format!("[IO.Directory]::Delete('{}')", dir.display())));
         assert!(!cleanup.contains("notes.txt") && !cleanup.contains("-Recurse"));
         assert_eq!(std::fs::read(dir.join("notes.txt")).unwrap(), b"mine");
-        let _ = std::fs::remove_dir_all(&local);
     }
 
     #[test]
@@ -722,7 +711,8 @@ mod tests {
     /// link as its only argument.
     #[test]
     fn quotes_a_local_app_data_with_spaces() {
-        let local = temp_dir("windows-spaces").join("Asha Rao").join("App Data");
+        let temp = TempDir::new("install-windows-spaces");
+        let local = temp.join("Asha Rao").join("App Data");
         let source = local.join("keyseal download.exe");
         std::fs::create_dir_all(&local).unwrap();
         std::fs::write(&source, b"exe").unwrap();
@@ -732,6 +722,5 @@ mod tests {
         let command = host.0[2].split('|').nth(4).unwrap();
         assert_eq!(command, format!("\"{}\" \"%1\"", target.display()));
         assert!(target.display().to_string().contains("Asha Rao"));
-        let _ = std::fs::remove_dir_all(local.parent().unwrap().parent().unwrap());
     }
 }

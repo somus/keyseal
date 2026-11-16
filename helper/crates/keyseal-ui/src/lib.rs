@@ -1,30 +1,27 @@
 //! The KeySeal helper's windows, built with GPUI Kit. GPUI owns the main
-//! thread; the job's flow runs on a background thread with [`WindowUi`],
-//! whose prompts send a request to the main thread and block until the user
-//! answers, and whose progress only sends one. A window closed without an
-//! answer counts as Cancel; cancelling closes the job window at once, and
-//! the flow unwinds behind it. Links that arrive while the app runs (macOS
-//! sends them to the running app) start a job when none is running.
+//! thread; the job's flow runs on a background thread and reaches the
+//! windows through the `bridge` module. Cancelling closes the job window at
+//! once, and the flow unwinds behind it. Links that arrive while the app
+//! runs (macOS sends them to the running app) start a job when none is
+//! running.
 
+mod bridge;
 mod native;
 mod strings;
 mod views;
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, mpsc};
+use std::sync::atomic::AtomicBool;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use futures::StreamExt;
 use futures::channel::mpsc::{UnboundedSender, unbounded};
 use gpui_kit::{App, KeyBinding, Menu, MenuItem, QuitMode, actions};
-use keyseal_core::certificate::CertificateSummary;
 use keyseal_core::doctor::Report;
-use keyseal_core::flow::{DigestConfirm, JobView, PinPrompt, Progress, Step, Ui};
-use keyseal_core::origin::Origin;
-use keyseal_core::protocol::Kind;
-use keyseal_core::token::{PinWarning, TokenSummary};
-use zeroize::Zeroizing;
+use keyseal_core::flow::Ui;
+
+use bridge::{Request, WindowUi};
 
 actions!(keyseal, [OpenSettings]);
 
@@ -43,6 +40,17 @@ pub enum Start {
 /// Looks at the tokens and drivers as `keyseal doctor` does. Blocks, so the
 /// settings window runs it on the background executor.
 pub type Probe = fn() -> Result<Report, String>;
+
+/// Where [`log`] writes, set once by [`launch`].
+static LOG: OnceLock<fn(&str)> = OnceLock::new();
+
+/// Records `message` in `keyseal.log`, what the user can't see in a
+/// terminal; nothing before [`launch`], in tests and in the gallery.
+pub(crate) fn log(message: &str) {
+    if let Some(log) = LOG.get() {
+        log(message);
+    }
+}
 
 /// What the main thread acts on.
 pub(crate) enum Event {
@@ -108,7 +116,10 @@ pub fn gallery(view: &str) {
         .run(move |cx| {
             gpui_kit::init(cx);
             cx.bind_keys(views::key_bindings());
-            views::gallery(&view, cx);
+            if let Err(message) = views::gallery(&view, cx) {
+                eprintln!("{message}");
+                std::process::exit(2);
+            }
             cx.activate(true);
         });
 }
@@ -127,6 +138,7 @@ pub fn launch(
     probe: Probe,
     job: fn(&str, &mut dyn Ui) -> i32,
 ) -> ! {
+    let _ = LOG.set(log);
     if let Err(message) = check_gpu() {
         log(&message);
         std::process::exit(1);
@@ -172,13 +184,7 @@ pub fn launch(
         let settings_dir = config_dir.clone();
         let settings_events = events.clone();
         cx.on_action(move |_: &OpenSettings, cx| {
-            settings_only(
-                settings_dir.clone(),
-                log,
-                probe,
-                settings_events.clone(),
-                cx,
-            )
+            settings_only(settings_dir.clone(), probe, settings_events.clone(), cx)
         });
         cx.set_menus([Menu::new(strings::APP_NAME)
             .items([MenuItem::action(strings::SETTINGS_MENU_ITEM, OpenSettings)])]);
@@ -188,7 +194,7 @@ pub fn launch(
             Start::Link(link) => {
                 let _ = events.unbounded_send(Event::Link(link));
             }
-            Start::Settings => settings_only(config_dir.clone(), log, probe, events.clone(), cx),
+            Start::Settings => settings_only(config_dir.clone(), probe, events.clone(), cx),
             Start::UrlEvent => {
                 let events = events.clone();
                 cx.spawn(async move |cx| {
@@ -199,7 +205,7 @@ pub fn launch(
             }
         }
 
-        let mut windows = views::Windows::new(log);
+        let mut windows = views::Windows::default();
         let mut jobs = Jobs::default();
         // A finished job's exit code, held while Settings stays open.
         let mut exit_code = 0;
@@ -207,11 +213,11 @@ pub fn launch(
             while let Some(event) = incoming.next().await {
                 cx.update(|cx| match event {
                     Event::Link(link) if jobs.start() => {
-                        start_job(link, windows.job_closed(), events.clone(), log, job)
+                        start_job(link, windows.job_closed(), events.clone(), job)
                     }
                     Event::Link(_) => windows.busy(cx),
                     Event::NoLink if jobs.idle() => {
-                        settings_only(config_dir.clone(), log, probe, events.clone(), cx)
+                        settings_only(config_dir.clone(), probe, events.clone(), cx)
                     }
                     Event::NoLink => {}
                     Event::Ui(request) => windows.handle(*request, cx),
@@ -250,14 +256,12 @@ fn start_job(
     link: String,
     cancelled: Arc<AtomicBool>,
     events: UnboundedSender<Event>,
-    log: fn(&str),
     job: fn(&str, &mut dyn Ui) -> i32,
 ) {
     let thread = std::thread::Builder::new().name(JOB_THREAD.into());
     let spawned = thread.spawn(move || {
         let mut ui = WindowUi {
             events: events.clone(),
-            log,
             cancelled,
         };
         let code = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| job(&link, &mut ui)))
@@ -281,14 +285,8 @@ fn start_job(
 
 /// Opens the settings window; the app quits when the last window closes
 /// and no job is running.
-fn settings_only(
-    config_dir: PathBuf,
-    log: fn(&str),
-    probe: Probe,
-    events: UnboundedSender<Event>,
-    cx: &mut App,
-) {
-    views::open_settings(config_dir, log, probe, cx);
+fn settings_only(config_dir: PathBuf, probe: Probe, events: UnboundedSender<Event>, cx: &mut App) {
+    views::open_settings(config_dir, probe, cx);
     cx.on_window_closed(move |_, _| {
         let _ = events.unbounded_send(Event::SettingsClosed);
     })
@@ -306,331 +304,6 @@ pub fn check_gpu() -> Result<Option<String>, String> {
     }
     #[cfg(not(target_os = "macos"))]
     Ok(None)
-}
-
-/// What the windows show about a job, copied off the flow's borrowed view.
-#[derive(Clone)]
-pub(crate) struct Job {
-    host: String,
-    insecure: bool,
-    brand: Option<Brand>,
-    kind: Kind,
-    /// The job is claimed: the title, signer and documents are its own.
-    /// Before the claim they're empty and the window shows the host only.
-    claimed: bool,
-    title: String,
-    signer: String,
-    /// A sign job's document titles, in order; empty for enrol.
-    documents: Vec<String>,
-}
-
-#[derive(Clone)]
-struct Brand {
-    name: String,
-    icon: Option<Vec<u8>>,
-    /// `0xrrggbb`.
-    accent: Option<u32>,
-    /// The manifest's `translucent`: false asks for opaque windows.
-    translucent: bool,
-}
-
-impl Job {
-    fn of(view: &JobView) -> Self {
-        Self {
-            host: host(view.origin),
-            insecure: view.origin.insecure,
-            brand: view.branding.map(|branding| Brand {
-                name: branding.manifest.name.clone(),
-                icon: branding.icon.clone(),
-                accent: branding
-                    .manifest
-                    .accent_color
-                    .as_deref()
-                    .and_then(|color| u32::from_str_radix(color.trim_start_matches('#'), 16).ok()),
-                translucent: branding.manifest.translucent != Some(false),
-            }),
-            kind: view.kind,
-            claimed: true,
-            title: view.title.to_owned(),
-            signer: view.signer.to_owned(),
-            documents: view
-                .documents
-                .iter()
-                .map(|document| document.title.clone())
-                .collect(),
-        }
-    }
-
-    /// The job a link asks for, before it's claimed: never branding, which
-    /// comes with the claimed job.
-    fn unclaimed(origin: &Origin, kind: Kind) -> Self {
-        Self {
-            host: host(origin),
-            insecure: origin.insecure,
-            brand: None,
-            kind,
-            claimed: false,
-            title: String::new(),
-            signer: String::new(),
-            documents: Vec::new(),
-        }
-    }
-
-    /// The job signs several documents at once.
-    fn is_batch(&self) -> bool {
-        self.documents.len() > 1
-    }
-}
-
-/// The origin's host, in the A-label form the origin holds, with the port
-/// when it isn't the scheme's default.
-fn host(origin: &Origin) -> String {
-    let origin = origin.as_string();
-    url::Url::parse(&origin)
-        .ok()
-        .and_then(|url| {
-            let host = url.host_str()?.to_owned();
-            Some(match url.port() {
-                Some(port) => format!("{host}:{port}"),
-                None => host,
-            })
-        })
-        .unwrap_or(origin)
-}
-
-/// Lowercase hex in groups of 8, four groups to a line.
-pub(crate) fn group_digest(hex: &str) -> String {
-    let groups: Vec<&str> = hex
-        .as_bytes()
-        .chunks(8)
-        .map(|chunk| std::str::from_utf8(chunk).unwrap_or_default())
-        .collect();
-    groups
-        .chunks(4)
-        .map(|line| line.join(" "))
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-#[expect(
-    clippy::large_enum_variant,
-    reason = "requests travel boxed in Event::Ui"
-)]
-pub(crate) enum Request {
-    Trust {
-        host: String,
-        insecure: bool,
-        reply: mpsc::Sender<bool>,
-    },
-    Job {
-        job: Job,
-        stage: Stage,
-    },
-    /// The job window gives way to a message, open until the user closes it.
-    Message {
-        heading: &'static str,
-        message: String,
-        reply: mpsc::Sender<()>,
-    },
-    /// The job window's `HWND`.
-    #[cfg(windows)]
-    WindowHandle {
-        reply: mpsc::Sender<Option<isize>>,
-    },
-}
-
-/// What the job window asks for. Each stage holds the channel its answer
-/// goes back on; dropping it answers Cancel.
-pub(crate) enum Stage {
-    Pin {
-        /// The chosen token's label, when several were plugged in.
-        token: Option<String>,
-        certificate: Option<String>,
-        /// One per document, in order.
-        digests: Option<Vec<String>>,
-        pin_pad: bool,
-        warning: Option<&'static str>,
-        /// The PIN entered last was wrong.
-        wrong_pin: bool,
-        reply: mpsc::Sender<Option<Zeroizing<String>>>,
-    },
-    Confirm {
-        certificate: String,
-        /// One per document, in order.
-        digests: Vec<String>,
-        reply: mpsc::Sender<bool>,
-    },
-    Choose {
-        certificates: Vec<CertificateSummary>,
-        reply: mpsc::Sender<Option<usize>>,
-    },
-    ChooseToken {
-        tokens: Vec<TokenSummary>,
-        reply: mpsc::Sender<Option<usize>>,
-    },
-    /// Enrol through the system's certificate store: the job before the
-    /// store is read.
-    Enrol { reply: mpsc::Sender<bool> },
-    /// Answered; the flow is working until its next step or prompt.
-    Busy,
-    /// The flow is at this step.
-    Progress(Step),
-}
-
-/// The flow's [`Ui`] on the background thread.
-pub struct WindowUi {
-    events: UnboundedSender<Event>,
-    /// Records each step in `keyseal.log`; never given the link or the PIN.
-    log: fn(&str),
-    /// The signer cancelled the job or closed its window.
-    cancelled: Arc<AtomicBool>,
-}
-
-impl WindowUi {
-    fn ask<T>(&self, request: impl FnOnce(mpsc::Sender<T>) -> Request) -> Option<T> {
-        let (reply, answer) = mpsc::channel();
-        self.events
-            .unbounded_send(Event::Ui(Box::new(request(reply))))
-            .ok()?;
-        answer.recv().ok()
-    }
-
-    /// A prompt the job waits on the signer for; Cancel once they cancelled.
-    fn ask_signer<T>(&self, request: impl FnOnce(mpsc::Sender<T>) -> Request) -> Option<T> {
-        if self.cancelled.load(Ordering::Relaxed) {
-            return None;
-        }
-        (self.log)("Waiting for the signer.");
-        self.ask(request)
-    }
-}
-
-impl Ui for WindowUi {
-    fn confirm_origin(&mut self, origin: &Origin) -> bool {
-        self.ask_signer(|reply| Request::Trust {
-            host: host(origin),
-            insecure: origin.insecure,
-            reply,
-        })
-        .unwrap_or(false)
-    }
-
-    fn choose_certificate(
-        &mut self,
-        job: &JobView,
-        certificates: &[CertificateSummary],
-    ) -> Option<usize> {
-        self.ask_signer(|reply| Request::Job {
-            job: Job::of(job),
-            stage: Stage::Choose {
-                certificates: certificates.to_vec(),
-                reply,
-            },
-        })
-        .flatten()
-    }
-
-    fn choose_token(&mut self, job: &JobView, tokens: &[TokenSummary]) -> Option<usize> {
-        self.ask_signer(|reply| Request::Job {
-            job: Job::of(job),
-            stage: Stage::ChooseToken {
-                tokens: tokens.to_vec(),
-                reply,
-            },
-        })
-        .flatten()
-    }
-
-    fn prompt_pin(&mut self, prompt: &PinPrompt) -> Option<Zeroizing<String>> {
-        self.ask_signer(|reply| Request::Job {
-            job: Job::of(prompt.job),
-            stage: Stage::Pin {
-                token: prompt.token.clone(),
-                certificate: prompt.certificate.clone(),
-                digests: prompt.digests.clone(),
-                pin_pad: prompt.pin_pad,
-                // The flow fails a locked PIN instead of asking for it.
-                warning: match prompt.pin_warning {
-                    Some(PinWarning::FinalTry) => Some(strings::PIN_FINAL_TRY),
-                    Some(PinWarning::CountLow) => Some(strings::PIN_COUNT_LOW),
-                    Some(PinWarning::Locked) | None => None,
-                },
-                wrong_pin: prompt.wrong_pin,
-                reply,
-            },
-        })
-        .flatten()
-    }
-
-    fn confirm_digest(&mut self, confirm: &DigestConfirm) -> bool {
-        self.ask_signer(|reply| Request::Job {
-            job: Job::of(confirm.job),
-            stage: Stage::Confirm {
-                certificate: confirm.certificate.clone(),
-                digests: confirm.digests.clone(),
-                reply,
-            },
-        })
-        .unwrap_or(false)
-    }
-
-    fn confirm_enrol(&mut self, job: &JobView) -> bool {
-        self.ask_signer(|reply| Request::Job {
-            job: Job::of(job),
-            stage: Stage::Enrol { reply },
-        })
-        .unwrap_or(false)
-    }
-
-    fn show_error(&mut self, message: &str) {
-        // A job the signer cancelled opens no more windows; the error is in
-        // the log.
-        if self.cancelled.load(Ordering::Relaxed) {
-            return;
-        }
-        self.ask(|reply| Request::Message {
-            heading: strings::ERROR_HEADING,
-            message: message.to_owned(),
-            reply,
-        });
-    }
-
-    fn show_info(&mut self, message: &str) {
-        self.ask(|reply| Request::Message {
-            heading: strings::INFO_HEADING,
-            message: message.to_owned(),
-            reply,
-        });
-    }
-
-    fn progress(&mut self, progress: Progress) -> bool {
-        if self.cancelled.load(Ordering::Relaxed) {
-            return false;
-        }
-        // Each step's time also ends the one before.
-        (self.log)(match progress.step {
-            Step::Connecting => "Connecting.",
-            Step::OpeningToken => "Claimed. Opening the token.",
-            Step::CheckingCertificate => "Checking the certificate.",
-            Step::Downloading => "Certificate checked. Downloading the documents.",
-            Step::Signing => "Signing.",
-            Step::Sending => "Signed. Sending the signatures.",
-        });
-        let job = match progress.job {
-            Some(view) => Job::of(view),
-            None => Job::unclaimed(progress.origin, progress.kind),
-        };
-        let _ = self.events.unbounded_send(Event::Ui(Box::new(Request::Job {
-            job,
-            stage: Stage::Progress(progress.step),
-        })));
-        true
-    }
-
-    #[cfg(windows)]
-    fn window_handle(&self) -> Option<isize> {
-        self.ask(|reply| Request::WindowHandle { reply }).flatten()
-    }
 }
 
 #[cfg(test)]
@@ -653,38 +326,5 @@ mod tests {
         jobs.finished();
         assert!(jobs.done());
         assert!(jobs.idle());
-    }
-
-    #[test]
-    fn groups_digests_for_reading() {
-        let sha256 = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
-        assert_eq!(
-            group_digest(sha256),
-            "00112233 44556677 8899aabb ccddeeff\n00112233 44556677 8899aabb ccddeeff"
-        );
-        let sha384 = "0123456789abcdef".repeat(6);
-        let grouped = group_digest(&sha384);
-        assert_eq!(grouped.lines().count(), 3);
-        assert_eq!(grouped.replace([' ', '\n'], ""), sha384);
-        assert_eq!(group_digest("abc"), "abc");
-        assert_eq!(group_digest(""), "");
-    }
-
-    #[test]
-    fn shows_hosts_with_non_default_ports() {
-        let origin = |url: &str| Origin::of_url(&url::Url::parse(url).unwrap(), true).unwrap();
-        assert_eq!(
-            host(&origin("https://dash.example.org/v1/jobs/x")),
-            "dash.example.org"
-        );
-        assert_eq!(
-            host(&origin("https://dash.example.org:8443/")),
-            "dash.example.org:8443"
-        );
-        assert_eq!(
-            host(&origin("https://bücher.example/")),
-            "xn--bcher-kva.example"
-        );
-        assert_eq!(host(&origin("http://127.0.0.1:3000/")), "127.0.0.1:3000");
     }
 }

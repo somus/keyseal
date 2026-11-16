@@ -54,6 +54,7 @@ cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 cargo clippy -p keyseal-ui --all-targets --features gallery -- -D warnings
 cargo test
+cargo test -p keyseal-ui --features gallery --lib views::gallery
 # The SoftHSM suite runs only with a module path:
 KEYSEAL_SOFTHSM_MODULE=/opt/homebrew/lib/softhsm/libsofthsm2.so cargo test -p keyseal-helper --test softhsm
 ```

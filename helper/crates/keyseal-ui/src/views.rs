@@ -2,10 +2,12 @@
 //! window and the settings window, and [`Windows`], which opens them as the
 //! flow's requests arrive.
 
-#[cfg(any(feature = "gallery", test))]
+#[cfg(feature = "gallery")]
 mod gallery;
 mod job;
 mod message;
+#[cfg(any(feature = "gallery", test))]
+mod sample;
 mod settings;
 #[cfg(test)]
 mod testing;
@@ -20,15 +22,15 @@ use gpui_kit::{
     WindowOptions, actions, px, size,
 };
 
-use crate::{Request, Stage, native, strings};
+use crate::bridge::{Request, Stage};
+use crate::{native, strings};
 #[cfg(feature = "gallery")]
 pub use gallery::GALLERY_VIEWS;
 #[cfg(feature = "gallery")]
 pub(crate) use gallery::gallery;
-#[cfg(test)]
-pub(crate) use gallery::sample_report;
 pub(crate) use job::set_always_show_details;
 use job::{JobWindow, job_size, job_title};
+pub(crate) use message::MessageKind;
 use message::MessageWindow;
 use settings::settings_window;
 pub(crate) use settings::{open_settings, settings_open};
@@ -52,8 +54,8 @@ pub(crate) fn key_bindings() -> Vec<KeyBinding> {
 }
 
 /// The windows open for the flow's requests.
+#[derive(Default)]
 pub(crate) struct Windows {
-    log: fn(&str),
     job: Option<(AnyWindowHandle, WeakEntity<JobWindow>)>,
     /// The signer cancelled the job or closed its window: later job
     /// requests answer Cancel. Shared with the job's thread.
@@ -63,15 +65,6 @@ pub(crate) struct Windows {
 }
 
 impl Windows {
-    pub(crate) fn new(log: fn(&str)) -> Self {
-        Self {
-            log,
-            job: None,
-            job_closed: Arc::default(),
-            busy: None,
-        }
-    }
-
     /// Set when the signer cancels the job that starts now.
     pub(crate) fn job_closed(&self) -> Arc<AtomicBool> {
         self.job_closed.clone()
@@ -90,7 +83,6 @@ impl Windows {
                     strings::TRUST_WINDOW_TITLE,
                     440.,
                     trust_height(insecure),
-                    self.log,
                     cx,
                     |window, cx| {
                         let view = cx.new(|cx| TrustWindow::new(host, insecure, reply, window, cx));
@@ -123,35 +115,27 @@ impl Windows {
                     return;
                 }
                 let closed = self.job_closed.clone();
-                let log = self.log;
                 let (width, height) = job_size(&job);
-                let (handle, view) = open(
-                    job_title(&job),
-                    width,
-                    height,
-                    self.log,
-                    cx,
-                    |window, cx| {
-                        let view = cx.new(|cx| JobWindow::new(job, stage, closed, log, window, cx));
-                        let weak = view.downgrade();
-                        window.on_window_should_close(cx, move |_, cx| {
-                            let _ = weak.update(cx, |view, _| view.cancelled());
-                            true
-                        });
-                        view
-                    },
-                );
+                let (handle, view) = open(job_title(&job), width, height, cx, |window, cx| {
+                    let view = cx.new(|cx| JobWindow::new(job, stage, closed, window, cx));
+                    let weak = view.downgrade();
+                    window.on_window_should_close(cx, move |_, cx| {
+                        let _ = weak.update(cx, |view, _| view.cancelled());
+                        true
+                    });
+                    view
+                });
                 self.job = Some((handle, view.downgrade()));
             }
             Request::Message {
-                heading,
+                kind,
                 message,
                 reply,
             } => {
                 if let Some((handle, _)) = self.job.take() {
                     let _ = handle.update(cx, |_, window, _| window.remove_window());
                 }
-                self.message(heading, message, Some(reply), cx);
+                self.message(kind, message, Some(reply), cx);
             }
             #[cfg(windows)]
             Request::WindowHandle { reply } => {
@@ -182,7 +166,7 @@ impl Windows {
         {
             return;
         }
-        self.busy = Some(self.message(strings::BUSY_HEADING, strings::BUSY.into(), None, cx));
+        self.busy = Some(self.message(MessageKind::Busy, strings::BUSY.into(), None, cx));
     }
 
     /// The job is over: closes its windows, and the next job starts afresh.
@@ -202,13 +186,13 @@ impl Windows {
 
     pub(super) fn message(
         &self,
-        heading: &'static str,
+        kind: MessageKind,
         message: String,
         reply: Option<mpsc::Sender<()>>,
         cx: &mut App,
     ) -> AnyWindowHandle {
-        let (handle, _) = open(strings::APP_NAME, 460., 260., self.log, cx, |window, cx| {
-            let view = cx.new(|cx| MessageWindow::new(heading, message, reply, window, cx));
+        let (handle, _) = open(strings::APP_NAME, 460., 260., cx, |window, cx| {
+            let view = cx.new(|cx| MessageWindow::new(kind, message, reply, window, cx));
             let weak = view.downgrade();
             window.on_window_should_close(cx, move |_, cx| {
                 let _ = weak.update(cx, |view, _| view.reply.take());
@@ -225,7 +209,6 @@ fn open<V: Render>(
     title: &'static str,
     width: f32,
     height: f32,
-    log: fn(&str),
     cx: &mut App,
     build: impl FnOnce(&mut Window, &mut App) -> Entity<V>,
 ) -> (AnyWindowHandle, Entity<V>) {
@@ -245,7 +228,7 @@ fn open<V: Render>(
         build(window, cx)
     };
     let opened = gpui_kit::open_window(options, cx, build).unwrap_or_else(|error| {
-        log(&format!("{} {error}", strings::NO_GPU));
+        crate::log(&format!("{} {error}", strings::NO_GPU));
         std::process::exit(1)
     });
     // A window opens after the link's network round trip, or in a helper
@@ -264,7 +247,7 @@ mod tests {
 
     use crate::views::testing::{certificate, job, open_windows, pass_input_delay, setup};
 
-    use crate::{Request, Stage};
+    use crate::bridge::{Request, Stage};
 
     #[gpui_kit::test]
     fn the_brand_accent_shows_in_the_job_window_only(cx: &mut TestAppContext) {

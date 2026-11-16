@@ -244,22 +244,48 @@ pub(crate) fn glass_platform() -> bool {
     look().glass && cfg!(target_os = "macos")
 }
 
-/// Who has turned glass off: the signer in Settings, or the integrator's
-/// manifest (`translucent: false`) while its job window shows.
-struct Translucency {
-    preferred: bool,
-    brand: bool,
+/// What the signer and the integrator change about the platform's look.
+#[derive(Clone, Copy, PartialEq)]
+struct Styling {
+    /// The signer's choice of glass in Settings.
+    translucent_preferred: bool,
+    /// False while a job window shows a manifest with `translucent: false`.
+    brand_translucent: bool,
+    /// The integrator's accent colour, `0xrrggbb`, while a job's window
+    /// shows. It takes the place of the platform's accent on the primary
+    /// button and the focus ring; the trust prompt never shows it.
+    accent: Option<u32>,
 }
 
-impl Global for Translucency {}
+impl Global for Styling {}
+
+fn styling(cx: &App) -> Styling {
+    cx.try_global::<Styling>().copied().unwrap_or(Styling {
+        translucent_preferred: true,
+        brand_translucent: true,
+        accent: None,
+    })
+}
+
+/// Changes the styling with `change`, and the open windows with it when
+/// that changed anything.
+fn restyle(change: impl FnOnce(&mut Styling), cx: &mut App) {
+    let mut styling = self::styling(cx);
+    change(&mut styling);
+    if cx.try_global::<Styling>() != Some(&styling) {
+        cx.set_global(styling);
+        refresh(cx);
+    }
+}
 
 /// Whether windows are glass now: on macOS, unless the system's Reduce
 /// transparency, the signer or the integrator asks for opaque windows.
 fn glass(cx: &App) -> bool {
-    let translucency = cx.try_global::<Translucency>();
+    let styling = styling(cx);
     glass_platform()
         && !reduce_transparency()
-        && translucency.is_none_or(|t| t.preferred && t.brand)
+        && styling.translucent_preferred
+        && styling.brand_translucent
 }
 
 #[cfg(target_os = "macos")]
@@ -283,9 +309,7 @@ fn background(cx: &App) -> WindowBackgroundAppearance {
 /// Sets the signer's choice from Settings, and applies it to the windows
 /// already open.
 pub(crate) fn set_translucent_windows(preferred: bool, cx: &mut App) {
-    let brand = cx.try_global::<Translucency>().is_none_or(|t| t.brand);
-    cx.set_global(Translucency { preferred, brand });
-    refresh(cx);
+    restyle(|styling| styling.translucent_preferred = preferred, cx);
 }
 
 /// Matches every open window's background, and the theme, to [`glass`].
@@ -350,13 +374,6 @@ fn mode(appearance: WindowAppearance) -> ThemeMode {
     }
 }
 
-/// The integrator's accent colour, `0xrrggbb`, while a job's window
-/// shows. It takes the place of the platform's accent on the primary
-/// button and the focus ring; the trust prompt never shows it.
-struct BrandAccent(Option<u32>);
-
-impl Global for BrandAccent {}
-
 /// The colours a button in `accent` needs: hover, pressed and the text
 /// on it, white or black by the accent's luminance.
 fn accent_states(accent: u32) -> (Hsla, Hsla, Hsla, Hsla) {
@@ -387,18 +404,13 @@ fn accent_states(accent: u32) -> (Hsla, Hsla, Hsla, Hsla) {
 /// the focus ring, or the platform's accent again with `None`. With
 /// `translucent` false the windows are opaque while the job shows.
 pub(crate) fn set_brand(accent: Option<u32>, translucent: bool, cx: &mut App) {
-    let preferred = cx.try_global::<Translucency>().is_none_or(|t| t.preferred);
-    let unchanged = cx.try_global::<BrandAccent>().map(|brand| brand.0) == Some(accent)
-        && cx.try_global::<Translucency>().is_none_or(|t| t.brand) == translucent;
-    if unchanged {
-        return;
-    }
-    cx.set_global(BrandAccent(accent));
-    cx.set_global(Translucency {
-        preferred,
-        brand: translucent,
-    });
-    refresh(cx);
+    restyle(
+        |styling| {
+            styling.accent = accent;
+            styling.brand_translucent = translucent;
+        },
+        cx,
+    );
 }
 
 /// Matches the theme to `appearance` and puts the platform's tokens on it.
@@ -409,16 +421,15 @@ pub(crate) fn apply(appearance: WindowAppearance, cx: &mut App) {
 
 fn tokens(cx: &mut App) {
     let palette = palette(cx);
-    let (accent, hover, active, on_accent) =
-        match cx.try_global::<BrandAccent>().and_then(|brand| brand.0) {
-            Some(brand) => accent_states(brand),
-            None => (
-                color(palette.accent),
-                color(palette.accent_hover),
-                color(palette.accent_active),
-                color(palette.on_accent),
-            ),
-        };
+    let (accent, hover, active, on_accent) = match styling(cx).accent {
+        Some(brand) => accent_states(brand),
+        None => (
+            color(palette.accent),
+            color(palette.accent_hover),
+            color(palette.accent_active),
+            color(palette.on_accent),
+        ),
+    };
     let glass = glass(cx);
     Theme::update(cx, |theme| {
         theme.font_size = font_size();

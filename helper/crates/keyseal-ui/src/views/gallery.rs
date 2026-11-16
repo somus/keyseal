@@ -1,35 +1,25 @@
 //! The gallery's sample data.
 
-#[cfg(feature = "gallery")]
 use std::sync::mpsc;
 
-#[cfg(feature = "gallery")]
 use gpui_kit::App;
-#[cfg(feature = "gallery")]
 use keyseal_core::certificate::CertificateSummary;
-use keyseal_core::doctor::{Driver, DriverState, Report, Status};
-#[cfg(feature = "gallery")]
+use keyseal_core::doctor::Status;
 use keyseal_core::flow::Step;
-#[cfg(feature = "gallery")]
 use keyseal_core::modules;
-#[cfg(feature = "gallery")]
 use keyseal_core::protocol::Kind;
-#[cfg(feature = "gallery")]
 use keyseal_core::token::TokenSummary;
-#[cfg(feature = "gallery")]
 use keyseal_core::trust::TrustStore;
 
-#[cfg(feature = "gallery")]
-use super::Windows;
-#[cfg(feature = "gallery")]
 use super::job::set_always_show_details;
-#[cfg(feature = "gallery")]
+use super::sample::sample_report;
 use super::settings::open_settings;
-#[cfg(feature = "gallery")]
-use crate::{Job, Probe, Request, Stage, strings};
+use super::{MessageKind, Windows};
+use crate::Probe;
+use crate::bridge::{Brand, Job, Request, Stage};
+use crate::strings;
 
 /// Every view [`gallery`] opens.
-#[cfg(feature = "gallery")]
 pub const GALLERY_VIEWS: &[&str] = &[
     "trust",
     "trust-insecure",
@@ -65,71 +55,15 @@ pub const GALLERY_VIEWS: &[&str] = &[
     "settings-driver-failed",
 ];
 
-/// What a probe might find on a Mac with a HYP2003 plugged in: `status`,
-/// with the plugged-in driver used, failed, or seeing no token.
-#[cfg(any(feature = "gallery", test))]
-pub(crate) fn sample_report(status: Status) -> Report {
-    use keyseal_core::doctor::Device;
-    let plugged = match &status {
-        Status::Ready => DriverState::Used,
-        Status::NoToken => DriverState::NoToken,
-        Status::Failed(reason) => DriverState::Failed(reason.clone()),
-    };
-    let devices = match &status {
-        Status::NoToken => vec![],
-        _ => vec![Device {
-            id: "2ccf:080a".into(),
-            product: Some("HYP2003".into()),
-            token: Some("HyperSecu HYP2003".into()),
-        }],
-    };
-    let mut drivers = vec![
-        Driver {
-            name: "libcastle.dylib".into(),
-            detail: "/usr/local/lib/libcastle.dylib [catalogue, HyperSecu HYP2003 plugged in]"
-                .into(),
-            token: Some("HyperSecu HYP2003".into()),
-            state: plugged,
-        },
-        Driver {
-            name: "libeTPkcs11.dylib".into(),
-            detail: "/usr/local/lib/libeTPkcs11.dylib [known drivers]".into(),
-            token: None,
-            state: DriverState::NoToken,
-        },
-        Driver {
-            name: "libmtoken.dylib".into(),
-            detail: "/usr/local/lib/libmtoken.dylib [known drivers]".into(),
-            token: None,
-            state: DriverState::Missing,
-        },
-    ];
-    // The keychain is looked at once no driver reaches a token.
-    if status != Status::Ready {
-        drivers.push(Driver {
-            name: "macOS keychain".into(),
-            detail: "the macOS keychain (CryptoTokenKit)".into(),
-            token: None,
-            state: DriverState::Empty,
-        });
-    }
-    Report {
-        devices,
-        drivers,
-        text: "keyseal 0.1.0\nOS: macos aarch64\nTokens: sample\n".into(),
-        status,
-    }
-}
-
-/// Opens `view` with sample data. Answers go nowhere.
-#[cfg(feature = "gallery")]
-pub(crate) fn gallery(view: &str, cx: &mut App) {
+/// Opens `view` with sample data, or fails on a view it doesn't know.
+/// Answers go nowhere.
+pub(crate) fn gallery(view: &str, cx: &mut App) -> Result<(), String> {
     const DIGEST: &str = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08";
     const CERTIFICATE: &str = "ASHA RAO (Verasys Sub CA 2022), valid until 12 March 2027";
     let job = |kind| Job {
         host: "sign.example.org".into(),
         insecure: view == "choose-many",
-        brand: Some(crate::Brand {
+        brand: Some(Brand {
             name: "Example Trust".into(),
             icon: (!view.ends_with("-plain"))
                 .then(|| include_bytes!("../../examples/sample-logo.png").to_vec()),
@@ -159,10 +93,10 @@ pub(crate) fn gallery(view: &str, cx: &mut App) {
         valid_until: valid_until.into(),
         serial_end: serial_end.into(),
     };
-    let mut windows = Windows::new(|_| {});
+    let mut windows = Windows::default();
     // pin-details: the signer chose to always see the technical details.
     set_always_show_details(matches!(view, "pin-details" | "pin-batch-details"), cx);
-    if view.starts_with("pin-batch") {
+    if matches!(view, "pin-batch" | "pin-batch-details") {
         // The most a job may carry, one of them with a title that must wrap.
         let mut documents: Vec<String> = (1..=20)
             .map(|n| format!("Resolution 2026/{n:02}: Annual accounts and audit"))
@@ -189,8 +123,7 @@ pub(crate) fn gallery(view: &str, cx: &mut App) {
             },
             cx,
         );
-        std::mem::forget(windows);
-        return;
+        return Ok(());
     }
     let stage = match view {
         "trust" | "trust-insecure" => {
@@ -206,7 +139,7 @@ pub(crate) fn gallery(view: &str, cx: &mut App) {
                 },
                 cx,
             );
-            return;
+            return Ok(());
         }
         "message" | "message-driver" | "message-pin-locked" | "message-expired"
         | "message-link" | "message-internal" => {
@@ -228,12 +161,12 @@ pub(crate) fn gallery(view: &str, cx: &mut App) {
                 "message-link" => keyseal_core::protocol::DAMAGED_LINK.into(),
                 _ => keyseal_core::flow::INTERNAL_ERROR.into(),
             };
-            windows.message(strings::ERROR_HEADING, message, None, cx);
-            return;
+            windows.message(MessageKind::Error, message, None, cx);
+            return Ok(());
         }
         "busy-message" => {
             windows.busy(cx);
-            return;
+            return Ok(());
         }
         // Before the claim: the host only, never branding.
         "progress-connecting" => {
@@ -251,8 +184,7 @@ pub(crate) fn gallery(view: &str, cx: &mut App) {
                 },
                 cx,
             );
-            std::mem::forget(windows);
-            return;
+            return Ok(());
         }
         "progress-certificate" => Stage::Progress(Step::CheckingCertificate),
         "settings" | "settings-empty" | "settings-checking" | "settings-driver-failed" => {
@@ -281,8 +213,8 @@ pub(crate) fn gallery(view: &str, cx: &mut App) {
                     )))
                 },
             };
-            open_settings(dir, |_| {}, probe, cx);
-            return;
+            open_settings(dir, probe, cx);
+            return Ok(());
         }
         // pin-plain: a brand without a logo; pin-opaque: a brand that asks
         // for opaque windows.
@@ -360,7 +292,8 @@ pub(crate) fn gallery(view: &str, cx: &mut App) {
         "enrol" => Stage::Enrol {
             reply: mpsc::channel().0,
         },
-        _ => Stage::Busy,
+        "busy" => Stage::Busy,
+        _ => return Err(format!("No gallery view {view}.")),
     };
     let kind = if matches!(view, "enrol" | "choose" | "pin-warning") {
         Kind::Enrol
@@ -374,6 +307,29 @@ pub(crate) fn gallery(view: &str, cx: &mut App) {
         },
         cx,
     );
-    // Keeps the window's state for the app's lifetime.
-    std::mem::forget(windows);
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use gpui_kit::TestAppContext;
+
+    use super::{GALLERY_VIEWS, gallery};
+    use crate::views::testing::setup;
+
+    /// Every view the gallery lists opens: none falls through to another.
+    #[gpui_kit::test]
+    fn opens_every_view(cx: &mut TestAppContext) {
+        setup(cx);
+        for view in GALLERY_VIEWS {
+            cx.update(|cx| {
+                assert_eq!(gallery(view, cx), Ok(()), "{view}");
+                // Closed before settings-checking's probe, which never
+                // ends, can start.
+                for window in cx.windows() {
+                    let _ = window.update(cx, |_, window, _| window.remove_window());
+                }
+            });
+        }
+    }
 }

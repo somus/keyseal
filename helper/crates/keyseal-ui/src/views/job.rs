@@ -24,7 +24,8 @@ use super::widgets::{
     logo_tile, note, progress_line, scrolling, site_heading, window_frame,
 };
 use super::{CONTEXT, Cancel, Submit};
-use crate::{Job, Stage, group_digest, native, strings};
+use crate::bridge::{Job, Stage};
+use crate::{native, strings};
 
 /// The signer's choice to open the job window with the certificate and the
 /// digest shown.
@@ -88,6 +89,20 @@ fn token_detail(token: &TokenSummary) -> Option<String> {
         (false, true) => Some(describe_token(strings::TOKEN_SERIAL, token)),
         (false, false) => None,
     }
+}
+
+/// Lowercase hex in groups of 8, four groups to a line.
+fn group_digest(hex: &str) -> String {
+    let groups: Vec<&str> = hex
+        .as_bytes()
+        .chunks(8)
+        .map(|chunk| std::str::from_utf8(chunk).unwrap_or_default())
+        .collect();
+    groups
+        .chunks(4)
+        .map(|line| line.join(" "))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// The list of a batch's documents takes the height the window has left,
@@ -174,7 +189,6 @@ pub(super) struct JobWindow {
     details: bool,
     /// Set when the signer cancels; shared with the job's thread.
     closed: Arc<AtomicBool>,
-    log: fn(&str),
     focus: FocusHandle,
     /// The job and a batch's list of documents, which show a scrollbar
     /// while they hold more than fits.
@@ -189,7 +203,6 @@ impl JobWindow {
         job: Job,
         stage: Stage,
         closed: Arc<AtomicBool>,
-        log: fn(&str),
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -212,7 +225,6 @@ impl JobWindow {
             selected: 0,
             details: cx.try_global::<AlwaysShowDetails>().is_some_and(|on| on.0),
             closed,
-            log,
             focus: cx.focus_handle(),
             scroll: ScrollArea::default(),
             documents_scroll: ScrollArea::default(),
@@ -328,7 +340,7 @@ impl JobWindow {
     /// channel answers Cancel; the flag answers Cancel to what follows.
     pub(super) fn cancelled(&mut self) {
         if !self.closed.swap(true, Ordering::Relaxed) {
-            (self.log)("Cancelled by the signer.");
+            crate::log("Cancelled by the signer.");
         }
         self.stage = Stage::Busy;
     }
@@ -347,6 +359,56 @@ impl JobWindow {
             Step::Sending => strings::STEP_SENDING,
         };
         text.replace("{host}", &self.job.host).into()
+    }
+
+    /// `body` with the note `(id, text)` above a list to choose one from:
+    /// a radio row per `(label, accessible label, muted lines)`, whose ids
+    /// are `row_id` and its index. The row clicked is the one selected.
+    fn choices(
+        &self,
+        body: Div,
+        (id, text): (&'static str, &'static str),
+        row_id: &'static str,
+        rows: impl Iterator<Item = (String, String, Vec<String>)>,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        body.child(
+            div()
+                .id(id)
+                .role(Role::Note)
+                .aria_label(text)
+                .child(note(text, cx))
+                .test_support(),
+        )
+        .child(group(
+            rows.enumerate().map(|(index, (label, accessible, lines))| {
+                h_flex()
+                    .gap_3()
+                    .px_3()
+                    .py_2p5()
+                    .child(
+                        Radio::new((row_id, index))
+                            .flex_1()
+                            .min_w_0()
+                            .label(label)
+                            .accessibility_label(accessible)
+                            .checked(index == self.selected)
+                            .on_click(cx.listener(move |this, _: &bool, _, cx| {
+                                this.selected = index;
+                                cx.notify();
+                            }))
+                            .child(
+                                v_flex()
+                                    .gap_0p5()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .children(lines),
+                            ),
+                    )
+                    .into_any_element()
+            }),
+            cx,
+        ))
     }
 
     fn stage_body(&self, cx: &mut Context<Self>) -> Div {
@@ -425,104 +487,45 @@ impl JobWindow {
             }
             Stage::Confirm { .. } => body.child(note(strings::CONFIRM_NOTE, cx)),
             Stage::Enrol { .. } => body.child(note(strings::ENROL_STORE_NOTE, cx)),
-            Stage::Choose { certificates, .. } => body
-                .child(
-                    div()
-                        .id("choose")
-                        .role(Role::Note)
-                        .aria_label(strings::CHOOSE_NOTE)
-                        .child(note(strings::CHOOSE_NOTE, cx))
-                        .test_support(),
-                )
-                .child(group(
-                    certificates.iter().enumerate().map(|(index, certificate)| {
-                        h_flex()
-                            .gap_3()
-                            .px_3()
-                            .py_2p5()
-                            .child(
-                                Radio::new(("certificate", index))
-                                    .flex_1()
-                                    .min_w_0()
-                                    .label(certificate.name.clone())
-                                    .accessibility_label(describe(
-                                        strings::CERTIFICATE_LABEL,
-                                        certificate,
-                                    ))
-                                    .checked(index == self.selected)
-                                    .on_click(cx.listener(move |this, _: &bool, _, cx| {
-                                        this.selected = index;
-                                        cx.notify();
-                                    }))
-                                    // What tells a renewed certificate from
-                                    // the one it replaces.
-                                    .child(
-                                        v_flex()
-                                            .gap_0p5()
-                                            .text_xs()
-                                            .text_color(cx.theme().muted_foreground)
-                                            .child(describe(
-                                                strings::CERTIFICATE_ISSUED,
-                                                certificate,
-                                            ))
-                                            .child(describe(
-                                                strings::CERTIFICATE_SERIAL,
-                                                certificate,
-                                            )),
-                                    ),
-                            )
-                            .into_any_element()
-                    }),
-                    cx,
-                )),
-            Stage::ChooseToken { tokens, .. } => body
-                .child(
-                    div()
-                        .id("choose-token")
-                        .role(Role::Note)
-                        .aria_label(strings::CHOOSE_TOKEN_NOTE)
-                        .child(note(strings::CHOOSE_TOKEN_NOTE, cx))
-                        .test_support(),
-                )
-                .child(group(
-                    tokens.iter().enumerate().map(|(index, token)| {
-                        let detail = token_detail(token);
-                        let holds = (!token.names.is_empty())
-                            .then(|| describe_token(strings::TOKEN_HOLDS, token));
-                        // Read out as the row reads.
-                        let label = [Some(token.label.clone()), detail.clone(), holds.clone()]
-                            .into_iter()
-                            .flatten()
-                            .collect::<Vec<_>>()
-                            .join(", ");
-                        h_flex()
-                            .gap_3()
-                            .px_3()
-                            .py_2p5()
-                            .child(
-                                Radio::new(("token", index))
-                                    .flex_1()
-                                    .min_w_0()
-                                    .label(token.label.clone())
-                                    .accessibility_label(label)
-                                    .checked(index == self.selected)
-                                    .on_click(cx.listener(move |this, _: &bool, _, cx| {
-                                        this.selected = index;
-                                        cx.notify();
-                                    }))
-                                    .child(
-                                        v_flex()
-                                            .gap_0p5()
-                                            .text_xs()
-                                            .text_color(cx.theme().muted_foreground)
-                                            .children(detail)
-                                            .children(holds),
-                                    ),
-                            )
-                            .into_any_element()
-                    }),
-                    cx,
-                )),
+            Stage::Choose { certificates, .. } => self.choices(
+                body,
+                ("choose", strings::CHOOSE_NOTE),
+                "certificate",
+                certificates.iter().map(|certificate| {
+                    (
+                        certificate.name.clone(),
+                        describe(strings::CERTIFICATE_LABEL, certificate),
+                        // What tells a renewed certificate from the one it
+                        // replaces.
+                        vec![
+                            describe(strings::CERTIFICATE_ISSUED, certificate),
+                            describe(strings::CERTIFICATE_SERIAL, certificate),
+                        ],
+                    )
+                }),
+                cx,
+            ),
+            Stage::ChooseToken { tokens, .. } => self.choices(
+                body,
+                ("choose-token", strings::CHOOSE_TOKEN_NOTE),
+                "token",
+                tokens.iter().map(|token| {
+                    let lines: Vec<String> = token_detail(token)
+                        .into_iter()
+                        .chain(
+                            (!token.names.is_empty())
+                                .then(|| describe_token(strings::TOKEN_HOLDS, token)),
+                        )
+                        .collect();
+                    // Read out as the row reads.
+                    let label = std::iter::once(token.label.clone())
+                        .chain(lines.iter().cloned())
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    (token.label.clone(), label, lines)
+                }),
+                cx,
+            ),
             Stage::Busy => body.child(progress_line(strings::WORKING.into(), cx)),
             Stage::Progress(step) => body.child(progress_line(self.step_text(*step), cx)),
         }
@@ -763,11 +766,13 @@ mod tests {
     use keyseal_core::token::TokenSummary;
 
     use crate::views::testing::{
-        DIGEST, certificate, job, log, open_windows, pass_input_delay, probe, setup, temp_dir,
+        DIGEST, certificate, job, open_windows, pass_input_delay, probe, setup, temp_dir,
     };
 
+    use super::group_digest;
+    use crate::bridge::{Job, Request, Stage};
+    use crate::strings;
     use crate::views::open_settings;
-    use crate::{Job, Request, Stage, strings};
 
     /// More certificates than the window holds scroll with the job instead of
     /// squeezing the rows above them.
@@ -1279,7 +1284,7 @@ mod tests {
     fn the_job_window_opens_with_details_when_the_signer_asks(cx: &mut TestAppContext) {
         let mut windows = setup(cx);
         let dir = temp_dir("details");
-        cx.update(|cx| open_settings(dir.clone(), log, probe, cx));
+        cx.update(|cx| open_settings(dir.clone(), probe, cx));
         let settings = open_windows(cx)[0];
         cx.update_window(settings, |_, window, cx| {
             window.render_frame(cx);
@@ -1550,5 +1555,20 @@ mod tests {
         cx.run_until_parked();
         assert!(open_windows(cx).is_empty());
         assert!(cancelled.load(std::sync::atomic::Ordering::Relaxed));
+    }
+
+    #[test]
+    fn groups_digests_for_reading() {
+        let sha256 = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
+        assert_eq!(
+            group_digest(sha256),
+            "00112233 44556677 8899aabb ccddeeff\n00112233 44556677 8899aabb ccddeeff"
+        );
+        let sha384 = "0123456789abcdef".repeat(6);
+        let grouped = group_digest(&sha384);
+        assert_eq!(grouped.lines().count(), 3);
+        assert_eq!(grouped.replace([' ', '\n'], ""), sha384);
+        assert_eq!(group_digest("abc"), "abc");
+        assert_eq!(group_digest(""), "");
     }
 }

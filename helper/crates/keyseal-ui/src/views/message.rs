@@ -5,7 +5,7 @@ use std::sync::mpsc;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::{ActiveTheme, v_flex};
 use gpui_kit::{
-    Context, FocusHandle, InteractiveElement, IntoElement, ParentElement, Render, Role,
+    App, Context, FocusHandle, Hsla, InteractiveElement, IntoElement, ParentElement, Render, Role,
     SharedString, StatefulInteractiveElement, Styled, TestSupportExt, Window, div,
     prelude::FluentBuilder,
 };
@@ -15,9 +15,39 @@ use super::widgets::{ScrollArea, alert, button_bar, icon_tile, scrolling, window
 use super::{CONTEXT, Cancel, Submit};
 use crate::{native, strings};
 
+/// What a message is, which gives its heading and its icon.
+#[derive(Clone, Copy)]
+pub(crate) enum MessageKind {
+    /// The flow failed.
+    Error,
+    /// The flow has something to say.
+    Info,
+    /// A link arrived while a job runs.
+    Busy,
+}
+
+impl MessageKind {
+    fn heading(self) -> &'static str {
+        match self {
+            Self::Error => strings::ERROR_HEADING,
+            Self::Info => strings::INFO_HEADING,
+            Self::Busy => strings::BUSY_HEADING,
+        }
+    }
+
+    /// The icon in the header tile, and its tint.
+    fn icon(self, cx: &App) -> (&'static str, Hsla) {
+        match self {
+            Self::Error => ("circle-alert", cx.theme().danger),
+            Self::Info => ("info", cx.theme().primary),
+            Self::Busy => ("hourglass", cx.theme().primary),
+        }
+    }
+}
+
 /// The flow's error or a notice, kept open until the user closes it.
 pub(super) struct MessageWindow {
-    heading: &'static str,
+    kind: MessageKind,
     message: SharedString,
     no_driver: bool,
     pub(super) reply: Option<mpsc::Sender<()>>,
@@ -28,7 +58,7 @@ pub(super) struct MessageWindow {
 
 impl MessageWindow {
     pub(super) fn new(
-        heading: &'static str,
+        kind: MessageKind,
         message: String,
         reply: Option<mpsc::Sender<()>>,
         window: &mut Window,
@@ -37,7 +67,7 @@ impl MessageWindow {
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
         Self {
-            heading,
+            kind,
             no_driver: message.starts_with(modules::NO_DRIVER),
             message: message.into(),
             reply,
@@ -54,11 +84,7 @@ impl MessageWindow {
 
 impl Render for MessageWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let (tile, tint) = match self.heading {
-            strings::ERROR_HEADING => ("circle-alert", cx.theme().danger),
-            strings::BUSY_HEADING => ("hourglass", cx.theme().primary),
-            _ => ("info", cx.theme().primary),
-        };
+        let (tile, tint) = self.kind.icon(cx);
         window_frame(&self.focus, CONTEXT, window, cx)
             .on_action(cx.listener(|this, _: &Submit, window, _| this.close(window)))
             .on_action(cx.listener(|this, _: &Cancel, window, _| this.close(window)))
@@ -79,7 +105,7 @@ impl Render for MessageWindow {
                             div()
                                 .text_lg()
                                 .font_weight(native::look().heading_weight)
-                                .child(self.heading),
+                                .child(self.kind.heading()),
                             v_flex().gap_2().text_sm().child(self.message.clone()).when(
                                 self.no_driver,
                                 |this| {
@@ -121,10 +147,11 @@ mod tests {
     use gpui_kit::test::TestWindowExt;
     use gpui_kit::{AppContext, TestAppContext, VisualTestContext};
 
-    use crate::views::testing::{certificate, job, log, open_windows, probe, setup, temp_dir};
+    use crate::views::testing::{certificate, job, open_windows, probe, setup, temp_dir};
 
+    use super::MessageKind;
+    use crate::bridge::{Request, Stage};
     use crate::views::open_settings;
-    use crate::{Request, Stage, strings};
 
     /// The scrollbar covers the message and not the buttons below it, so it
     /// is measured against the message alone.
@@ -134,7 +161,7 @@ mod tests {
         cx.update(|cx| {
             windows.handle(
                 Request::Message {
-                    heading: strings::ERROR_HEADING,
+                    kind: MessageKind::Error,
                     message: "The token was removed.".into(),
                     reply: mpsc::channel().0,
                 },
@@ -177,7 +204,7 @@ mod tests {
         cx.update(|cx| {
             windows.handle(
                 Request::Message {
-                    heading: strings::ERROR_HEADING,
+                    kind: MessageKind::Error,
                     message: message.clone(),
                     reply,
                 },
@@ -188,7 +215,7 @@ mod tests {
         let settings_dir = dir.clone();
         cx.update(|cx| {
             cx.on_action(move |_: &crate::OpenSettings, cx| {
-                open_settings(settings_dir.clone(), log, probe, cx)
+                open_settings(settings_dir.clone(), probe, cx)
             });
         });
         cx.run_until_parked();
@@ -214,5 +241,42 @@ mod tests {
         cx.run_until_parked();
         assert_eq!(open_windows(cx).len(), 1);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Only a message that no driver reached a token offers the tokens in
+    /// Settings, with the hint beside it.
+    #[gpui_kit::test]
+    fn a_no_driver_message_offers_the_tokens(cx: &mut TestAppContext) {
+        let mut windows = setup(cx);
+        for (message, no_driver) in [
+            (
+                format!(
+                    "{} Install your token's driver.",
+                    keyseal_core::modules::NO_DRIVER
+                ),
+                true,
+            ),
+            ("The token was removed.".to_owned(), false),
+        ] {
+            cx.update(|cx| {
+                windows.handle(
+                    Request::Message {
+                        kind: MessageKind::Error,
+                        message,
+                        reply: mpsc::channel().0,
+                    },
+                    cx,
+                )
+            });
+            let handle = *open_windows(cx).last().unwrap();
+            cx.update_window(handle, |_, window, cx| {
+                window.render_frame(cx);
+                assert_eq!(window.try_find("show-tokens").is_some(), no_driver);
+                assert_eq!(window.try_find("doctor-hint").is_some(), no_driver);
+            })
+            .unwrap();
+            cx.update(|cx| windows.close_all(cx));
+            cx.run_until_parked();
+        }
     }
 }

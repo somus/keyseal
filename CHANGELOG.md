@@ -19,6 +19,8 @@ lines under the new version with the release date.
 
 ### [Unreleased][helper-unreleased]
 
+### [0.6.0][helper-0.6.0] - 2026-11-16
+
 #### Added
 
 - The update manifest carries a signed expiry, 180 days after the release,
@@ -591,7 +593,8 @@ The catalogue is published as the `catalogue` release; its version is the
   mToken CryptoID, InnaIT Key (PK32XX), SafeNet eToken 5110 and eToken PRO
   72K / SafeNet eToken 5100, and TrustKey.
 
-[helper-unreleased]: https://github.com/somus/keyseal/compare/helper-v0.5.0...HEAD
+[helper-unreleased]: https://github.com/somus/keyseal/compare/helper-v0.6.0...HEAD
+[helper-0.6.0]: https://github.com/somus/keyseal/releases/tag/helper-v0.6.0
 [helper-0.5.0]: https://github.com/somus/keyseal/releases/tag/helper-v0.5.0
 [helper-0.4.0]: https://github.com/somus/keyseal/releases/tag/helper-v0.4.0
 [helper-0.3.0]: https://github.com/somus/keyseal/releases/tag/helper-v0.3.0

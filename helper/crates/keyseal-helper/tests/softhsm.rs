@@ -14,6 +14,9 @@
 //! Runs when `KEYSEAL_SOFTHSM_MODULE` names libsofthsm2, and needs
 //! softhsm2-util, pkcs11-tool (OpenSC) and openssl on the PATH.
 
+#[path = "../../../testing/softhsm.rs"]
+mod fixture;
+
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
@@ -25,20 +28,14 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256, Sha384};
 use x509_parser::asn1_rs::oid;
 
-const PIN: &str = "1234";
+use fixture::{
+    Objects, PIN, SIGNING, init_token, make_certificate, softhsm_conf, token_with_conf,
+    write_objects,
+};
+
 const WRONG_PIN: &str = "0000";
 const TOKEN: &str = "q3Jm0f_2vX9kLr8aTq1bNw4uYc7eHs5dPz6iGo0tRk";
 const NONCE: &str = "Zx8m_Q2aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-
-fn run(command: &mut Command) -> Output {
-    let output = command.output().unwrap();
-    assert!(
-        output.status.success(),
-        "{command:?} failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    output
-}
 
 fn der_tlv(tag: u8, content: &[u8]) -> Vec<u8> {
     let mut out = vec![tag];
@@ -355,7 +352,7 @@ impl Setup {
 
     /// Runs `keyseal run` on `job` against the token in `conf`, trusting the
     /// test origin when `trust` is set.
-    fn run_job(&self, conf: &str, job: Job, pin: &str, trust: bool) -> (Output, Posted) {
+    fn run_job(&self, conf: &Path, job: Job, pin: &str, trust: bool) -> (Output, Posted) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
         let origin = format!("http://{address}");
@@ -365,7 +362,7 @@ impl Setup {
         let mut command = Command::new(env!("CARGO_BIN_EXE_keyseal"));
         command
             .args(["run", &format!("keyseal://{link_kind}?job={job_url}")])
-            .env("SOFTHSM2_CONF", self.dir.join(conf))
+            .env("SOFTHSM2_CONF", conf)
             .env("KEYSEAL_PKCS11_MODULE", &self.module)
             .env("KEYSEAL_CONFIG_DIR", self.dir.join("config"))
             .env("KEYSEAL_HEADLESS", "1")
@@ -385,37 +382,12 @@ impl Setup {
 
     /// Checks `signature` over `to_sign` with the certificate in `name.der`.
     fn verify(&self, name: &str, digest: &str, scheme: &str, to_sign: &[u8], signature: &[u8]) {
-        std::fs::write(self.dir.join("to-sign"), to_sign).unwrap();
-        std::fs::write(self.dir.join("signature"), signature).unwrap();
-        let public_key = run(Command::new("openssl").current_dir(&self.dir).args([
-            "x509",
-            "-inform",
-            "DER",
-            "-in",
-            &format!("{name}.der"),
-            "-pubkey",
-            "-noout",
-        ]));
-        std::fs::write(self.dir.join("public.pem"), public_key.stdout).unwrap();
-        let mut command = Command::new("openssl");
-        command.current_dir(&self.dir).args([
-            "dgst",
-            &format!("-{digest}"),
-            "-verify",
-            "public.pem",
-        ]);
-        if scheme == "rsa-pss" {
-            let salt = if digest == "sha384" { "48" } else { "32" };
-            command.args([
-                "-sigopt",
-                "rsa_padding_mode:pss",
-                "-sigopt",
-                &format!("rsa_pss_saltlen:{salt}"),
-                "-sigopt",
-                &format!("rsa_mgf1_md:{digest}"),
-            ]);
-        }
-        run(command.args(["-signature", "signature", "to-sign"]));
+        fixture::verify(&self.dir, name, digest, scheme, to_sign, signature);
+    }
+
+    /// Writes `name`'s certificate and key to the one token in `conf`.
+    fn write_objects(&self, conf: &Path, name: &str, id: &str, objects: Objects) {
+        write_objects(&self.dir, &self.module, conf, None, name, id, objects);
     }
 }
 
@@ -426,114 +398,6 @@ fn url_encode(text: &str) -> String {
             _ => format!("%{b:02X}"),
         })
         .collect()
-}
-
-/// A SoftHSM token in `<name>/` with its own config file `<name>.conf`.
-fn init_token(dir: &Path, name: &str) -> String {
-    std::fs::create_dir_all(dir.join(name)).unwrap();
-    let conf = format!("{name}.conf");
-    std::fs::write(
-        dir.join(&conf),
-        format!("directories.tokendir = {}\n", dir.join(name).display()),
-    )
-    .unwrap();
-    run(Command::new("softhsm2-util")
-        .env("SOFTHSM2_CONF", dir.join(&conf))
-        .args([
-            "--init-token",
-            "--free",
-            "--label",
-            name,
-            "--pin",
-            PIN,
-            "--so-pin",
-            "5678",
-        ]));
-    conf
-}
-
-/// The key usage of an end-entity signing certificate.
-const SIGNING: Option<&str> = Some("digitalSignature,nonRepudiation");
-
-/// A certificate `name.der` and its key: with no `key_usage` a self-signed
-/// CA, otherwise an end-entity certificate with that key usage issued by
-/// `ca.der`.
-fn make_certificate(dir: &Path, name: &str, newkey: &[&str], key_usage: Option<&str>) {
-    let key_usage = key_usage.map(|usage| format!("keyUsage=critical,{usage}"));
-    let extensions: Vec<&str> = match &key_usage {
-        None => Vec::new(),
-        Some(key_usage) => vec![
-            "-CA",
-            "ca.der",
-            "-CAkey",
-            "ca.pem",
-            "-addext",
-            "basicConstraints=critical,CA:FALSE",
-            "-addext",
-            key_usage,
-        ],
-    };
-    run(Command::new("openssl")
-        .current_dir(dir)
-        .args(["req", "-x509", "-nodes", "-days", "1"])
-        .args(["-subj", &format!("/CN=Test {name}")])
-        .args(newkey)
-        .args(&extensions)
-        .args(["-keyout", &format!("{name}.pem")])
-        .args(["-outform", "DER", "-out", &format!("{name}.der")]));
-    run(Command::new("openssl").current_dir(dir).args([
-        "pkey",
-        "-in",
-        &format!("{name}.pem"),
-        "-outform",
-        "DER",
-        "-out",
-        &format!("{name}.key"),
-    ]));
-}
-
-/// Writes `name`'s certificate (and key, unless `cert_only`) to the token;
-/// with `always_auth`, a key that needs the PIN for each signature.
-fn write_objects(
-    setup: &Setup,
-    conf: &str,
-    name: &str,
-    id: &str,
-    cert_only: bool,
-    private_cert: bool,
-    always_auth: bool,
-) {
-    let mut objects = vec![(format!("{name}.der"), "cert")];
-    if !cert_only {
-        objects.push((format!("{name}.key"), "privkey"));
-    }
-    for (file, kind) in objects {
-        let mut command = Command::new("pkcs11-tool");
-        command
-            .current_dir(&setup.dir)
-            .env("SOFTHSM2_CONF", setup.dir.join(conf))
-            .args(["--module", &setup.module, "--login", "--pin", PIN])
-            .args([
-                "--write-object",
-                &file,
-                "--type",
-                kind,
-                "--id",
-                id,
-                "--label",
-                name,
-            ]);
-        if kind == "privkey" {
-            command.arg("--usage-sign");
-            if always_auth {
-                command.arg("--always-auth");
-            }
-        }
-        if kind == "cert" && private_cert {
-            command.arg("--private");
-        }
-        run(&mut command);
-    }
 }
 
 fn stderr(output: &Output) -> String {
@@ -554,28 +418,58 @@ fn runs_jobs_on_softhsm() {
     // "public": certificates readable before login, plus the CA certificate
     // that issued them, without a key. "private": the certificate is a
     // private object.
-    let public = init_token(&setup.dir, "public");
-    let private = init_token(&setup.dir, "private");
-    make_certificate(&setup.dir, "ca", &["-newkey", "rsa:2048"], None);
-    make_certificate(&setup.dir, "rsa", &["-newkey", "rsa:2048"], SIGNING);
+    let public = token_with_conf(&setup.dir, "public");
+    let private = token_with_conf(&setup.dir, "private");
+    make_certificate(&setup.dir, "ca", "Test ca", &["-newkey", "rsa:2048"], None);
+    make_certificate(
+        &setup.dir,
+        "rsa",
+        "Test rsa",
+        &["-newkey", "rsa:2048"],
+        SIGNING,
+    );
     make_certificate(
         &setup.dir,
         "p256",
+        "Test p256",
         &["-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256"],
         SIGNING,
     );
     make_certificate(
         &setup.dir,
         "p384",
+        "Test p384",
         &["-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-384"],
         SIGNING,
     );
-    make_certificate(&setup.dir, "hidden", &["-newkey", "rsa:2048"], SIGNING);
-    write_objects(&setup, &public, "rsa", "01", false, false, false);
-    write_objects(&setup, &public, "p256", "02", false, false, false);
-    write_objects(&setup, &public, "p384", "03", false, false, false);
-    write_objects(&setup, &public, "ca", "09", true, false, false);
-    write_objects(&setup, &private, "hidden", "01", false, true, false);
+    make_certificate(
+        &setup.dir,
+        "hidden",
+        "Test hidden",
+        &["-newkey", "rsa:2048"],
+        SIGNING,
+    );
+    setup.write_objects(&public, "rsa", "01", Objects::default());
+    setup.write_objects(&public, "p256", "02", Objects::default());
+    setup.write_objects(&public, "p384", "03", Objects::default());
+    setup.write_objects(
+        &public,
+        "ca",
+        "09",
+        Objects {
+            cert_only: true,
+            ..Objects::default()
+        },
+    );
+    setup.write_objects(
+        &private,
+        "hidden",
+        "01",
+        Objects {
+            private_cert: true,
+            ..Objects::default()
+        },
+    );
 
     // Certificates visible before login: one view with the digest, then the PIN.
     for (name, digest, scheme) in [
@@ -912,10 +806,10 @@ fn signs_with_other_keys_on_softhsm() {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let setup = Setup { dir, module };
-    let always = init_token(&setup.dir, "always");
-    let brainpool = init_token(&setup.dir, "brainpool");
-    let usage = init_token(&setup.dir, "usage");
-    make_certificate(&setup.dir, "ca", &["-newkey", "rsa:2048"], None);
+    let always = token_with_conf(&setup.dir, "always");
+    let brainpool = token_with_conf(&setup.dir, "brainpool");
+    let usage = token_with_conf(&setup.dir, "usage");
+    make_certificate(&setup.dir, "ca", "Test ca", &["-newkey", "rsa:2048"], None);
     for (name, newkey) in [
         ("rsa", &["-newkey", "rsa:2048"][..]),
         (
@@ -941,19 +835,36 @@ fn signs_with_other_keys_on_softhsm() {
             ],
         ),
     ] {
-        make_certificate(&setup.dir, name, newkey, SIGNING);
+        make_certificate(&setup.dir, name, &format!("Test {name}"), newkey, SIGNING);
     }
     make_certificate(
         &setup.dir,
         "digital",
+        "Test digital",
         &["-newkey", "rsa:2048"],
         Some("digitalSignature"),
     );
-    write_objects(&setup, &always, "rsa", "01", false, false, true);
-    write_objects(&setup, &always, "p256", "02", false, false, true);
-    write_objects(&setup, &brainpool, "bp256", "01", false, false, false);
-    write_objects(&setup, &brainpool, "bp384", "02", false, false, false);
-    write_objects(&setup, &usage, "digital", "01", false, false, false);
+    setup.write_objects(
+        &always,
+        "rsa",
+        "01",
+        Objects {
+            always_auth: true,
+            ..Objects::default()
+        },
+    );
+    setup.write_objects(
+        &always,
+        "p256",
+        "02",
+        Objects {
+            always_auth: true,
+            ..Objects::default()
+        },
+    );
+    setup.write_objects(&brainpool, "bp256", "01", Objects::default());
+    setup.write_objects(&brainpool, "bp384", "02", Objects::default());
+    setup.write_objects(&usage, "digital", "01", Objects::default());
 
     // One PIN, then a context-specific login before each of the batch's
     // signatures, with the combined RSA mechanism and with raw ECDSA.
@@ -1046,42 +957,35 @@ fn picks_a_token_by_the_expected_certificate_on_softhsm() {
     };
     let dir = std::env::temp_dir().join(format!("keyseal-softhsm-tokens-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(dir.join("tokens")).unwrap();
+    std::fs::create_dir_all(&dir).unwrap();
     let setup = Setup { dir, module };
-    let conf = "tokens.conf";
-    std::fs::write(
-        setup.dir.join(conf),
-        format!(
-            "directories.tokendir = {}\n",
-            setup.dir.join("tokens").display()
-        ),
-    )
-    .unwrap();
-    make_certificate(&setup.dir, "ca", &["-newkey", "rsa:2048"], None);
+    // Both tokens in one config, so one module lists them.
+    let conf = softhsm_conf(&setup.dir, "tokens");
+    make_certificate(&setup.dir, "ca", "Test ca", &["-newkey", "rsa:2048"], None);
     for name in ["first", "second"] {
-        run(Command::new("softhsm2-util")
-            .env("SOFTHSM2_CONF", setup.dir.join(conf))
-            .args(["--init-token", "--free", "--label", name])
-            .args(["--pin", PIN, "--so-pin", "5678"]));
-        make_certificate(&setup.dir, name, &["-newkey", "rsa:2048"], SIGNING);
-        for (file, kind) in [
-            (format!("{name}.der"), "cert"),
-            (format!("{name}.key"), "privkey"),
-        ] {
-            run(Command::new("pkcs11-tool")
-                .current_dir(&setup.dir)
-                .env("SOFTHSM2_CONF", setup.dir.join(conf))
-                .args(["--module", &setup.module, "--token-label", name])
-                .args(["--login", "--pin", PIN])
-                .args(["--write-object", &file, "--type", kind, "--id", "01"])
-                .args(["--label", name]));
-        }
+        init_token(&conf, name);
+        make_certificate(
+            &setup.dir,
+            name,
+            &format!("Test {name}"),
+            &["-newkey", "rsa:2048"],
+            SIGNING,
+        );
+        write_objects(
+            &setup.dir,
+            &setup.module,
+            &conf,
+            Some(name),
+            name,
+            "01",
+            Objects::default(),
+        );
     }
 
     for name in ["first", "second"] {
         let certificate = setup.read(&format!("{name}.der"));
         let (output, posted) = setup.run_job(
-            conf,
+            &conf,
             Job::sign(&certificate, "sha256", "rsa-pkcs1-v1_5"),
             PIN,
             true,
@@ -1102,7 +1006,7 @@ fn picks_a_token_by_the_expected_certificate_on_softhsm() {
         expected: None,
         ..Job::sign(&certificate, "sha256", "rsa-pkcs1-v1_5")
     };
-    let (output, posted) = setup.run_job(conf, job, PIN, true);
+    let (output, posted) = setup.run_job(&conf, job, PIN, true);
     assert!(!output.status.success());
     assert_eq!(
         posted.failure.as_deref(),
@@ -1114,7 +1018,7 @@ fn picks_a_token_by_the_expected_certificate_on_softhsm() {
     // try KEYSEAL_PIN when it can't tell whose it is.
     let output = Command::new(env!("CARGO_BIN_EXE_keyseal"))
         .arg("list")
-        .env("SOFTHSM2_CONF", setup.dir.join(conf))
+        .env("SOFTHSM2_CONF", &conf)
         .env("KEYSEAL_PKCS11_MODULE", &setup.module)
         .env("KEYSEAL_CONFIG_DIR", setup.dir.join("config"))
         .env("KEYSEAL_PIN", "0000")

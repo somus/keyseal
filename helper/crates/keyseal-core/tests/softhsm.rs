@@ -2,6 +2,9 @@
 //! started, since it is never finalised. Runs when `KEYSEAL_SOFTHSM_MODULE`
 //! names libsofthsm2, like the other SoftHSM suites.
 
+#[path = "../../../testing/softhsm.rs"]
+mod fixture;
+
 use std::path::Path;
 
 use keyseal_core::token::Module;
@@ -15,15 +18,10 @@ fn a_driver_loads_twice_in_one_process() {
     // SoftHSM won't start without a readable token directory.
     let dir = std::env::temp_dir().join(format!("keyseal-core-softhsm-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(dir.join("tokens")).unwrap();
-    std::fs::write(
-        dir.join("softhsm2.conf"),
-        format!("directories.tokendir = {}\n", dir.join("tokens").display()),
-    )
-    .unwrap();
+    let conf = fixture::softhsm_conf(&dir, "tokens");
     // SAFETY: the only test in this binary, and no other thread reads the
     // environment while it is set.
-    unsafe { std::env::set_var("SOFTHSM2_CONF", dir.join("softhsm2.conf")) };
+    unsafe { std::env::set_var("SOFTHSM2_CONF", &conf) };
 
     let path = Path::new(&module);
     for _ in 0..2 {

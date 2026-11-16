@@ -4,7 +4,6 @@ import { nodeCertificateInspector } from "../src/index.js";
 import {
   BRAINPOOL_SIGNATURES,
   CERTS,
-  pem,
   signWith,
   toSignFor,
 } from "./support.js";

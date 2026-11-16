@@ -10,7 +10,6 @@ import {
   GOOD_SIGNATURE,
   KEYS,
   ORIGIN,
-  PDF,
   proofFor,
   setup,
   sha256Hex,
@@ -501,7 +500,6 @@ describe("batch", () => {
     }
     expect((await t.jobFor(token)).state).toBe("completed");
   });
-
 });
 
 describe("enrol flow", () => {
@@ -1089,7 +1087,9 @@ describe("status codes", () => {
     expect(await refuse(CERTS.secp256k1)).toContain("not supported");
     expect(await refuse(CERTS.ed25519)).toContain("not supported");
     expect(
-      await refuse(CERTS.rsa, { expectedCertificateSha256: sha256Hex(CERTS.p256, "base64") })
+      await refuse(CERTS.rsa, {
+        expectedCertificateSha256: sha256Hex(CERTS.p256, "base64"),
+      })
     ).toContain("not the certificate");
     expect(await refuse(CERTS.p384, { digestAlgorithm: "sha256" })).toContain(
       "digest"
@@ -1675,7 +1675,6 @@ describe("routing and manifest", () => {
     });
     expect(setup().keyseal.manifest().status).toBe(404);
   });
-
 });
 
 describe("expiry", () => {

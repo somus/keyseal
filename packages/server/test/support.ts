@@ -22,7 +22,7 @@ export const SERVICE_TOKEN = "service-token-service-token-service-token";
 export const START = new Date("2027-01-01T00:00:00Z");
 export const PDF = new TextEncoder().encode("%PDF-1.7 test document");
 
-export async function pem(name: string): Promise<string> {
+async function pem(name: string): Promise<string> {
   return await Bun.file(
     new URL(`fixtures/${name}.pem`, import.meta.url)
   ).text();
@@ -105,7 +105,6 @@ export const BRAINPOOL_SIGNATURES = {
     ).bytes()
   ).toString("base64"),
 };
-
 
 /**
  * An enrol proof as the helper sends it (protocol section 8.6): `key` signs
@@ -413,7 +412,6 @@ export function sha256Hex(
 ): string {
   return createHash("sha256").update(Buffer.from(data, encoding)).digest("hex");
 }
-
 
 /** Three documents, each in its own field and with its own title. */
 export const BATCH: SignDocumentInput[] = [1, 2, 3].map((n) => ({

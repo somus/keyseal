@@ -1,5 +1,6 @@
-import { type CertificateInspector } from "./certificates.js";
+import { blobJobId, pdfKey } from "./blobs.js";
 import { randomToken, sha256Hex } from "./encoding.js";
+import { InvalidJobInput } from "./errors.js";
 import { createHandlers, type Action } from "./handlers.js";
 import {
   checkDocuments,
@@ -7,91 +8,22 @@ import {
   checkText,
   SHA256_HEX,
 } from "./job-input.js";
+import { JOB_TTL_MS, SETTLE_LEASE_MS } from "./limits.js";
 import { nodeCertificateInspector } from "./node-certificates.js";
-import { checkOptions } from "./options.js";
+import { checkOptions, type KeySealOptions } from "./options.js";
 import { error } from "./requests.js";
-import { type SigningService } from "./service.js";
-import {
-  createTransitions,
-  isExpired,
-  isTerminal,
-  pdfKey,
-} from "./transitions.js";
+import { createTransitions, isExpired, isTerminal } from "./transitions.js";
 import type {
-  Adapter,
   CertificatePolicy,
   DigestAlgorithm,
   Job,
+  JobKind,
   JobStatus,
   RsaPadding,
   SignatureDetails,
 } from "./types.js";
 
-/** Protocol section 9.2: a job expires this long after creation, whatever its state. */
-export const JOB_TTL_MS = 15 * 60 * 1000;
-/** Protocol section 9.3: a settle lease older than this may be taken over. */
-export const SETTLE_LEASE_MS = 5 * 60 * 1000;
-/** Protocol section 8.1. */
-export const MAX_BODY_BYTES = 262_144;
-/** Protocol section 8.2: a sign job's documents. */
-export const MAX_DOCUMENTS = 20;
-/**
- * The PDFs of one sign job together. Protocol section 8.4 caps the prepared
- * documents at 256 MiB; this leaves room for what preparing adds to each.
- */
-export const MAX_JOB_PDF_BYTES = 240 * 1024 * 1024;
-
 const EXPIRED_MESSAGE = "The signing link expired. Start again.";
-
-/**
- * Thrown from `onCompleted` to refuse the result: the job fails with
- * `message`, which the helper gets with a 422 and the page in `status`.
- */
-export class JobRefused extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "JobRefused";
-  }
-}
-
-/**
- * Thrown by `createSignJob` and `createEnrolJob` for input that breaks one
- * of their limits; `message` says which. It is still a `TypeError`, and its
- * class tells it apart from one an adapter throws, such as a failed `fetch`.
- */
-export class InvalidJobInput extends TypeError {
-  constructor(message: string) {
-    super(message);
-    this.name = "InvalidJobInput";
-  }
-}
-
-export interface KeySealOptions {
-  adapter: Adapter;
-  service: SigningService;
-  /** Scheme, host and port of the job URLs, such as `https://dash.example.org`. */
-  origin: string;
-  /** Path the job endpoint is mounted under, such as `/api/keyseal`; empty by default. */
-  basePath?: string;
-  /** Accept `http://localhost` and `http://127.0.0.1` origins, for development and CI. */
-  allowInsecureOrigin?: boolean;
-  /** Lowest `X-KeySeal-Version` served (SemVer); older helpers get 426. */
-  minHelperVersion?: string;
-  /** Returns false to answer a job endpoint request with 429. */
-  rateLimit?: (request: Request) => boolean | Promise<boolean>;
-  now?: () => Date;
-  /**
-   * Served as `/.well-known/keyseal.json`; without it the manifest is 404.
-   * `translucent: false` asks the helper for opaque job windows.
-   */
-  branding?: {
-    name: string;
-    icon?: string;
-    accentColor?: string;
-    translucent?: boolean;
-  };
-  certificateInspector?: CertificateInspector;
-}
 
 interface JobInput {
   /**
@@ -140,6 +72,9 @@ export interface SignJobInput extends JobInput {
 
 export type EnrolJobInput = JobInput;
 
+/** What a sign job takes beyond `JobInput`. */
+type SignFields = Omit<SignJobInput, keyof JobInput>;
+
 export interface CreatedJob {
   /** The job's id, the SHA-256 of its token; pass it to `status`. */
   id: string;
@@ -171,7 +106,7 @@ function escapeRegExp(value: string): string {
 }
 
 export function createKeySeal(options: KeySealOptions): KeySeal {
-  const { adapter, service } = options;
+  const { adapter } = options;
   const inspector = options.certificateInspector ?? nodeCertificateInspector;
   const clock = options.now ?? (() => new Date());
   const basePath = options.basePath ?? "";
@@ -180,7 +115,7 @@ export function createKeySeal(options: KeySealOptions): KeySeal {
 
   const jobsPath = `${basePath}/v1/jobs`;
   const route = new RegExp(
-    `^${escapeRegExp(jobsPath)}/([^/]+)(?:/(certificate|signature|failure)|/documents/(0|[1-9][0-9]*))?$`
+    `^${escapeRegExp(jobsPath)}/(?<token>[^/]+)(?:/(?<action>certificate|signature|failure)|/documents/(?<index>0|[1-9][0-9]*))?$`
   );
 
   function jobUrl(token: string): string {
@@ -190,13 +125,11 @@ export function createKeySeal(options: KeySealOptions): KeySeal {
   const transitions = createTransitions(adapter, clock);
   const { deleteBlobs } = transitions;
   const handleJob = createHandlers({
-    adapter,
     clock,
     inspector,
     jobUrl,
     minVersion,
     options,
-    service,
     transitions,
   });
 
@@ -234,8 +167,8 @@ export function createKeySeal(options: KeySealOptions): KeySeal {
   }
 
   async function createJob(
-    input: JobInput,
-    sign: Omit<SignJobInput, keyof JobInput> | null
+    kind: JobKind,
+    input: JobInput & Partial<SignFields>
   ): Promise<CreatedJob> {
     checkText("title", input.title, 200);
     checkText("signer", input.signer, 200);
@@ -255,22 +188,23 @@ export function createKeySeal(options: KeySealOptions): KeySeal {
       input.certificatePolicy === undefined
         ? null
         : checkPolicy(input.certificatePolicy);
-    const documents = sign ? checkDocuments(sign.documents, input.title) : [];
-    if (sign) {
-      if (
-        sign.digestAlgorithm !== undefined &&
-        sign.digestAlgorithm !== "sha256" &&
-        sign.digestAlgorithm !== "sha384"
-      ) {
-        throw new InvalidJobInput("digestAlgorithm must be sha256 or sha384");
-      }
-      if (
-        sign.rsaPadding !== undefined &&
-        sign.rsaPadding !== "pkcs1" &&
-        sign.rsaPadding !== "pss"
-      ) {
-        throw new InvalidJobInput("rsaPadding must be pkcs1 or pss");
-      }
+    // An enrol job ignores the sign job's fields.
+    const sign: Partial<SignFields> = kind === "sign" ? input : {};
+    const documents =
+      kind === "sign" ? checkDocuments(sign.documents, input.title) : [];
+    if (
+      sign.digestAlgorithm !== undefined &&
+      sign.digestAlgorithm !== "sha256" &&
+      sign.digestAlgorithm !== "sha384"
+    ) {
+      throw new InvalidJobInput("digestAlgorithm must be sha256 or sha384");
+    }
+    if (
+      sign.rsaPadding !== undefined &&
+      sign.rsaPadding !== "pkcs1" &&
+      sign.rsaPadding !== "pss"
+    ) {
+      throw new InvalidJobInput("rsaPadding must be pkcs1 or pss");
     }
     await expire();
     const now = clock();
@@ -281,16 +215,16 @@ export function createKeySeal(options: KeySealOptions): KeySeal {
       chain: null,
       claimNonceHash: null,
       createdAt: now,
-      digestAlgorithm: sign?.digestAlgorithm ?? null,
+      digestAlgorithm: sign.digestAlgorithm ?? null,
       documents,
       error: null,
       certificatePolicy,
       expectedCertificateSha256: expectedCertificateSha256 ?? null,
       id,
-      kind: sign ? "sign" : "enrol",
+      kind,
       leaseStartedAt: null,
       reference: input.reference ?? null,
-      rsaPadding: sign?.rsaPadding ?? "pkcs1",
+      rsaPadding: sign.rsaPadding ?? "pkcs1",
       signer: input.signer,
       state: "pending",
       stateKey: null,
@@ -299,44 +233,25 @@ export function createKeySeal(options: KeySealOptions): KeySeal {
     // The job first: a sweep deletes the blobs of a job it can't find, and
     // nobody has the token yet to use the job before its PDFs are stored.
     await adapter.create(job);
-    for (const [index, entry] of (sign?.documents ?? []).entries()) {
+    for (const [index, entry] of (sign.documents ?? []).entries()) {
       await adapter.putBlob(pdfKey(id, index), entry.pdf);
     }
     const url = jobUrl(token);
     return {
       id,
       jobUrl: url,
-      link: `keyseal://${sign ? "sign" : "enrol"}?job=${encodeURIComponent(url)}`,
+      link: `keyseal://${kind}?job=${encodeURIComponent(url)}`,
       token,
     };
   }
 
   return {
     async createEnrolJob(input) {
-      return await createJob(input, null);
+      return await createJob("enrol", input);
     },
 
     async createSignJob(input) {
-      const {
-        title,
-        signer,
-        expectedCertificateSha256,
-        certificatePolicy,
-        reference,
-        ...sign
-      } = input;
-      return await createJob(
-        {
-          signer,
-          title,
-          ...(expectedCertificateSha256 === undefined
-            ? {}
-            : { expectedCertificateSha256 }),
-          ...(certificatePolicy === undefined ? {} : { certificatePolicy }),
-          ...(reference === undefined ? {} : { reference }),
-        },
-        sign
-      );
+      return await createJob("sign", input);
     },
 
     async handle(request) {
@@ -344,18 +259,23 @@ export function createKeySeal(options: KeySealOptions): KeySeal {
       if (pathname === "/.well-known/keyseal.json") {
         return request.method === "GET" ? manifest() : error(404, "Not found.");
       }
-      const match = route.exec(pathname);
+      const groups = route.exec(pathname)?.groups;
       const action: Action =
-        match?.[3] === undefined
-          ? ((match?.[2] as Action | undefined) ?? "claim")
+        groups?.index === undefined
+          ? ((groups?.action as Action | undefined) ?? "claim")
           : "document";
       const method =
         action === "claim" || action === "document" ? "GET" : "POST";
-      if (!match || request.method !== method) {
+      if (!groups || request.method !== method) {
         return error(404, "Not found.");
       }
       try {
-        return await handleJob(request, match[1]!, action, Number(match[3]));
+        return await handleJob(
+          request,
+          groups.token!,
+          action,
+          Number(groups.index)
+        );
       } catch (cause) {
         // Errors name the job by its id, never by the token.
         console.error("keyseal: job request failed", cause);
@@ -391,8 +311,8 @@ export function createKeySeal(options: KeySealOptions): KeySeal {
       const ended = new Map<string, boolean>();
       for (const key of await adapter.listBlobs()) {
         // Only keys this package stored: anything else in the store stays.
-        const id = key.slice(0, 64);
-        if (!SHA256_HEX.test(id) || key[64] !== "/") {
+        const id = blobJobId(key);
+        if (!id) {
           continue;
         }
         if (!ended.has(id)) {

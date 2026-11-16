@@ -1,7 +1,7 @@
 import { isBase64, readBody } from "./encoding.js";
-import { characters, isObject } from "./job-input.js";
-import { MAX_BODY_BYTES } from "./keyseal.js";
+import { MAX_BODY_BYTES } from "./limits.js";
 import type { JobState } from "./types.js";
+import { characters, isObject } from "./values.js";
 
 export const TOKEN = /^[A-Za-z0-9_-]{20,128}$/;
 const MAX_CERTIFICATE_LENGTH = 16_384;

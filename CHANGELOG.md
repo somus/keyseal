@@ -407,6 +407,13 @@ lines under the new version with the release date.
 
 ### [Unreleased][server-unreleased]
 
+#### Added
+
+- `ValidationReport` types what `/validate` already returns and the type
+  left out: each signature's `certifies`, `locks` and `timestampValid`, and
+  the report's `documentTimestamps`, `changesSinceBase` and
+  `baseSignatureFields`.
+
 ### [0.6.0][server-0.6.0] - 2026-11-14
 
 #### Changed

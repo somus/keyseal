@@ -1,4 +1,5 @@
 import { fromBase64, isBase64, readBody, toBase64 } from "./encoding.js";
+import { MAX_PDF_BYTES } from "./limits.js";
 import type {
   DigestAlgorithm,
   KeyUsage,
@@ -6,9 +7,6 @@ import type {
   SignatureAlgorithm,
   SignatureDetails,
 } from "./types.js";
-
-/** The service refuses larger PDFs. */
-export const MAX_PDF_BYTES = 25 * 1024 * 1024;
 
 /** Upper bound on any service response; the sign state holds the PDF in base64. */
 const MAX_RESPONSE_BYTES = 64 * 1024 * 1024;
@@ -68,6 +66,20 @@ export interface ValidatedSignature {
   revocationChecked: boolean;
   coversWholeRevision: boolean;
   timestamped: boolean;
+  /** Whether its signature timestamp is intact and matches the signature; null without one. */
+  timestampValid: boolean | null;
+  /**
+   * Whether it is a certification (DocMDP) signature, by its signature
+   * dictionary, its field's /Lock or the document's /Perms; true when that
+   * can't be read.
+   */
+  certifies: boolean;
+  /**
+   * The fields it locks (FieldMDP): one entry for the lock in its signature
+   * dictionary and one for its field's /Lock, each `all`, or `include` or
+   * `exclude` with `fields`. An unreadable lock counts as `all`.
+   */
+  locks: { action: "all" | "include" | "exclude"; fields: string[] }[];
   sha256Fingerprint: string;
   signerName: string | null;
   subject: string;
@@ -86,6 +98,29 @@ export interface ValidationReport {
   message?: string;
   signatures: ValidatedSignature[];
   textFields: Record<string, string>;
+  /** The document timestamps, when the PDF has any. */
+  documentTimestamps?: {
+    intact: boolean;
+    /** ISO 8601; null when unknown, as when the timestamp couldn't be checked. */
+    time: string | null;
+    trusted: boolean;
+    /** The exception's name when the timestamp couldn't be checked. */
+    error?: string;
+  }[];
+  /**
+   * With `base`, the most the revisions appended to the copy the signer was
+   * given change, by pyHanko's modification levels; `OTHER` for anything
+   * outside them, a revision that doesn't build on the base, or a base that
+   * can't be read.
+   */
+  changesSinceBase?:
+    | "NONE"
+    | "LTA_UPDATES"
+    | "FORM_FILLING"
+    | "ANNOTATIONS"
+    | "OTHER";
+  /** With `base`, the names of the signature fields the copy had, sorted; absent when it can't be read. */
+  baseSignatureFields?: string[];
 }
 
 async function readLimited(

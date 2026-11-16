@@ -13,7 +13,9 @@ export default defineConfig({
   },
   overrides: [
     {
-      // @keyseal/server runs on any Fetch runtime: Web APIs only.
+      // @keyseal/server uses Web APIs for requests, encoding and hashing, and
+      // takes its configuration through options. Its certificate inspector
+      // and the conformance suite import node: modules.
       files: ["packages/server/src/**"],
       rules: {
         "no-restricted-globals": [

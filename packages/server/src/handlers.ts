@@ -1,3 +1,4 @@
+import { deletePdfs, pdfKey, stateBlobKey, stateKey } from "./blobs.js";
 import {
   acceptCertificate,
   inspect,
@@ -14,8 +15,8 @@ import {
   sha256Hex,
   timingSafeEqual,
 } from "./encoding.js";
-import { isObject } from "./job-input.js";
-import { JobRefused, type KeySealOptions } from "./keyseal.js";
+import { JobRefused } from "./errors.js";
+import type { KeySealOptions, MinHelperVersion } from "./options.js";
 import {
   error,
   json,
@@ -24,12 +25,8 @@ import {
   readSubmission,
   TOKEN,
 } from "./requests.js";
-import { compareSemver, parseSemver } from "./semver.js";
-import {
-  preparedDocument,
-  ServiceError,
-  type SigningService,
-} from "./service.js";
+import { compareSemver, parseSemver, type Version } from "./semver.js";
+import { preparedDocument, ServiceError } from "./service.js";
 import {
   BUSY,
   gone,
@@ -37,10 +34,10 @@ import {
   isTerminal,
   leaseHeld,
   NOT_FOUND,
-  pdfKey,
   type Transitions,
 } from "./transitions.js";
-import type { Adapter, Job, JobDocument } from "./types.js";
+import type { Job, JobDocument } from "./types.js";
+import { isObject } from "./values.js";
 
 const UPGRADE_MESSAGE = "Update the signing helper, then try again.";
 /** The first helper version that sends an enrol proof (protocol section 8.6). */
@@ -70,11 +67,9 @@ export type Action =
 
 export interface HandlerContext {
   options: KeySealOptions;
-  adapter: Adapter;
-  service: SigningService;
   inspector: CertificateInspector;
   clock: () => Date;
-  minVersion: ReturnType<typeof parseSemver>;
+  minVersion: MinHelperVersion | null;
   jobUrl: (token: string) => string;
   transitions: Transitions;
 }
@@ -82,19 +77,21 @@ export interface HandlerContext {
 /** The job endpoint's requests (protocol section 8). */
 export function createHandlers({
   options,
-  adapter,
-  service,
   inspector,
   clock,
   minVersion,
   jobUrl,
   transitions,
 }: HandlerContext) {
+  const { adapter, service } = options;
   // The minimum a 426 for an enrol job without a proof names.
   const enrolMinVersion =
     minVersion &&
-    compareSemver(minVersion, parseSemver(ENROL_PROOF_HELPER_VERSION)!) > 0
-      ? options.minHelperVersion!
+    compareSemver(
+      minVersion.version,
+      parseSemver(ENROL_PROOF_HELPER_VERSION)!
+    ) > 0
+      ? minVersion.text
       : ENROL_PROOF_HELPER_VERSION;
   const {
     answerCurrent,
@@ -250,8 +247,7 @@ export function createHandlers({
     }
     const digestAlgorithm = digestFor(facts.key);
     const signatureAlgorithm = schemeFor(facts.key, job.rsaPadding);
-    // Keyed by lease, so a request whose lease was taken over cannot replace the winner's states.
-    const stateKey = `${job.id}/state/${lease.getTime()}`;
+    const jobStateKey = stateKey(job.id, lease);
     const documents: JobDocument[] = [];
     try {
       for (const [index, entry] of job.documents.entries()) {
@@ -279,14 +275,14 @@ export function createHandlers({
           );
         }
         await adapter.putBlob(
-          `${stateKey}/${index}`,
+          stateBlobKey(jobStateKey, index),
           new TextEncoder().encode(started.state)
         );
         documents.push({ ...entry, toSign: started.toSign });
       }
     } catch (cause) {
       // Every document or none: the job stays claimed for a retry, or fails.
-      await deleteStates(stateKey, job.documents.length);
+      await deleteStates(jobStateKey, job.documents.length);
       throw cause;
     }
     if (
@@ -295,15 +291,13 @@ export function createHandlers({
         chain,
         documents,
         state: "prepared",
-        stateKey,
+        stateKey: jobStateKey,
       }))
     ) {
-      await deleteStates(stateKey, documents.length);
+      await deleteStates(jobStateKey, documents.length);
       return await answerCurrent(job.id);
     }
-    for (let index = 0; index < documents.length; index += 1) {
-      await adapter.deleteBlob(pdfKey(job.id, index));
-    }
+    await deletePdfs(adapter, job.id, documents.length);
     return json({
       digestAlgorithm,
       documents: documents.map(({ toSign }) => ({ toSign })),
@@ -362,7 +356,7 @@ export function createHandlers({
     // Read up front: a request that takes over the lease deletes them when it completes.
     const states: string[] = [];
     for (let index = 0; index < signatures.length; index += 1) {
-      const state = await adapter.getBlob(`${job.stateKey}/${index}`);
+      const state = await adapter.getBlob(stateBlobKey(job.stateKey, index));
       if (!state) {
         throw new Error(`The signing state of job ${job.id} is missing`);
       }
@@ -390,11 +384,7 @@ export function createHandlers({
       request.headers.get("Authorization")?.match(/^Bearer (\S+)$/)?.[1] ?? "";
     const claimNonce = request.headers.get("X-KeySeal-Claim") ?? "";
     const tokenMatches = timingSafeEqual(await sha256Hex(bearer), job.id);
-    const nonceMatches = timingSafeEqual(
-      await sha256Hex(claimNonce),
-      job.claimNonceHash ?? ""
-    );
-    if (!(tokenMatches && nonceMatches)) {
+    if (!(tokenMatches && (await nonceMatches(job, claimNonce)))) {
       return error(
         403,
         "This request does not belong to the helper that opened the job."
@@ -407,7 +397,7 @@ export function createHandlers({
       return error(404, "This job has no such document.");
     }
     const state = job.stateKey
-      ? await adapter.getBlob(`${job.stateKey}/${index}`)
+      ? await adapter.getBlob(stateBlobKey(job.stateKey, index))
       : null;
     const pdf = state
       ? preparedDocument(new TextDecoder().decode(state))
@@ -423,12 +413,9 @@ export function createHandlers({
     });
   }
 
-  function helperTooOld(request: Request): boolean {
-    if (!minVersion) {
-      return false;
-    }
+  function helperTooOld(request: Request, minimum: Version): boolean {
     const version = parseSemver(request.headers.get("X-KeySeal-Version") ?? "");
-    return !version || compareSemver(version, minVersion) < 0;
+    return !version || compareSemver(version, minimum) < 0;
   }
 
   /**
@@ -463,7 +450,8 @@ export function createHandlers({
   async function refuseOutdated(
     id: string,
     request: Request,
-    now: Date
+    now: Date,
+    minimum: string
   ): Promise<Response> {
     const job = await adapter.get(id);
     if (job && (await outdatedFails(job, request, now))) {
@@ -475,10 +463,7 @@ export function createHandlers({
         return json({});
       });
     }
-    return json(
-      { message: UPGRADE_MESSAGE, minVersion: options.minHelperVersion },
-      426
-    );
+    return json({ message: UPGRADE_MESSAGE, minVersion: minimum }, 426);
   }
 
   /** Protocol section 8.1: the checks run in the order of its status list. */
@@ -496,8 +481,8 @@ export function createHandlers({
     }
     const now = clock();
     const id = await sha256Hex(token);
-    if (helperTooOld(request)) {
-      return await refuseOutdated(id, request, now);
+    if (minVersion && helperTooOld(request, minVersion.version)) {
+      return await refuseOutdated(id, request, now, minVersion.text);
     }
     const job = await adapter.get(id);
     if (!job || isExpired(job, now)) {

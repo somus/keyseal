@@ -1,4 +1,5 @@
-import { JOB_TTL_MS, SETTLE_LEASE_MS } from "./keyseal.js";
+import { deletePdfs, stateBlobKey } from "./blobs.js";
+import { JOB_TTL_MS, SETTLE_LEASE_MS } from "./limits.js";
 import { error } from "./requests.js";
 import type { Adapter, Job, JobFailure, JobPatch } from "./types.js";
 
@@ -28,10 +29,6 @@ export function gone(job: Job): Response {
   );
 }
 
-export function pdfKey(id: string, index: number): string {
-  return `${id}/pdf/${index}`;
-}
-
 /** Protocol section 9.3: a lease younger than 5 minutes cannot be taken over. */
 export function leaseHeld(job: Job, now: Date): boolean {
   return (
@@ -47,14 +44,12 @@ export function createTransitions(adapter: Adapter, clock: () => Date) {
   /** The signing service's states under `stateKey`, one per document. */
   async function deleteStates(stateKey: string, count: number): Promise<void> {
     for (let index = 0; index < count; index += 1) {
-      await adapter.deleteBlob(`${stateKey}/${index}`);
+      await adapter.deleteBlob(stateBlobKey(stateKey, index));
     }
   }
 
   async function deleteBlobs(job: Job): Promise<void> {
-    for (let index = 0; index < job.documents.length; index += 1) {
-      await adapter.deleteBlob(pdfKey(job.id, index));
-    }
+    await deletePdfs(adapter, job.id, job.documents.length);
     if (job.stateKey) {
       await deleteStates(job.stateKey, job.documents.length);
     }

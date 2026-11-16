@@ -1,39 +1,23 @@
 import type {
   CertificateFacts,
   DigestAlgorithm,
-  KeyUsage,
   RsaPadding,
   SignatureAlgorithm,
 } from "./types.js";
 
-export interface InspectedCertificate {
-  subject: string;
-  subjectCommonName: string | null;
-  issuer: string;
-  /** The issuer name's CN; null when it has none or several. */
-  issuerCommonName: string | null;
-  /** The subject name's O; null when it has none or several. */
-  subjectOrganization: string | null;
-  /** Dotted-decimal OIDs in the certificatePolicies extension; empty without it. */
-  policyOids: string[];
-  /** Uppercase hex. */
-  serialNumber: string;
-  notBefore: Date;
-  notAfter: Date;
-  /**
-   * The digitalSignature and nonRepudiation bits its KeyUsage extension
-   * asserts; null without the extension.
-   */
-  keyUsage: KeyUsage[] | null;
-  /** Whether its basicConstraints extension marks it a CA. */
-  ca: boolean;
+/** What a certificate says about itself: `CertificateFacts` without what the job adds. */
+export interface InspectedCertificate extends Omit<
+  CertificateFacts,
+  "der" | "chain" | "sha256" | "key" | "revocationChecked"
+> {
   /** Null when the key is not RSA or a supported curve, or cannot be read. */
   key: CertificateFacts["key"] | null;
 }
 
 /**
- * X.509 parsing, kept behind an interface so a runtime without `node:crypto`
- * can supply its own.
+ * X.509 parsing and signature checks, behind an interface so an integrator
+ * can pass their own as `certificateInspector`. The package still loads the
+ * default, `nodeCertificateInspector`, which needs `node:crypto`.
  */
 export interface CertificateInspector {
   /** Null when `der` is not an X.509 certificate. */

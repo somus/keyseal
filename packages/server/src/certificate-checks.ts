@@ -3,6 +3,9 @@ import { fromBase64, sha256Hex } from "./encoding.js";
 import type { SigningService } from "./service.js";
 import type { CertificateFacts, CertificatePolicy, Job } from "./types.js";
 
+/** A readable certificate's facts, before the signing service's trust check. */
+type UncheckedFacts = Omit<CertificateFacts, "revocationChecked">;
+
 /**
  * Protocol section 8.2. The issuer CN comes from the certificate's issuer
  * name; the chain check to a trusted root (section 8.3) binds that name to
@@ -39,7 +42,7 @@ export async function inspect(
   inspector: CertificateInspector,
   der: string,
   chain: string[]
-): Promise<Omit<CertificateFacts, "revocationChecked"> | string> {
+): Promise<UncheckedFacts | string> {
   const bytes = fromBase64(der);
   const inspected = inspector.inspect(bytes);
   if (!inspected) {
@@ -95,7 +98,7 @@ export async function acceptCertificate(
 export async function trustCertificate(
   service: SigningService,
   job: Job,
-  facts: Omit<CertificateFacts, "revocationChecked">
+  facts: UncheckedFacts
 ): Promise<CertificateFacts | string> {
   const { trusted, revocationChecked } = await service.certificate({
     certificate: facts.der,

@@ -3,9 +3,18 @@ export type {
   CertificateInspector,
   InspectedCertificate,
 } from "./certificates.js";
-export { nodeCertificateInspector } from "./node-certificates.js";
+export { InvalidJobInput, JobRefused } from "./errors.js";
 export {
+  JOB_TTL_MS,
+  MAX_BODY_BYTES,
+  MAX_DOCUMENTS,
+  MAX_JOB_PDF_BYTES,
   MAX_PDF_BYTES,
+  SETTLE_LEASE_MS,
+} from "./limits.js";
+export { nodeCertificateInspector } from "./node-certificates.js";
+export type { KeySealOptions } from "./options.js";
+export {
   ServiceClient,
   ServiceError,
   type PrepareField,
@@ -18,19 +27,11 @@ export {
 } from "./service.js";
 export {
   createKeySeal,
-  InvalidJobInput,
-  JOB_TTL_MS,
-  JobRefused,
-  MAX_BODY_BYTES,
-  MAX_DOCUMENTS,
-  MAX_JOB_PDF_BYTES,
-  SETTLE_LEASE_MS,
   type CreatedJob,
   type EnrolJobInput,
   type KeySeal,
   type SignDocumentInput,
   type SignJobInput,
-  type KeySealOptions,
 } from "./keyseal.js";
 export type {
   Adapter,

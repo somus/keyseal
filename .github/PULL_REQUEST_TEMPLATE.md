@@ -4,6 +4,6 @@
 
 ## Checklist
 
-- [ ] The checks in [docs/development.md](../docs/development.md#checks) pass for each component this touches.
+- [ ] The checks in [docs/development.md](https://github.com/somus/keyseal/blob/main/docs/development.md#checks) pass for each component this touches.
 - [ ] A protocol change updates `spec/` and every side of it in this pull request.
 - [ ] Docs changed where behaviour did.

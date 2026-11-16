@@ -67,14 +67,14 @@ Rate limit the job endpoint per client address, at your edge or with the `rateLi
 
 ## Versions and upgrades
 
-Each component is versioned and released on its own ([CHANGELOG.md](../CHANGELOG.md)), and all of them speak protocol version 1, which only adds optional members ([spec/README.md](../spec/README.md)). The current releases, tested together by the end-to-end test:
+Each component is versioned and released on its own ([CHANGELOG.md](../CHANGELOG.md)), and all of them speak protocol version 1, which only adds optional members ([spec/README.md](../spec/README.md)). The end-to-end test runs the newest release of each together. Where to find it:
 
-| Component | Version | Where |
-| --- | --- | --- |
-| Helper | 0.6.0 | [GitHub releases](https://github.com/somus/keyseal/releases/latest) |
-| Signing service | 0.5.0 | `ghcr.io/somus/keyseal-service:0.5` |
-| `@keyseal/server` | 0.6.0 | npm |
-| `@keyseal/browser` | 0.2.1 | npm |
+| Component | Newest release |
+| --- | --- |
+| Helper | [GitHub releases](https://github.com/somus/keyseal/releases/latest) |
+| Signing service | the image tag in [integrating.md](integrating.md#1-run-the-signing-service) |
+| `@keyseal/server` | [npm](https://www.npmjs.com/package/@keyseal/server) |
+| `@keyseal/browser` | [npm](https://www.npmjs.com/package/@keyseal/browser) |
 
 The dependencies between them that the changelog records: `@keyseal/server` 0.6.0 requires helper 0.5.0 or later for enrol jobs, and answers an older one with 426 on its own; `@keyseal/server` 0.2.0 and later need service 0.2.0 or later; and from 0.4.0 it sends the job's key usage to `/certificate`, which service 0.3.0 and later check. `@keyseal/browser` works with any `@keyseal/server`, since it reads only `state` and `message`. Run the current service with the current server package.
 

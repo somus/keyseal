@@ -1,6 +1,6 @@
 //! `keyseal doctor`: what the helper sees, as text for a support request
 //! and as the rows the settings window shows. [`run`] looks at the system
-//! the way a job would, loading drivers through [`backend::open_backend`];
+//! the way a job would, loading drivers through [`backend::open_each`];
 //! [`in_child`] runs it in a `keyseal doctor --json` process, so a running
 //! app never initialises a driver outside a job.
 
@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
-use crate::backend;
+use crate::backend::{self, Backend, Missed, NotFound};
 use crate::catalogue::{self, Provenance};
 use crate::certificate;
 use crate::modules::{self, Attempt, Candidate};
@@ -152,7 +152,7 @@ struct Facts {
     /// Each candidate and whether it is installed.
     candidates: Result<Vec<(Candidate, bool)>, String>,
     /// Each attempt and how it went, when there were candidates.
-    tried: Vec<(Attempt, Result<(), String>)>,
+    tried: Vec<(Attempt, Result<(), Missed>)>,
     /// `None`: no token is plugged in.
     opened: Result<Option<Opened>, String>,
 }
@@ -216,55 +216,26 @@ fn gather(gpu: Result<Option<String>, String>) -> Facts {
     let mut opened = Ok(None);
     if candidates.is_ok() {
         // Opened as a job would: each found module in turn, then on Windows
-        // and macOS the certificate store.
-        // The loosest usage, so the report shows every certificate a job
-        // could use. With several tokens plugged in, each is found and
-        // opened in turn.
-        // The token at `index`, and every token's name when there are
-        // several.
-        let open = |index: usize, tried: &mut Vec<(Attempt, Result<(), String>)>| {
-            let mut names = Vec::new();
-            let backend = backend::open_backend(
-                KeyUsage::DigitalSignature,
-                &mut || Ok(()),
-                &mut |attempt, outcome| {
-                    if index == 0 {
-                        tried.push((attempt.clone(), outcome.map_err(str::to_owned)));
-                    }
-                },
-            )
-            .and_then(|found| {
-                found.open(|tokens| {
-                    names = tokens
-                        .iter()
-                        .map(|token| {
-                            token::TokenSummary::of(token, KeyUsage::DigitalSignature).to_string()
-                        })
-                        .collect();
-                    Ok(index)
-                })
-            });
-            (backend, names)
-        };
-        let read = |backend: &backend::Backend, name: Option<String>| {
-            let token = backend.token();
-            OpenedToken {
-                name,
-                pin_warning: token.pin_warning().map(token::PinWarning::message),
-                certificates: token
-                    .certificates(false)
-                    .map(|certificates| {
-                        certificates
-                            .iter()
-                            .map(|c| (c.sha256.clone(), certificate::subject(&c.der)))
-                            .collect()
-                    })
-                    .map_err(|e| e.0),
-            }
-        };
-        let (backend, names) = open(0, &mut tried);
-        opened = match backend {
-            Ok(backend) => {
+        // and macOS the certificate store, for the loosest usage, so the
+        // report shows every certificate a job could use.
+        let mut tokens = Vec::new();
+        let result = backend::open_each(
+            KeyUsage::DigitalSignature,
+            &mut |attempt, outcome| tried.push((attempt.clone(), outcome.map_err(Missed::clone))),
+            &mut |name, backend| {
+                tokens.push(match backend {
+                    Ok(backend) => read(&backend, name),
+                    Err(failure) => OpenedToken {
+                        name,
+                        pin_warning: None,
+                        certificates: Err(failure.message),
+                    },
+                });
+                Ok(())
+            },
+        );
+        opened = match result {
+            Ok(()) => {
                 let used = tried.iter().find(|(_, outcome)| outcome.is_ok());
                 let module = match used {
                     Some((Attempt::Module(candidate), _)) => {
@@ -279,23 +250,10 @@ fn gather(gpu: Result<Option<String>, String>) -> Facts {
                     }
                     _ => None,
                 };
-                let mut tokens = vec![read(&backend, names.first().cloned())];
-                drop(backend);
-                for index in 1..names.len() {
-                    let name = names.get(index).cloned();
-                    tokens.push(match open(index, &mut tried).0 {
-                        Ok(backend) => read(&backend, name),
-                        Err(failure) => OpenedToken {
-                            name,
-                            pin_warning: None,
-                            certificates: Err(failure.message),
-                        },
-                    });
-                }
                 Ok(Some(Opened { module, tokens }))
             }
-            Err(failure) if failure.message == token::NO_TOKEN => Ok(None),
-            Err(failure) => Err(failure.message),
+            Err(NotFound::NoToken) => Ok(None),
+            Err(NotFound::Failed(failure)) => Err(failure.message),
         };
     }
     Facts {
@@ -309,6 +267,24 @@ fn gather(gpu: Result<Option<String>, String>) -> Facts {
         candidates,
         tried,
         opened,
+    }
+}
+
+/// What `backend`'s token shows before login, under `name`.
+fn read(backend: &Backend, name: Option<String>) -> OpenedToken {
+    let token = backend.token();
+    OpenedToken {
+        name,
+        pin_warning: token.pin_warning().map(token::PinWarning::message),
+        certificates: token
+            .certificates(false)
+            .map(|certificates| {
+                certificates
+                    .iter()
+                    .map(|c| (c.sha256.clone(), certificate::subject(&c.der)))
+                    .collect()
+            })
+            .map_err(|e| e.0),
     }
 }
 
@@ -417,7 +393,7 @@ fn write(facts: &Facts, lines: &mut Vec<String>) -> Result<Status, String> {
     for (attempt, outcome) in &facts.tried {
         lines.push(match outcome {
             Ok(()) => format!("  {attempt}: used"),
-            Err(message) => format!("  {attempt}: {message}"),
+            Err(missed) => format!("  {attempt}: {missed}"),
         });
     }
     let Some(opened) = facts.opened.as_ref().map_err(String::clone)? else {
@@ -466,9 +442,9 @@ fn drivers(facts: &Facts) -> Vec<Driver> {
             .find(|(tried, _)| tried == attempt)
             .map(|(_, outcome)| match outcome {
                 Ok(()) => DriverState::Used,
-                Err(message) if message == token::NO_TOKEN => DriverState::NoToken,
-                Err(message) if message == backend::NO_STORE_CERTIFICATE => DriverState::Empty,
-                Err(message) => DriverState::Failed(message.clone()),
+                Err(Missed::NoToken) => DriverState::NoToken,
+                Err(Missed::NoStoreCertificate) => DriverState::Empty,
+                Err(Missed::Failed(message)) => DriverState::Failed(message.clone()),
             })
     };
     let candidates = facts.candidates.as_deref().unwrap_or_default();
@@ -634,8 +610,8 @@ mod tests {
         let mut no_token = facts();
         let known = no_token.candidates.as_ref().unwrap()[1].0.clone();
         no_token.tried = vec![
-            (Attempt::Module(known), Err(token::NO_TOKEN.into())),
-            (Attempt::Store, Err(backend::NO_STORE_CERTIFICATE.into())),
+            (Attempt::Module(known), Err(Missed::NoToken)),
+            (Attempt::Store, Err(Missed::NoStoreCertificate)),
         ];
         no_token.opened = Ok(None);
         let no_token = report(&no_token);
@@ -652,7 +628,10 @@ mod tests {
         let mut failed = facts();
         let reason = "Couldn't start the token driver: bad".to_owned();
         let plugged = failed.candidates.as_ref().unwrap()[0].0.clone();
-        failed.tried = vec![(Attempt::Module(plugged), Err(reason.clone()))];
+        failed.tried = vec![(
+            Attempt::Module(plugged),
+            Err(Missed::Failed(reason.clone())),
+        )];
         failed.opened = Err(reason.clone());
         let failed = report(&failed);
         assert_eq!(failed.status, Status::Failed(reason.clone()));

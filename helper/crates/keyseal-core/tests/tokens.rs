@@ -72,7 +72,7 @@ fn opens_the_token_the_signer_chooses() {
     let certificate = std::fs::read(dir.join("cert.der")).unwrap();
 
     let found = backend::open_backend(KeyUsage::NonRepudiation, &mut || Ok(()), &mut |_, _| {})
-        .unwrap_or_else(|failure| panic!("{}", failure.message));
+        .unwrap_or_else(|error| panic!("{error:?}"));
     let backend = found
         .open(|tokens| {
             let summaries: Vec<TokenSummary> = tokens
@@ -88,7 +88,7 @@ fn opens_the_token_the_signer_chooses() {
             assert!(summaries[second].model.starts_with("SoftHSM"));
             Ok(second)
         })
-        .unwrap_or_else(|failure| panic!("{}", failure.message));
+        .unwrap_or_else(|error| panic!("{error:?}"));
     let token = backend.token();
     let seen: Vec<Vec<u8>> = token
         .certificates(false)

@@ -7,15 +7,12 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
-use base64::Engine;
-use base64::engine::general_purpose::STANDARD;
-use ed25519_dalek::{Signature, VerifyingKey};
 use nusb::MaybeFuture;
 use serde::Deserialize;
 use ureq::Agent;
 
 use crate::protocol::plain;
-use crate::update::key_id;
+use crate::{key_id, verifies};
 
 /// Public keys that may sign the catalogue, as raw Ed25519 bytes
 /// (catalogue/README.md, Signing).
@@ -158,13 +155,7 @@ fn verify(catalogue: &[u8], signature: &[u8], keys: &[[u8; 32]]) -> Result<Catal
         .iter()
         .find(|key| key_id(key) == file.key_id)
         .ok_or("The driver catalogue is signed by an unknown key.")?;
-    let verified = STANDARD
-        .decode(&file.signature)
-        .ok()
-        .and_then(|bytes| Signature::from_slice(&bytes).ok())
-        .zip(VerifyingKey::from_bytes(key).ok())
-        .is_some_and(|(signature, key)| key.verify_strict(catalogue, &signature).is_ok());
-    if !verified {
+    if !verifies(key, &file.signature, catalogue) {
         return Err("The driver catalogue signature doesn't verify.".into());
     }
     Catalogue::parse(catalogue)
@@ -271,6 +262,8 @@ fn get(agent: &Agent, url: &str, deadline: Instant) -> Result<Vec<u8>, String> {
 mod tests {
     use super::*;
     use crate::testing::TempDir;
+    use base64::Engine;
+    use base64::engine::general_purpose::STANDARD;
     use ed25519_dalek::{Signer, SigningKey};
     use serde_json::json;
 

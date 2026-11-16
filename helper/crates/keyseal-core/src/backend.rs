@@ -14,7 +14,7 @@ use crate::modules::{self, Attempt, Source};
 use crate::protocol::KeyUsage;
 #[cfg(any(windows, target_os = "macos"))]
 use crate::store::Store;
-use crate::token::{self, Driver, TokenBackend, TokenInfo};
+use crate::token::{self, Driver, TokenBackend, TokenInfo, TokenSummary};
 
 /// Called before the system's certificate store is read; an error stops
 /// the job.
@@ -118,6 +118,51 @@ impl Found {
     }
 }
 
+/// Why an attempt reached no key.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Missed {
+    /// A module that loaded but sees no token.
+    NoToken,
+    /// A certificate store that holds no signing certificate on a token.
+    NoStoreCertificate,
+    /// A module that didn't load or list its tokens, or a store that
+    /// couldn't be read, for this reason.
+    Failed(String),
+}
+
+impl std::fmt::Display for Missed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NoToken => f.write_str(token::NO_TOKEN),
+            Self::NoStoreCertificate => f.write_str(NO_STORE_CERTIFICATE),
+            Self::Failed(message) => f.write_str(message),
+        }
+    }
+}
+
+/// Why [`open_backend`] found no key.
+#[derive(Debug)]
+pub enum NotFound {
+    /// Modules loaded, but none sees a token, and nothing else failed.
+    NoToken,
+    Failed(Failure),
+}
+
+impl From<Failure> for NotFound {
+    fn from(failure: Failure) -> Self {
+        Self::Failed(failure)
+    }
+}
+
+impl From<NotFound> for Failure {
+    fn from(error: NotFound) -> Self {
+        match error {
+            NotFound::NoToken => token::NO_TOKEN.into(),
+            NotFound::Failed(failure) => failure,
+        }
+    }
+}
+
 /// What one attempt reached.
 enum Reached {
     Tokens(Box<dyn Driver>, Vec<TokenInfo>),
@@ -133,17 +178,64 @@ enum Reached {
 pub fn open_backend(
     usage: KeyUsage,
     before_store: BeforeStore,
-    seen: &mut dyn FnMut(&Attempt, Result<(), &str>),
-) -> Result<Found, Failure> {
+    seen: &mut dyn FnMut(&Attempt, Result<(), &Missed>),
+) -> Result<Found, NotFound> {
     let open = |attempt: &Attempt, wait| open_attempt(attempt, wait, usage);
-    open_first(&modules::attempts()?, &open, before_store, seen)
+    let attempts = modules::attempts().map_err(Failure::from)?;
+    open_first(&attempts, &open, before_store, seen)
+}
+
+/// Opens each token a job could choose from in turn, as `keyseal doctor`
+/// and `keyseal list` show them, and hands it to `each` with its name when
+/// there are several. The search runs again for each token after the
+/// first, since opening a token uses up its driver: a token worker opens
+/// one token per process. `seen` hears how each attempt of the first
+/// search went. Failing to open the first token is the error; failing to
+/// open a later one goes to `each`, whose error stops the loop.
+pub fn open_each(
+    usage: KeyUsage,
+    seen: &mut dyn FnMut(&Attempt, Result<(), &Missed>),
+    each: &mut dyn FnMut(Option<String>, Result<Backend, Failure>) -> Result<(), Failure>,
+) -> Result<(), NotFound> {
+    let mut names = Vec::new();
+    let mut index = 0;
+    loop {
+        let mut quiet = |_: &Attempt, _: Result<(), &Missed>| {};
+        let hear: &mut dyn FnMut(&Attempt, Result<(), &Missed>) =
+            if index == 0 { &mut *seen } else { &mut quiet };
+        let opened = match open_backend(usage, &mut || Ok(()), hear) {
+            Ok(found) => found.open(|tokens| {
+                if index == 0 {
+                    names = tokens
+                        .iter()
+                        .map(|token| TokenSummary::of(token, usage).to_string())
+                        .collect();
+                }
+                Ok(index)
+            }),
+            Err(error) if index == 0 => return Err(error),
+            Err(error) => Err(error.into()),
+        };
+        match opened {
+            Err(failure) if index == 0 => return Err(failure.into()),
+            opened => each(names.get(index).cloned(), opened)?,
+        }
+        index += 1;
+        if index >= names.len() {
+            return Ok(());
+        }
+    }
 }
 
 #[cfg_attr(not(any(windows, target_os = "macos")), allow(unused_variables))]
-fn open_attempt(attempt: &Attempt, wait: Duration, usage: KeyUsage) -> Result<Reached, String> {
+fn open_attempt(attempt: &Attempt, wait: Duration, usage: KeyUsage) -> Result<Reached, Missed> {
     match attempt {
         Attempt::Module(candidate) => {
-            let (driver, tokens) = token::tokens(&candidate.path, wait)?;
+            let (driver, tokens) =
+                token::tokens(&candidate.path, wait).map_err(|e| Missed::Failed(e.0))?;
+            if tokens.is_empty() {
+                return Err(Missed::NoToken);
+            }
             Ok(Reached::Tokens(driver, tokens))
         }
         #[cfg(any(windows, target_os = "macos"))]
@@ -152,13 +244,14 @@ fn open_attempt(attempt: &Attempt, wait: Duration, usage: KeyUsage) -> Result<Re
             let store = Store::new(CngStore, usage);
             #[cfg(target_os = "macos")]
             let store = Store::new(Keychain::tokens(), usage);
-            if store.certificates(false)?.is_empty() {
-                return Err(NO_STORE_CERTIFICATE.into());
+            let certificates = store.certificates(false).map_err(|e| Missed::Failed(e.0))?;
+            if certificates.is_empty() {
+                return Err(Missed::NoStoreCertificate);
             }
             Ok(Reached::Backend(Backend::Store(Box::new(store))))
         }
         #[cfg(not(any(windows, target_os = "macos")))]
-        Attempt::Store => Err(NO_STORE_CERTIFICATE.into()),
+        Attempt::Store => Err(Missed::NoStoreCertificate),
     }
 }
 
@@ -175,10 +268,10 @@ fn open_attempt(attempt: &Attempt, wait: Duration, usage: KeyUsage) -> Result<Re
 /// no token when a module loaded, else no driver.
 fn open_first(
     attempts: &[Attempt],
-    open: &dyn Fn(&Attempt, Duration) -> Result<Reached, String>,
+    open: &dyn Fn(&Attempt, Duration) -> Result<Reached, Missed>,
     before_store: BeforeStore,
-    seen: &mut dyn FnMut(&Attempt, Result<(), &str>),
-) -> Result<Found, Failure> {
+    seen: &mut dyn FnMut(&Attempt, Result<(), &Missed>),
+) -> Result<Found, NotFound> {
     let mut failure = None;
     let mut module_found = false;
     let mut found = Tokens {
@@ -218,11 +311,10 @@ fn open_first(
                     break;
                 }
             }
-            Err(message) => {
-                seen(attempt, Err(&message));
+            Err(missed) => {
+                seen(attempt, Err(&missed));
                 if failure.is_none()
-                    && message != token::NO_TOKEN
-                    && message != NO_STORE_CERTIFICATE
+                    && let Missed::Failed(message) = missed
                 {
                     failure = Some(message);
                 }
@@ -232,13 +324,13 @@ fn open_first(
     if !found.tokens.is_empty() {
         return Ok(Found::Tokens(found));
     }
-    Err(Failure::from(failure.unwrap_or_else(|| {
-        if module_found {
-            token::NO_TOKEN.into()
-        } else {
-            format!("{} Install your token's driver.", modules::NO_DRIVER)
+    Err(match failure {
+        Some(message) => NotFound::Failed(message.into()),
+        None if module_found => NotFound::NoToken,
+        None => {
+            NotFound::Failed(format!("{} Install your token's driver.", modules::NO_DRIVER).into())
         }
-    })))
+    })
 }
 
 #[cfg(test)]
@@ -266,10 +358,10 @@ mod tests {
             events.borrow_mut().push(format!("open {attempt}"));
             match attempt {
                 Attempt::Module(candidate) if candidate.path.ends_with("broken") => {
-                    Err("Couldn't load the token driver".to_owned())
+                    Err(Missed::Failed("Couldn't load the token driver".into()))
                 }
                 Attempt::Module(candidate) if candidate.path.ends_with("empty") => {
-                    Err(token::NO_TOKEN.to_owned())
+                    Err(Missed::NoToken)
                 }
                 Attempt::Module(_) => Ok(Reached::Tokens(
                     Box::new(FakeDriver::default()),
@@ -295,9 +387,10 @@ mod tests {
                     }
                 },
                 &mut |attempt, outcome| {
-                    events
-                        .borrow_mut()
-                        .push(format!("{attempt}: {}", outcome.err().unwrap_or("ok")))
+                    events.borrow_mut().push(match outcome {
+                        Ok(()) => format!("{attempt}: ok"),
+                        Err(missed) => format!("{attempt}: {missed}"),
+                    })
                 },
             );
             (result, events.borrow().clone())
@@ -330,10 +423,11 @@ mod tests {
 
         // The user declines before the store is read.
         let (result, seen) = run(&[empty.clone(), Attempt::Store], false);
-        assert!(result.is_err_and(|failure| failure.cancelled));
+        assert!(matches!(result, Err(NotFound::Failed(failure)) if failure.cancelled));
         assert_eq!(seen.last().map(String::as_str), Some("before the store"));
 
-        let failure = |attempts: &[Attempt]| run(attempts, true).0.err().unwrap().message;
+        let failure =
+            |attempts: &[Attempt]| Failure::from(run(attempts, true).0.err().unwrap()).message;
         assert_eq!(
             failure(&[empty.clone(), broken]),
             "Couldn't load the token driver"
@@ -360,10 +454,10 @@ mod tests {
         let waited = Cell::new(Duration::ZERO);
         let open = |_: &Attempt, wait: Duration| {
             waited.set(waited.get() + wait);
-            Err(token::NO_TOKEN.to_owned())
+            Err(Missed::NoToken)
         };
         let failure = open_first(&attempts, &open, &mut || Ok(()), &mut |_, _| {}).err();
-        assert_eq!(failure.unwrap().message, token::NO_TOKEN);
+        assert!(matches!(failure, Some(NotFound::NoToken)));
         assert_eq!(waited.get(), token::SLOT_WAIT);
     }
 
@@ -394,7 +488,7 @@ mod tests {
                 Attempt::Store => &["store"],
             };
             if serials.is_empty() {
-                return Err(token::NO_TOKEN.to_owned());
+                return Err(Missed::NoToken);
             }
             let tokens = (0..serials.len())
                 .map(|slot| info(slot as u64, serials[slot], &[]))

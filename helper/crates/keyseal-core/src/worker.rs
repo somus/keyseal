@@ -18,7 +18,8 @@ use zeroize::{Zeroize, Zeroizing};
 
 use crate::cms::{DigestAlgorithm, SignatureAlgorithm};
 use crate::token::{
-    Driver, LoginError, PinWarning, TokenBackend, TokenCertificate, TokenError, TokenInfo, err,
+    Driver, LoginError, NO_TOKEN, PinWarning, TokenBackend, TokenCertificate, TokenError,
+    TokenInfo, err,
 };
 
 /// The worker's file name, beside the helper's executable.
@@ -275,9 +276,12 @@ impl WorkerToken {
             module: module.to_owned(),
             wait,
         };
-        match self.call(&request)? {
-            Reply::Tokens(tokens) => Ok(tokens),
-            _ => Err(TokenError(OUT_OF_TURN.into())),
+        // The worker answers a listing that finds no token with NO_TOKEN.
+        match self.call(&request) {
+            Ok(Reply::Tokens(tokens)) => Ok(tokens),
+            Ok(_) => Err(TokenError(OUT_OF_TURN.into())),
+            Err(TokenError(message)) if message == NO_TOKEN => Ok(Vec::new()),
+            Err(error) => Err(error),
         }
     }
 
@@ -560,7 +564,9 @@ mod tests {
             "echo '{}'",
             serde_json::json!({ "Err": crate::token::NO_TOKEN })
         );
-        assert_eq!(error(list("refusal", &[&refusal])), crate::token::NO_TOKEN);
+        let worker = WorkerToken::start(&fake_worker("refusal", &[&refusal])).unwrap();
+        let tokens = worker.tokens(Path::new("/usr/lib/libfake.so"), Duration::ZERO);
+        assert!(tokens.unwrap().is_empty());
 
         assert_eq!(
             Box::new(list("open", &[listed, r#"echo '{"Ok":"Done"}'"#]).unwrap())

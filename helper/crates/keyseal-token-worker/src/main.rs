@@ -8,7 +8,7 @@ use std::fs::File;
 use std::io::{self, Read, Write};
 use std::process::ExitCode;
 
-use keyseal_core::token::{LoginError, Module, Token, TokenBackend};
+use keyseal_core::token::{LoginError, Module, NO_TOKEN, Token, TokenBackend};
 use keyseal_core::worker::{self, Reply, Request};
 use zeroize::{Zeroize, Zeroizing};
 
@@ -61,6 +61,9 @@ fn handle(
         Request::Tokens { module: path, wait } => {
             let loaded = Module::load(&path)?;
             let tokens = loaded.tokens(wait)?;
+            if tokens.is_empty() {
+                return Err(NO_TOKEN.into());
+            }
             *module = Some(loaded);
             return Ok(Reply::Tokens(tokens));
         }

@@ -29,8 +29,9 @@ use crate::worker::{self, Runner, WorkerToken};
 #[derive(Debug)]
 pub struct TokenError(pub String);
 
-/// The error when no token is plugged in, also as relayed by the worker.
-pub(crate) const NO_TOKEN: &str = "No token or smart card is plugged in.";
+/// What a job says when no token is plugged in, and how the worker
+/// answers a listing that finds none.
+pub const NO_TOKEN: &str = "No token or smart card is plugged in.";
 
 /// The error when the token's PIN is locked.
 pub const PIN_LOCKED: &str = "Your token's PIN is locked after too many wrong tries, so KeySeal can't use it. To unlock it, use the software that came with your token, or ask whoever issued the token.";
@@ -209,7 +210,7 @@ pub trait Driver {
 }
 
 /// Loads the module at `path` and lists its initialised tokens, waiting up
-/// to `wait` for one: in this process, or in the token worker for an
+/// to `wait` for one, none when none appears: in this process, or in the token worker for an
 /// Intel-only macOS driver.
 pub fn tokens(
     path: &Path,
@@ -260,7 +261,7 @@ impl Module {
     }
 
     /// Every initialised token, listing the slots again until `wait` is
-    /// over ([`SLOT_WAIT`]) while there is none.
+    /// over ([`SLOT_WAIT`]) while there is none; empty when none appears.
     pub fn tokens(&self, wait: Duration) -> Result<Vec<TokenInfo>, TokenError> {
         let deadline = Instant::now() + wait;
         let slots = loop {
@@ -268,11 +269,8 @@ impl Module {
                 .pkcs11
                 .get_slots_with_initialized_token()
                 .map_err(|e| err("Couldn't list tokens", e))?;
-            if !slots.is_empty() {
+            if !slots.is_empty() || Instant::now() >= deadline {
                 break slots;
-            }
-            if Instant::now() >= deadline {
-                return Err(TokenError(NO_TOKEN.into()));
             }
             std::thread::sleep(Duration::from_millis(250));
         };

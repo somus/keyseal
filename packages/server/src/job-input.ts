@@ -1,14 +1,11 @@
-import {
-  InvalidJobInput,
-  MAX_DOCUMENTS,
-  MAX_JOB_PDF_BYTES,
-} from "./keyseal.js";
-import { MAX_PDF_BYTES } from "./service.js";
+import { InvalidJobInput } from "./errors.js";
+import { MAX_DOCUMENTS, MAX_JOB_PDF_BYTES, MAX_PDF_BYTES } from "./limits.js";
 import type {
   CertificatePolicy,
   JobDocument,
   SignatureDetails,
 } from "./types.js";
+import { characters, isObject } from "./values.js";
 
 export const SHA256_HEX = /^[0-9a-f]{64}$/;
 const FIELD_NAME = /^[A-Za-z0-9_]{1,64}$/;
@@ -16,11 +13,6 @@ const FIELD_NAME = /^[A-Za-z0-9_]{1,64}$/;
 const OID = /^[0-2](?:\.(?:0|[1-9][0-9]*))+$/;
 const MAX_OID_LENGTH = 128;
 const MAX_POLICY_ENTRIES = 16;
-
-/** Protocol section 1: lengths in characters count Unicode code points. */
-export function characters(value: string): number {
-  return [...value].length;
-}
 
 export function checkText(name: string, value: unknown, max: number): void {
   const length = typeof value === "string" ? characters(value) : 0;
@@ -192,8 +184,4 @@ export function checkDocuments(
     );
   }
   return documents;
-}
-
-export function isObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

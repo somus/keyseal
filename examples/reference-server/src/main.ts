@@ -5,6 +5,8 @@ import {
   ServiceClient,
   ServiceError,
   type CertificatePolicy,
+  type CreatedJob,
+  type EnrolJobInput,
   type RsaPadding,
   type SignatureDetails,
   type SignDocumentInput,
@@ -90,7 +92,7 @@ interface JobRequest {
 }
 
 /** A document of the request, with a signature field added when it names none. */
-async function signDocument(
+async function signDocumentInput(
   entry: DocumentRequest,
   fieldName: string
 ): Promise<SignDocumentInput> {
@@ -112,44 +114,32 @@ async function signDocument(
   };
 }
 
-/** `POST /jobs`: creates a sign job for one or more PDFs and returns its link. */
-async function createJob(request: Request): Promise<Response> {
-  const body = (await request.json().catch(() => null)) as JobRequest | null;
-  const entries = body?.documents;
-  if (
-    !body ||
-    !Array.isArray(entries) ||
-    !entries.every(
-      (entry: DocumentRequest | null) => typeof entry?.pdf === "string"
-    )
-  ) {
-    return Response.json(
-      { message: "Send JSON with documents, each with a base64 pdf." },
-      { status: 400 }
-    );
-  }
-  const reference = crypto.randomUUID();
+/** What both kinds of job take from the request; `@keyseal/server` checks it. */
+function jobInput(
+  body: JobRequest,
+  reference: string,
+  defaultTitle: string
+): EnrolJobInput {
+  return {
+    reference,
+    signer: typeof body.signer === "string" ? body.signer : "Signer",
+    title: typeof body.title === "string" ? body.title : defaultTitle,
+    ...(typeof body.expectedCertificateSha256 === "string"
+      ? { expectedCertificateSha256: body.expectedCertificateSha256 }
+      : {}),
+    ...(body.certificatePolicy === undefined
+      ? {}
+      : { certificatePolicy: body.certificatePolicy as CertificatePolicy }),
+  };
+}
+
+/** Answers with the job `create` makes, or a 400 for the request's mistakes. */
+async function answerCreated(
+  reference: string,
+  create: () => Promise<CreatedJob>
+): Promise<Response> {
   try {
-    const field = `keyseal_${reference.replaceAll("-", "")}`;
-    const documents: SignDocumentInput[] = [];
-    for (const entry of entries as DocumentRequest[]) {
-      documents.push(await signDocument(entry, field));
-    }
-    const created = await keyseal.createSignJob({
-      documents,
-      reference,
-      signer: typeof body.signer === "string" ? body.signer : "Signer",
-      title: typeof body.title === "string" ? body.title : "Document",
-      ...(typeof body.expectedCertificateSha256 === "string"
-        ? { expectedCertificateSha256: body.expectedCertificateSha256 }
-        : {}),
-      ...(body.certificatePolicy === undefined
-        ? {}
-        : { certificatePolicy: body.certificatePolicy as CertificatePolicy }),
-      ...(body.rsaPadding === "pss" || body.rsaPadding === "pkcs1"
-        ? { rsaPadding: body.rsaPadding as RsaPadding }
-        : {}),
-    });
+    const created = await create();
     return Response.json({
       id: created.id,
       jobUrl: created.jobUrl,
@@ -171,6 +161,39 @@ async function createJob(request: Request): Promise<Response> {
   }
 }
 
+/** `POST /jobs`: creates a sign job for one or more PDFs and returns its link. */
+async function createJob(request: Request): Promise<Response> {
+  const body = (await request.json().catch(() => null)) as JobRequest | null;
+  const entries = body?.documents;
+  if (
+    !body ||
+    !Array.isArray(entries) ||
+    !entries.every(
+      (entry: DocumentRequest | null) => typeof entry?.pdf === "string"
+    )
+  ) {
+    return Response.json(
+      { message: "Send JSON with documents, each with a base64 pdf." },
+      { status: 400 }
+    );
+  }
+  const reference = crypto.randomUUID();
+  return await answerCreated(reference, async () => {
+    const field = `keyseal_${reference.replaceAll("-", "")}`;
+    const documents: SignDocumentInput[] = [];
+    for (const entry of entries as DocumentRequest[]) {
+      documents.push(await signDocumentInput(entry, field));
+    }
+    return await keyseal.createSignJob({
+      ...jobInput(body, reference, "Document"),
+      documents,
+      ...(body.rsaPadding === "pss" || body.rsaPadding === "pkcs1"
+        ? { rsaPadding: body.rsaPadding as RsaPadding }
+        : {}),
+    });
+  });
+}
+
 /** `POST /enrol-jobs`: creates an enrol job that captures a certificate. */
 async function createEnrolJob(request: Request): Promise<Response> {
   const body = (await request.json().catch(() => null)) as JobRequest | null;
@@ -178,30 +201,9 @@ async function createEnrolJob(request: Request): Promise<Response> {
     return Response.json({ message: "Send JSON." }, { status: 400 });
   }
   const reference = crypto.randomUUID();
-  try {
-    const created = await keyseal.createEnrolJob({
-      reference,
-      signer: typeof body.signer === "string" ? body.signer : "Signer",
-      title: typeof body.title === "string" ? body.title : "Enrolment",
-      ...(typeof body.expectedCertificateSha256 === "string"
-        ? { expectedCertificateSha256: body.expectedCertificateSha256 }
-        : {}),
-      ...(body.certificatePolicy === undefined
-        ? {}
-        : { certificatePolicy: body.certificatePolicy as CertificatePolicy }),
-    });
-    return Response.json({
-      id: created.id,
-      jobUrl: created.jobUrl,
-      link: created.link,
-      reference,
-    });
-  } catch (error) {
-    if (error instanceof InvalidJobInput) {
-      return Response.json({ message: error.message }, { status: 400 });
-    }
-    throw error;
-  }
+  return await answerCreated(reference, () =>
+    keyseal.createEnrolJob(jobInput(body, reference, "Enrolment"))
+  );
 }
 
 /** `GET /jobs/:id/status`: what the page polls. */

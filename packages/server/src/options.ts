@@ -1,6 +1,41 @@
-import { characters } from "./job-input.js";
-import type { KeySealOptions } from "./keyseal.js";
-import { parseSemver } from "./semver.js";
+import type { CertificateInspector } from "./certificates.js";
+import { parseSemver, type Version } from "./semver.js";
+import type { SigningService } from "./service.js";
+import type { Adapter } from "./types.js";
+import { characters } from "./values.js";
+
+export interface KeySealOptions {
+  adapter: Adapter;
+  service: SigningService;
+  /** Scheme, host and port of the job URLs, such as `https://dash.example.org`. */
+  origin: string;
+  /** Path the job endpoint is mounted under, such as `/api/keyseal`; empty by default. */
+  basePath?: string;
+  /** Accept `http://localhost` and `http://127.0.0.1` origins, for development and CI. */
+  allowInsecureOrigin?: boolean;
+  /** Lowest `X-KeySeal-Version` served (SemVer); older helpers get 426. */
+  minHelperVersion?: string;
+  /** Returns false to answer a job endpoint request with 429. */
+  rateLimit?: (request: Request) => boolean | Promise<boolean>;
+  now?: () => Date;
+  /**
+   * Served as `/.well-known/keyseal.json`; without it the manifest is 404.
+   * `translucent: false` asks the helper for opaque job windows.
+   */
+  branding?: {
+    name: string;
+    icon?: string;
+    accentColor?: string;
+    translucent?: boolean;
+  };
+  certificateInspector?: CertificateInspector;
+}
+
+/** `minHelperVersion` as given and parsed. */
+export interface MinHelperVersion {
+  text: string;
+  version: Version;
+}
 
 const ACCENT_COLOR = /^#[0-9A-Fa-f]{6}$/;
 // Unreserved characters only: the helper compares the document URL with
@@ -17,11 +52,11 @@ function isLocalhost(hostname: string): boolean {
   return hostname === "localhost" || hostname.endsWith(".localhost");
 }
 
-/** Throws a TypeError for invalid options; returns the parsed `minHelperVersion`. */
+/** Throws a TypeError for invalid options; returns `minHelperVersion`, if set. */
 export function checkOptions(
   options: KeySealOptions,
   basePath: string
-): ReturnType<typeof parseSemver> {
+): MinHelperVersion | null {
   // Protocol section 4: the helper refuses any other origin.
   const origin = new URL(options.origin);
   const { hostname } = origin;
@@ -47,12 +82,13 @@ export function checkOptions(
       "basePath must be empty or /-separated segments of letters, digits, . _ ~ and -, other than . and .."
     );
   }
-  const minVersion =
-    options.minHelperVersion === undefined
-      ? null
-      : parseSemver(options.minHelperVersion);
-  if (options.minHelperVersion !== undefined && !minVersion) {
-    throw new TypeError("minHelperVersion must be a SemVer version");
+  let minVersion: MinHelperVersion | null = null;
+  if (options.minHelperVersion !== undefined) {
+    const version = parseSemver(options.minHelperVersion);
+    if (!version) {
+      throw new TypeError("minHelperVersion must be a SemVer version");
+    }
+    minVersion = { text: options.minHelperVersion, version };
   }
   const { branding } = options;
   if (branding) {

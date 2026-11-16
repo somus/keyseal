@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { inspect, isDeepStrictEqual } from "node:util";
 
+import { pdfKey, stateBlobKey, stateKey } from "./blobs.js";
 import type { Adapter, Job, JobPatch } from "./types.js";
 
 /** One check of the adapter contract, runnable under any test framework. */
@@ -404,7 +405,7 @@ export function adapterConformanceChecks(
     [
       "blobs round-trip bytes, overwrite and delete",
       async (adapter, fail) => {
-        const key = `${makeJob().id}/pdf/0`;
+        const key = pdfKey(makeJob().id, 0);
         const bytes = Uint8Array.from({ length: 256 }, (_, index) => index);
         if ((await adapter.getBlob(key)) !== null) {
           fail("getBlob of a missing key did not return null");
@@ -437,7 +438,7 @@ export function adapterConformanceChecks(
       "listBlobs lists every stored key until it is deleted",
       async (adapter, fail) => {
         const id = makeJob().id;
-        const keys = [`${id}/pdf/0`, `${id}/state/978307200000/1`];
+        const keys = [pdfKey(id, 0), stateBlobKey(stateKey(id, at(0)), 1)];
         for (const key of keys) {
           await adapter.putBlob(key, Uint8Array.of(1));
         }

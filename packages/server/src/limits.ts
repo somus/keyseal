@@ -6,6 +6,8 @@ export const SETTLE_LEASE_MS = 5 * 60 * 1000;
 export const MAX_BODY_BYTES = 262_144;
 /** Protocol section 8.2: a sign job's documents. */
 export const MAX_DOCUMENTS = 20;
+/** Round 2 finishes this many documents at once, so a batch fits the helper's 90 s. */
+export const MAX_CONCURRENT_FINISHES = 4;
 /** The service refuses larger PDFs. */
 export const MAX_PDF_BYTES = 25 * 1024 * 1024;
 /**

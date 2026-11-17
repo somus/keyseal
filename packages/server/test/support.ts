@@ -149,6 +149,8 @@ function fakeService() {
     signatureAlgorithm: null as string | null,
     /** /sign/finish awaits `finishGate` only for this field, when set. */
     finishGateField: null as string | null,
+    /** Awaited by /sign/finish with the document's field, when set. */
+    holdFinish: null as ((fieldName: string) => Promise<void>) | null,
     /** /sign/finish refuses the document with this field. */
     refuseFinish: null as string | null,
     /** /sign/start answers 500 for the document with this field. */
@@ -228,6 +230,7 @@ function fakeService() {
         ) {
           await fake.finishGate;
         }
+        await fake.holdFinish?.(state.fieldName);
         if (state.fieldName === fake.refuseFinish) {
           return Response.json(
             { detail: `The PDF with ${state.fieldName} can't be finished` },

@@ -16,6 +16,7 @@ import {
   timingSafeEqual,
 } from "./encoding.js";
 import { JobRefused } from "./errors.js";
+import { MAX_CONCURRENT_FINISHES } from "./limits.js";
 import type { KeySealOptions, MinHelperVersion } from "./options.js";
 import {
   error,
@@ -362,9 +363,34 @@ export function createHandlers({
       }
       states.push(new TextDecoder().decode(state));
     }
+    // A few at a time: each finish waits on the timestamp authority. After a
+    // failure no further document starts, and the calls in flight settle
+    // before the first failure is thrown, so no work outlives the request.
     const pdfs: Uint8Array[] = [];
-    for (const [index, signature] of signatures.entries()) {
-      pdfs.push(await service.signFinish({ signature, state: states[index]! }));
+    let next = 0;
+    const failures: unknown[] = [];
+    async function finishDocuments(): Promise<void> {
+      while (failures.length === 0 && next < signatures.length) {
+        const index = next;
+        next += 1;
+        try {
+          pdfs[index] = await service.signFinish({
+            signature: signatures[index]!,
+            state: states[index]!,
+          });
+        } catch (cause) {
+          failures.push(cause);
+        }
+      }
+    }
+    await Promise.all(
+      Array.from(
+        { length: Math.min(MAX_CONCURRENT_FINISHES, signatures.length) },
+        finishDocuments
+      )
+    );
+    if (failures.length > 0) {
+      throw failures[0];
     }
     await adapter.onCompleted(job, { certificate: facts, kind: "sign", pdfs });
     if (!(await settle(job, lease, { state: "completed" }))) {

@@ -428,6 +428,10 @@ lines under the new version with the release date.
 - A `branding.icon` that isn't an absolute URL, such as `/icon.png`, is
   refused with "branding.icon must be an absolute URL on the origin" instead
   of the URL parser's "Invalid URL".
+- Round 2 finishes a batch's documents up to four at a time instead of one
+  after another, so a large batch against a slow timestamp authority no
+  longer runs past the 90 seconds the helper waits, which made the helper
+  report a timeout although the job completed.
 
 ### [0.6.0][server-0.6.0] - 2026-11-14
 

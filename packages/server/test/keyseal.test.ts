@@ -252,6 +252,41 @@ describe("sign flow", () => {
   });
 });
 
+/** Six documents, more than round 2 finishes at once. */
+const SIX = [1, 2, 3, 4, 5, 6].map((n) => ({
+  fieldName: `Signature${n}`,
+  pdf: new TextEncoder().encode(`%PDF-1.7 document ${n}`),
+  title: `Document ${n}`,
+}));
+
+/** Holds every /sign/finish until the test releases its document's field. */
+function holdFinishes(t: ReturnType<typeof setup>) {
+  const held = new Map<string, () => void>();
+  const finishes = {
+    /** The fields of the finishes started so far, in order. */
+    fields: [] as string[],
+    mostAtOnce: 0,
+    release(fieldName: string): void {
+      const release = held.get(fieldName)!;
+      held.delete(fieldName);
+      release();
+    },
+    async started(count: number): Promise<void> {
+      while (finishes.fields.length < count) {
+        await Bun.sleep(1);
+      }
+    },
+  };
+  t.fake.holdFinish = (fieldName) => {
+    finishes.fields.push(fieldName);
+    return new Promise((resolve) => {
+      held.set(fieldName, resolve);
+      finishes.mostAtOnce = Math.max(finishes.mostAtOnce, held.size);
+    });
+  };
+  return finishes;
+}
+
 /** Round 2's body for `prepared`, each document signed with `key`. */
 function signaturesFor(
   prepared: { documents: { toSign: string }[]; signatureAlgorithm: string },
@@ -480,7 +515,7 @@ describe("batch", () => {
     t.fake.finishGate = new Promise((resolve) => {
       open = resolve;
     });
-    // The first request finishes the first document, then waits on the second.
+    // The first request finishes the other documents and waits on the second.
     t.fake.finishGateField = "Signature2";
     const first = t.post(token, "signature", body);
     while (
@@ -499,6 +534,73 @@ describe("batch", () => {
       expect(result.kind === "sign" && result.pdfs).toHaveLength(3);
     }
     expect((await t.jobFor(token)).state).toBe("completed");
+  });
+
+  test("finishes at most four documents at once and hands them over in order", async () => {
+    const t = setup();
+    const finishes = holdFinishes(t);
+    const { id, token, claimNonce, prepared } = await t.preparedJob(CERTS.rsa, {
+      documents: SIX,
+      title: "Board pack",
+    });
+    const response = t.post(token, "signature", {
+      claimNonce,
+      signatures: signaturesFor(prepared),
+    });
+    await finishes.started(4);
+    await Bun.sleep(5);
+    expect(finishes.fields).toEqual([1, 2, 3, 4].map((n) => `Signature${n}`));
+    // Later documents finish first; each one done lets the next start.
+    finishes.release("Signature4");
+    finishes.release("Signature3");
+    await finishes.started(6);
+    for (const n of [6, 5, 2, 1]) {
+      finishes.release(`Signature${n}`);
+    }
+    expect((await response).status).toBe(200);
+    expect(finishes.mostAtOnce).toBe(4);
+    const { result } = t.completed[0]!;
+    expect(
+      result.kind === "sign" &&
+        result.pdfs.map((pdf) => new TextDecoder().decode(pdf))
+    ).toEqual(
+      [1, 2, 3, 4, 5, 6].map((n) => `%PDF-1.7 document ${n} prepared signed`)
+    );
+    expect((await t.keyseal.status(id))?.state).toBe("completed");
+  });
+
+  test("a failed finish starts no further document and waits for those in flight", async () => {
+    const t = setup();
+    const finishes = holdFinishes(t);
+    t.fake.refuseFinish = "Signature2";
+    const { id, token, claimNonce, prepared } = await t.preparedJob(CERTS.rsa, {
+      documents: SIX,
+      title: "Board pack",
+    });
+    let answered = false;
+    const response = t
+      .post(token, "signature", {
+        claimNonce,
+        signatures: signaturesFor(prepared),
+      })
+      .finally(() => {
+        answered = true;
+      });
+    await finishes.started(4);
+    finishes.release("Signature2");
+    await Bun.sleep(5);
+    expect(finishes.fields).toHaveLength(4);
+    expect(answered).toBe(false);
+    for (const n of [1, 3, 4]) {
+      finishes.release(`Signature${n}`);
+    }
+    expect((await response).status).toBe(422);
+    expect(finishes.fields).toEqual([1, 2, 3, 4].map((n) => `Signature${n}`));
+    expect(await t.keyseal.status(id)).toMatchObject({
+      message: "The PDF with Signature2 can't be finished",
+      state: "failed",
+    });
+    expect(t.completed).toHaveLength(0);
   });
 });
 

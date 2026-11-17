@@ -5,9 +5,10 @@
 # three documents signed in one token session, one of them on a key that
 # needs the PIN for every signature, a job that accepts a certificate with
 # digitalSignature but not nonRepudiation, an enrol job for each key type and
-# one with a certificate policy, and three jobs that must fail, and every
-# signed PDF validates as intact and trusted and carries the reason its job
-# asked for.
+# one with a certificate policy, three jobs that must fail, and a batch of 20
+# documents against a timestamp authority that takes 5 seconds to answer
+# (scripts/ci/slow-tsa.py), and every signed PDF validates as intact and
+# trusted and carries the reason its job asked for.
 #
 #   KEYSEAL_SOFTHSM_MODULE=/path/to/libsofthsm2.so scripts/ci/e2e.sh
 #
@@ -23,6 +24,7 @@ service="http://127.0.0.1:$service_port"
 origin="http://127.0.0.1:$server_port"
 image=keyseal-service:e2e
 container="keyseal-e2e-$$"
+tsa="$container-tsa"
 work="$(mktemp -d)"
 server_pid=""
 
@@ -31,13 +33,17 @@ cleanup() {
   if [ "$status" -ne 0 ]; then
     echo "--- service log" >&2
     docker logs "$container" >&2 2>&1 || true
+    if docker container inspect "$tsa" >/dev/null 2>&1; then
+      echo "--- timestamp authority log" >&2
+      docker logs "$tsa" >&2 2>&1 || true
+    fi
     echo "--- reference server log" >&2
     cat "$work/server.log" >&2 || true
   fi
   if [ -n "$server_pid" ]; then
     kill "$server_pid" 2>/dev/null || true
   fi
-  docker rm -f "$container" >/dev/null 2>&1 || true
+  docker rm -f "$tsa" "$container" >/dev/null 2>&1 || true
   rm -rf "$work"
   exit "$status"
 }
@@ -65,20 +71,30 @@ step "SoftHSM token"
 "$root/scripts/ci/softhsm-token.sh" "$work/token" "$module"
 export SOFTHSM2_CONF="$work/token/softhsm2.conf"
 
+# Starts the signing service with `$1` as its SIGNING_TSA_URL and waits for
+# it to answer. `timestamps` says whether its signatures carry a timestamp.
+start_service() {
+  timestamps=true
+  if [ "$1" = none ]; then
+    timestamps=false
+  fi
+  docker create --name "$container" -p "127.0.0.1:$service_port:8080" \
+    -e SIGNING_SERVICE_TOKEN="$service_token" \
+    -e SIGNING_TSA_URL="$1" \
+    -e SIGNING_TRUST_ROOTS_DIR=/roots \
+    "$image" >/dev/null
+  docker cp "$work/token/roots" "$container:/roots"
+  docker start "$container" >/dev/null
+  wait_for 60 curl -fsS "$service/health"
+  curl -fsS "$service/health" | jq -e '.trustRoots == 1'
+}
+
 step "Signing service"
 docker build -t "$image" "$root/service"
 service_token="$(openssl rand -base64 32)"
-docker create --name "$container" -p "127.0.0.1:$service_port:8080" \
-  -e SIGNING_SERVICE_TOKEN="$service_token" \
-  -e SIGNING_TSA_URL=none \
-  -e SIGNING_TRUST_ROOTS_DIR=/roots \
-  "$image" >/dev/null
 chmod 755 "$work/token/roots"
 chmod 644 "$work/token/roots/ca.pem"
-docker cp "$work/token/roots" "$container:/roots"
-docker start "$container" >/dev/null
-wait_for 60 curl -fsS "$service/health"
-curl -fsS "$service/health" | jq -e '.trustRoots == 1'
+start_service none
 
 # A one-page PDF without fields; the reference server adds the signature field.
 docker exec "$container" /app/.venv/bin/python -c '
@@ -128,17 +144,19 @@ run_helper() {
 }
 
 # Checks that the signed PDF `$1` validates as intact and trusted, signed
-# with the certificate whose SHA-256 is `$2`, with the reason "Approved in e2e".
+# with the certificate whose SHA-256 is `$2`, with the reason "Approved in e2e",
+# and carries a valid timestamp when the service has a timestamp authority.
 # `$3`, when given, is the key usage the validation accepts.
 check_signed() {
   local report
   report="$(curl -fsS -H "Authorization: Bearer $service_token" --data-binary "@$1" \
     "$service/validate${3:+?keyUsage=$3}")"
-  jq --arg sha "$2" -e '
+  jq --arg sha "$2" --argjson timestamps "$timestamps" -e '
     .status == "valid"
     and (.signatures | length) == 1
     and (.signatures[0] | .intact and .coversWholeRevision and .trusted)
-    and .signatures[0].sha256Fingerprint == $sha' <<<"$report" >/dev/null || {
+    and .signatures[0].sha256Fingerprint == $sha
+    and .signatures[0].timestampValid == (if $timestamps then true else null end)' <<<"$report" >/dev/null || {
     echo "$report" >&2
     return 1
   }
@@ -185,19 +203,20 @@ for name in rsa rsa-pss p256 p384 bp256 bp384; do
   echo "$name: signed PDF is intact and trusted, with its reason"
 done
 
-# Signs a batch of three documents with the key `$1` and checks each signed
+# Signs a batch of `$2` documents with the key `$1` and checks each signed
 # PDF is the one its job asked for.
 sign_batch() {
   local fingerprint job status signed
   fingerprint="$(sha256 "$work/token/$1.der")"
-  job="$(create /jobs "$(jq -n --arg pdf "$sample" --arg sha "$fingerprint" --arg title "e2e batch, 3 documents, $1" \
-    '{documents: [range(1; 4) | {pdf: $pdf, title: "e2e batch document \(.)",
+  job="$(create /jobs "$(jq -n --arg pdf "$sample" --arg sha "$fingerprint" --argjson count "$2" \
+    --arg title "e2e batch, $2 documents, $1" \
+    '{documents: [range(1; $count + 1) | {pdf: $pdf, title: "e2e batch document \(.)",
         signatureDetails: {reason: "Approved in e2e", location: "Batch \(.)"}}],
       title: $title, signer: "keyseal e2e", expectedCertificateSha256: $sha}')")"
   run_helper "$job"
   status="$(final_status "$(jq -r .id <<<"$job")" completed)"
-  jq -e '.outputs | length == 3' <<<"$status" >/dev/null
-  for index in 0 1 2; do
+  jq --argjson count "$2" -e '.outputs | length == $count' <<<"$status" >/dev/null
+  for index in $(seq 0 $(($2 - 1))); do
     signed="$root/examples/reference-server/$(jq -r --argjson index "$index" '.outputs[$index]' <<<"$status")"
     check_signed "$signed" "$fingerprint"
     grep -aq "/Location (Batch $((index + 1)))" "$signed" || {
@@ -205,14 +224,14 @@ sign_batch() {
       exit 1
     }
   done
-  echo "batch with $1: all three signed PDFs are intact and trusted, in order"
+  echo "batch with $1: all $2 signed PDFs are intact and trusted, in order"
 }
 
 step "Sign a batch of three documents with p256"
-sign_batch p256
+sign_batch p256 3
 
 step "Sign a batch of three documents with a key that needs the PIN for each signature"
-sign_batch auth
+sign_batch auth 3
 
 step "Sign with a digitalSignature-only certificate under keyUsage digitalSignature"
 fingerprint="$(sha256 "$work/token/dsig.der")"
@@ -284,5 +303,37 @@ fi
 final_status "$(jq -r .id <<<"$job")" failed |
   jq -e --arg origin "$origin" '.message == "None of the certificates on this token are accepted by \($origin) for this job."' >/dev/null
 echo "unmet policy failed the job"
+
+step "Sign a batch of 20 documents against a timestamp authority that takes 5 seconds"
+# @keyseal/server finishes up to four of a batch's documents at a time
+# (MAX_CONCURRENT_FINISHES), so this batch's second round takes about 25
+# seconds. One at a time it took over 100, past the 90 the helper gives the
+# round (JOB_TIMEOUT in keyseal-core), and the helper gave up on a job that
+# then completed. The service is replaced by one that timestamps through
+# slow-tsa.py, run on the same image in the service's network namespace with
+# a certificate from the e2e CA, so the timestamps are trusted too.
+(
+  mkdir "$work/tsa"
+  cd "$work/tsa"
+  openssl req -new -nodes -subj "/C=IN/CN=keyseal e2e TSA" -newkey rsa:2048 \
+    -keyout tsa.pem -out tsa.csr 2>/dev/null
+  printf 'basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature\nextendedKeyUsage=critical,timeStamping\n' >tsa.ext
+  openssl x509 -req -in tsa.csr -CA "$work/token/roots/ca.pem" -CAkey "$work/token/ca.key" \
+    -set_serial "0x$(openssl rand -hex 8)" -days 2 -extfile tsa.ext \
+    -outform DER -out tsa.der 2>/dev/null
+  openssl pkey -in tsa.pem -outform DER -out tsa.key
+  cp "$work/token/ca.der" "$root/scripts/ci/slow-tsa.py" .
+  chmod 755 .
+  chmod 644 ./*
+)
+docker rm -f "$container" >/dev/null
+start_service http://127.0.0.1:9000
+docker create --name "$tsa" --network "container:$container" "$image" \
+  /app/.venv/bin/python /tsa/slow-tsa.py 9000 5 /tsa/tsa.der /tsa/tsa.key /tsa/ca.der >/dev/null
+docker cp "$work/tsa" "$tsa:/tsa"
+docker start "$tsa" >/dev/null
+wait_for 30 docker exec "$container" /app/.venv/bin/python -c \
+  'import socket; socket.create_connection(("127.0.0.1", 9000))'
+sign_batch p256 20
 
 step "Passed"

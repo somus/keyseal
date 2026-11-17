@@ -48,6 +48,7 @@ pub const GALLERY_VIEWS: &[&str] = &[
     "message-expired",
     "message-link",
     "message-internal",
+    "message-unanswered",
     "busy-message",
     "settings",
     "settings-empty",
@@ -142,7 +143,7 @@ pub(crate) fn gallery(view: &str, cx: &mut App) -> Result<(), String> {
             return Ok(());
         }
         "message" | "message-driver" | "message-pin-locked" | "message-expired"
-        | "message-link" | "message-internal" => {
+        | "message-link" | "message-internal" | "message-unanswered" => {
             let message = match view {
                 "message" => {
                     "The signing service refused the signature: the certificate has expired.".into()
@@ -159,6 +160,12 @@ pub(crate) fn gallery(view: &str, cx: &mut App) -> Result<(), String> {
                         .unwrap_or_default()
                 }
                 "message-link" => keyseal_core::protocol::DAMAGED_LINK.into(),
+                "message-unanswered" => {
+                    let url = url::Url::parse("https://sign.example.org/").expect("sample URL");
+                    let origin =
+                        keyseal_core::origin::Origin::of_url(&url, false).expect("sample origin");
+                    keyseal_core::protocol::signatures_unanswered(&origin)
+                }
                 _ => keyseal_core::flow::INTERNAL_ERROR.into(),
             };
             windows.message(MessageKind::Error, message, None, cx);

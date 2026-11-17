@@ -27,6 +27,10 @@ lines under the new version with the release date.
   certificate names, USB device names and error messages without control or
   bidirectional characters, as the windows already showed them, so a token,
   driver or server can't rearrange or hide text in the terminal.
+- When a site takes longer than 90 seconds to finish the signed documents,
+  KeySeal says it sent the signatures and the site may still be finishing
+  them, and to check the page before signing again, instead of "Couldn't
+  reach" the site.
 
 ### [0.6.0][helper-0.6.0] - 2026-11-16
 

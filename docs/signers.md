@@ -197,6 +197,10 @@ KeySeal doesn't offer an expired certificate. When it's the only one on your tok
 
 **The KeySeal link is damaged, so the job can't be opened.** or **The job doesn't exist or has expired.** means the request from the website can't be used any more. Go back to the website and click Sign again.
 
+### The site didn't answer in time
+
+KeySeal says **KeySeal sent the signatures, but** the site **didn't answer in time and may still be finishing the documents.** Your token has signed, and the site is usually still finishing the signed documents, which can take a while for many documents. Don't sign again straight away: reload the website's page and check whether the documents are signed. Sign again only if the page says the signing failed.
+
 ### KeySeal says it needs a newer version
 
 A site may need a newer KeySeal than you have: KeySeal says the site **needs KeySeal helper** a version **or later**, or that **this helper is too old for the server**. KeySeal fetches the update as soon as it closes; click Sign on the website again and the new version installs as KeySeal starts. If that doesn't work, download and install KeySeal again.

@@ -423,6 +423,12 @@ lines under the new version with the release date.
   the report's `documentTimestamps`, `changesSinceBase` and
   `baseSignatureFields`.
 
+#### Fixed
+
+- A `branding.icon` that isn't an absolute URL, such as `/icon.png`, is
+  refused with "branding.icon must be an absolute URL on the origin" instead
+  of the URL parser's "Invalid URL".
+
 ### [0.6.0][server-0.6.0] - 2026-11-14
 
 #### Changed

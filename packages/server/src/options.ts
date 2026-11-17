@@ -99,7 +99,8 @@ export function checkOptions(
     }
     if (
       branding.icon !== undefined &&
-      new URL(branding.icon).origin !== options.origin
+      (!URL.canParse(branding.icon) ||
+        new URL(branding.icon).origin !== options.origin)
     ) {
       throw new TypeError(
         "branding.icon must be an absolute URL on the origin"

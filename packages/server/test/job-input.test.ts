@@ -306,8 +306,10 @@ describe("options", () => {
     expect(() => setup({ basePath: "/api/keyseal_v1.0~x" })).not.toThrow();
     expect(() => setup({ basePath: "/.well/..known/..." })).not.toThrow();
     expect(() => setup({ minHelperVersion: "1.2" })).toThrow(TypeError);
-    expect(() =>
-      setup({ branding: { icon: "https://other.example/icon.png", name: "X" } })
-    ).toThrow(TypeError);
+    for (const icon of ["https://other.example/icon.png", "/icon.png", ""]) {
+      expect(() => setup({ branding: { icon, name: "X" } })).toThrow(
+        "branding.icon must be an absolute URL on the origin"
+      );
+    }
   });
 });

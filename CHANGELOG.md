@@ -19,6 +19,8 @@ lines under the new version with the release date.
 
 ### [Unreleased][helper-unreleased]
 
+### [0.6.1][helper-0.6.1] - 2026-11-17
+
 #### Fixed
 
 - Cancelling the certificate choice in an enrolment reports "Enrolment
@@ -420,6 +422,8 @@ lines under the new version with the release date.
 
 ### [Unreleased][server-unreleased]
 
+### [0.6.1][server-0.6.1] - 2026-11-17
+
 #### Added
 
 - `ValidationReport` types what `/validate` already returns and the type
@@ -623,7 +627,8 @@ The catalogue is published as the `catalogue` release; its version is the
   mToken CryptoID, InnaIT Key (PK32XX), SafeNet eToken 5110 and eToken PRO
   72K / SafeNet eToken 5100, and TrustKey.
 
-[helper-unreleased]: https://github.com/somus/keyseal/compare/helper-v0.6.0...HEAD
+[helper-unreleased]: https://github.com/somus/keyseal/compare/helper-v0.6.1...HEAD
+[helper-0.6.1]: https://github.com/somus/keyseal/releases/tag/helper-v0.6.1
 [helper-0.6.0]: https://github.com/somus/keyseal/releases/tag/helper-v0.6.0
 [helper-0.5.0]: https://github.com/somus/keyseal/releases/tag/helper-v0.5.0
 [helper-0.4.0]: https://github.com/somus/keyseal/releases/tag/helper-v0.4.0
@@ -644,7 +649,8 @@ The catalogue is published as the `catalogue` release; its version is the
 [service-0.2.0]: https://github.com/somus/keyseal/compare/service-v0.1.1...service-v0.2.0
 [service-0.1.1]: https://github.com/somus/keyseal/compare/service-v0.1.0...service-v0.1.1
 [service-0.1.0]: https://github.com/somus/keyseal/tree/service-v0.1.0
-[server-unreleased]: https://github.com/somus/keyseal/compare/server-v0.6.0...HEAD
+[server-unreleased]: https://github.com/somus/keyseal/compare/server-v0.6.1...HEAD
+[server-0.6.1]: https://github.com/somus/keyseal/compare/server-v0.6.0...server-v0.6.1
 [server-0.6.0]: https://github.com/somus/keyseal/compare/server-v0.5.0...server-v0.6.0
 [server-0.5.0]: https://github.com/somus/keyseal/compare/server-v0.4.0...server-v0.5.0
 [server-0.4.0]: https://github.com/somus/keyseal/compare/server-v0.3.0...server-v0.4.0

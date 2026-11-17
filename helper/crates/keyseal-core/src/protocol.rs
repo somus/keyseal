@@ -65,6 +65,15 @@ fn is_token(value: &str) -> bool {
 /// detail would mean nothing to the signer.
 pub const DAMAGED_LINK: &str = "The KeySeal link is damaged, so the job can't be opened. Go back to the website and start again.";
 
+/// Sign round 2 timed out after the signatures went out (8.5). The server
+/// answers only once every document is finished, so it may still be
+/// finishing them, and signing again could sign them twice.
+pub fn signatures_unanswered(origin: &Origin) -> String {
+    format!(
+        "KeySeal sent the signatures, but {origin} didn't answer in time and may still be finishing the documents. Check the page before you sign again."
+    )
+}
+
 /// Validates a link as section 3.3 requires, before any network request.
 pub fn parse_link(link: &str, allow_insecure: bool) -> Result<Link, String> {
     if link.len() > MAX_LINK_BYTES {
@@ -363,9 +372,16 @@ pub struct JobClient {
 
 impl JobClient {
     pub fn new(link: &Link) -> Self {
+        Self::with_timeout(link, JOB_TIMEOUT)
+    }
+
+    /// A client whose job endpoint requests wait `timeout` rather than 90
+    /// seconds, so a test can time one out quickly.
+    #[doc(hidden)]
+    pub fn with_timeout(link: &Link, timeout: Duration) -> Self {
         let token = link.job_url.path().rsplit('/').next().unwrap_or_default();
         Self {
-            agent: link.origin.agent(JOB_TIMEOUT),
+            agent: link.origin.agent(timeout),
             url: link.job_url.as_str().to_owned(),
             token: token.to_owned(),
             origin: link.origin.clone(),
@@ -465,7 +481,20 @@ impl JobClient {
     ) -> Result<(), ProtocolError> {
         let signatures: Vec<String> = signatures.iter().map(|s| STANDARD.encode(s)).collect();
         let body = json!({ "claimNonce": nonce, "signatures": signatures });
-        let Empty {} = self.post("signature", body)?;
+        let sent = self
+            .agent
+            .post(format!("{}/signature", self.url))
+            .header(VERSION_HEADER, crate::VERSION)
+            .send_json(body);
+        // The server answers once every document is finished, so a timeout
+        // waiting for it doesn't mean the signing failed.
+        if matches!(sent, Err(ureq::Error::Timeout(ureq::Timeout::Global))) {
+            return Err(ProtocolError {
+                status: None,
+                message: signatures_unanswered(&self.origin),
+            });
+        }
+        let Empty {} = self.reply(sent)?;
         Ok(())
     }
 

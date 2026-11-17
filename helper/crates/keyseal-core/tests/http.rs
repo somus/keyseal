@@ -7,7 +7,9 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use keyseal_core::cms::{DigestAlgorithm, SignatureAlgorithm};
-use keyseal_core::protocol::{JobClient, Kind, MAX_DOCUMENT_BYTES, parse_link};
+use keyseal_core::protocol::{
+    JobClient, Kind, Link, MAX_DOCUMENT_BYTES, parse_link, signatures_unanswered,
+};
 use serde_json::{Value, json};
 
 const TOKEN: &str = "q3Jm0f_2vX9kLr8aTq1bNw4uYc7eHs5dPz6iGo0tRk";
@@ -119,12 +121,16 @@ fn serve(handler: Box<Handler>) -> (String, Arc<Mutex<Vec<Request>>>) {
     (origin, requests)
 }
 
-fn client(origin: &str) -> JobClient {
+fn sign_link(origin: &str) -> Link {
     let job: String = url::form_urlencoded::byte_serialize(
         format!("{origin}/api/keyseal/v1/jobs/{TOKEN}").as_bytes(),
     )
     .collect();
-    JobClient::new(&parse_link(&format!("keyseal://sign?job={job}"), true).unwrap())
+    parse_link(&format!("keyseal://sign?job={job}"), true).unwrap()
+}
+
+fn client(origin: &str) -> JobClient {
+    JobClient::new(&sign_link(origin))
 }
 
 /// A sign job with two documents on `origin`.
@@ -512,6 +518,62 @@ fn reports_unreachable_servers() {
         error
             .message
             .starts_with("Couldn't reach http://127.0.0.1:"),
+        "{}",
+        error.message
+    );
+}
+
+#[test]
+fn says_the_site_may_still_be_finishing_when_round_2_times_out() {
+    let (origin, requests) = serve(Box::new(|_| {
+        std::thread::sleep(Duration::from_secs(2));
+        reply(200, "{}")
+    }));
+    let link = sign_link(&origin);
+    let client = JobClient::with_timeout(&link, Duration::from_millis(300));
+    let error = client
+        .submit_signatures(NONCE, &[b"x".to_vec()])
+        .unwrap_err();
+    assert_eq!(error.status, None);
+    assert_eq!(error.message, signatures_unanswered(&link.origin));
+    assert!(
+        error.message.starts_with(&format!(
+            "KeySeal sent the signatures, but {origin} didn't answer in time"
+        )),
+        "{}",
+        error.message
+    );
+    assert_eq!(
+        requests.lock().unwrap()[0].path,
+        format!("/api/keyseal/v1/jobs/{TOKEN}/signature")
+    );
+    // Any other request that times out still couldn't reach the site.
+    let error = client.claim().unwrap_err();
+    assert!(
+        error
+            .message
+            .starts_with(&format!("Couldn't reach {origin}: ")),
+        "{}",
+        error.message
+    );
+}
+
+#[test]
+fn reports_an_unreachable_server_on_round_2() {
+    let port = TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let origin = format!("http://127.0.0.1:{port}");
+    let error = client(&origin)
+        .submit_signatures(NONCE, &[b"x".to_vec()])
+        .unwrap_err();
+    assert_eq!(error.status, None);
+    assert!(
+        error
+            .message
+            .starts_with(&format!("Couldn't reach {origin}: ")),
         "{}",
         error.message
     );

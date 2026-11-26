@@ -17,6 +17,7 @@ Package:
 - `linux/make-apt-repo.sh`: `Packages` and `Release`, the flat apt repository of a release's debs.
 - `make-manifest.sh`: `keyseal-update.json` and `SHA256SUMS` for a release's assets.
 - The Windows zip is made in `release.yml`: `keyseal.exe`, `windows/install.cmd` and `THIRD-PARTY-NOTICES.txt`.
+- `windows/build-msix.ps1`: the unsigned MSIX package for the Microsoft Store (see below).
 
 Check:
 
@@ -65,3 +66,47 @@ Windows ships unsigned, as a per-user install with no installer program. SignPat
 - `keyseal-helper-<version>-windows-x64.exe` is the bare binary, the update asset named in `keyseal-update.json`. Installed helpers download it themselves, so it carries no download mark.
 - `keyseal uninstall`, or Uninstall in Apps, removes the registration, the shortcut, the Apps entry and the install folder. The running `keyseal.exe` can't delete itself, so a hidden PowerShell waits for it to exit and then deletes the helper's own files in `%LOCALAPPDATA%\keyseal` and the folder once it is empty.
 - The exe carries version information (`crates/keyseal-helper/keyseal.rc`) whose FileDescription, KeySeal, is the name browsers show when a site opens a `keyseal://` link.
+
+## Windows: the Microsoft Store package
+
+The Microsoft Store signs the packages it distributes, so a helper installed from the Store carries no SmartScreen warning and isn't blocked by Smart App Control. The release run builds the package; a maintainer uploads it to Partner Center by hand. There is no Store listing yet, and the zip stays the documented install.
+
+- `windows/build-msix.ps1 <keyseal.exe> <THIRD-PARTY-NOTICES.txt> <version> <out-dir>` lays out `keyseal.exe`, the notices, the logos in `windows/assets/` and `windows/AppxManifest.xml` with its values filled in, then runs `makeappx pack` from the Windows SDK. It writes `keyseal-helper-<version>-windows-x64.msix`, unsigned, and runs only on Windows.
+- The package is one full-trust app (`runFullTrust`, `Windows.FullTrustApplication`) running the same `keyseal.exe` as the zip, with a KeySeal entry in the Start menu that opens the settings, the `keyseal` protocol passing the link as the only argument, as the zip's registration does, and the execution alias `keyseal.exe`, so `keyseal doctor` and `keyseal list` work from a terminal.
+- `TargetDeviceFamily` is `Windows.Desktop` with `MinVersion` 10.0.17763.0 (Windows 10 1809). The execution alias needs 1709 and the protocol's `Parameters` attribute 1607; 1809 is the oldest Windows 10 release Microsoft still services (LTSC 2019), and the helper supports Windows 10 and 11. `MaxVersionTested` is 10.0.26100.0, the Windows 11 24H2 and Server 2025 build CI installs it on.
+- The logos are made from `brand/keyseal-icon-windows.svg` by `scripts/make-icons.sh`, at 44, 150 and 50 pixels (`Square44x44Logo`, `Square150x150Logo`, `StoreLogo`).
+
+### Package identity
+
+`windows/identity.psd1` holds the package's `Name`, `Publisher` and `PublisherDisplayName`. It holds test values (`KeySeal.Dev`, `CN=KeySeal Dev`) until a maintainer reserves the name in Partner Center; then they replace the three values with the ones on the app's Product identity page, and that is the only change needed.
+
+### Version
+
+Store packages have four-part versions whose first part isn't 0 and whose last is 0, so 0.6.1 can't be used as it is. `build-msix.ps1` maps `major.minor.patch` to `(major+1).minor.patch.0`, so helper 0.6.1 is package 1.6.1.0. The mapping is made on one line of that script. A prerelease suffix is dropped, so a release candidate and its release get the same package version; upload only releases.
+
+### What changes inside a package
+
+The helper finds out at run time whether it runs from a package (`install::store_package`, from `GetCurrentPackageFamilyName`). The same exe serves both installs. In a package:
+
+- It never downloads, stages or announces an update of itself, and `keyseal update` says the Microsoft Store keeps it up to date. The driver catalogue still refreshes after a job, daily, as in the zip install.
+- `keyseal install` and `keyseal uninstall` decline and exit non-zero: the package registers the protocol and the Start menu entry, and the Store installs and removes it. Registry writes under HKCU would go to the package's private hive anyway.
+- Windows keeps files the helper writes under `%APPDATA%` in `%LOCALAPPDATA%\Packages\<package family name>\LocalCache\Roaming`, so the trust store and `keyseal.log` are in `keyseal` there. The helper still sees them at `%APPDATA%\keyseal`, and `keyseal doctor` names the real folder.
+- Vendor PKCS#11 drivers load by absolute path from outside the package, as in the zip install.
+
+CI (`scripts/ci/windows-msix-smoke.ps1`, in the Windows leg of `checks.yml`) builds the package from its debug build, signs it with a throwaway certificate it trusts on the runner, installs it and checks the execution alias, that OpenSC's driver under `C:\Program Files` loads inside the package, that `keyseal update`, `install` and `uninstall` decline, that a `keyseal://` link opened through the shell starts the packaged helper and its log records the damaged link, and that the package uninstalls.
+
+### Uploading a release to Partner Center
+
+1. Download the `msix-windows-x64` artifact from the release run (Actions, the run for the `helper-v<version>` tag, Artifacts). It isn't a release asset, isn't in `SHA256SUMS` and isn't in `keyseal-update.json`: unsigned, nobody can install it.
+2. Check that `identity.psd1` at the released commit holds the Partner Center values, not the test ones, and that the package version is higher than the last one uploaded.
+3. Check that the exe inside is the release exe, byte for byte. An MSIX is a zip, so in PowerShell:
+
+   ```powershell
+   Expand-Archive keyseal-helper-<version>-windows-x64.msix msix
+   (Get-FileHash msix\keyseal.exe).Hash
+   (Get-FileHash keyseal-helper-<version>-windows-x64.exe).Hash
+   ```
+
+   The two hashes match, and the second is the `windows-x64` line of the release's `SHA256SUMS-unsigned`.
+4. Optionally run the Windows App Certification Kit from the Windows SDK on the package, as Partner Center does on upload.
+5. Upload the `.msix` as the submission's package.

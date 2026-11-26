@@ -588,8 +588,12 @@ pub fn take_notice() -> Option<String> {
 /// AppImage, so it replaces the AppImage the helper runs from (its
 /// executable is inside the image's read-only mount) and never a deb or
 /// tarball install, which is told where the new release is instead.
-/// Elsewhere it replaces the executable.
-fn install_target(appimage: Option<PathBuf>) -> Option<(PathBuf, bool)> {
+/// Elsewhere it replaces the executable, except in a `store` install:
+/// the Microsoft Store updates that, so there is no target at all.
+fn install_target(appimage: Option<PathBuf>, store: bool) -> Option<(PathBuf, bool)> {
+    if store {
+        return None;
+    }
     match appimage {
         Some(image) if cfg!(target_os = "linux") => Some((image, true)),
         _ => Some((std::env::current_exe().ok()?, !cfg!(target_os = "linux"))),
@@ -598,15 +602,25 @@ fn install_target(appimage: Option<PathBuf>) -> Option<(PathBuf, bool)> {
 
 /// Whether this helper is one an update replaces.
 fn replaces_itself() -> bool {
-    install_target(std::env::var_os("APPIMAGE").map(PathBuf::from))
-        .is_some_and(|(_, replace)| replace)
+    target().is_some_and(|(_, replace)| replace)
 }
+
+/// [`install_target`] for this helper.
+fn target() -> Option<(PathBuf, bool)> {
+    install_target(
+        std::env::var_os("APPIMAGE").map(PathBuf::from),
+        crate::install::store_package().is_some(),
+    )
+}
+
+/// What `keyseal update` says in a Microsoft Store install.
+const STORE_UPDATES: &str = "The Microsoft Store keeps this KeySeal up to date.";
 
 /// On launch: installs a staged release and runs it with `args`, returning
 /// its exit code. `None` means this helper carries on. `log` records why an
 /// update wasn't installed, where a helper without a terminal can show it.
 pub fn relaunch_if_staged(args: &[&str], log: fn(&str)) -> Option<ExitCode> {
-    let (exe, replace) = install_target(std::env::var_os("APPIMAGE").map(PathBuf::from))?;
+    let (exe, replace) = target()?;
     if cfg!(windows) {
         let _ = std::fs::remove_file(exe.with_extension("old.exe"));
     }
@@ -663,9 +677,12 @@ pub fn relaunch_if_staged(args: &[&str], log: fn(&str)) -> Option<ExitCode> {
 
 /// After a job: stages a newer release when a check is due or was asked
 /// for, and says why that failed. The GUI calls this on a background
-/// thread; headless runs skip it.
+/// thread; headless runs and Microsoft Store installs skip it.
 pub fn after_job() -> Result<(), String> {
-    if PLATFORM.is_none() || std::env::var("KEYSEAL_HEADLESS").is_ok_and(|v| v == "1") {
+    if PLATFORM.is_none()
+        || std::env::var("KEYSEAL_HEADLESS").is_ok_and(|v| v == "1")
+        || crate::install::store_package().is_some()
+    {
         return Ok(());
     }
     let forced = CHECK_SOON.swap(false, Ordering::Relaxed);
@@ -674,6 +691,9 @@ pub fn after_job() -> Result<(), String> {
 
 /// `keyseal update`: checks now, and says what it found.
 pub fn check_now() -> Result<String, String> {
+    if crate::install::store_package().is_some() {
+        return Ok(STORE_UPDATES.into());
+    }
     Ok(match check(true)? {
         Some(version) if replaces_itself() => {
             format!("KeySeal {version} is downloaded and installs the next time KeySeal starts.")
@@ -1356,7 +1376,7 @@ mod tests {
         let root = TempDir::new("update-appimage");
         let image = root.join("keyseal-x86_64.AppImage");
         std::fs::write(&image, b"old image").unwrap();
-        let target = install_target(Some(image.clone())).unwrap();
+        let target = install_target(Some(image.clone()), false).unwrap();
         let exe = std::env::current_exe().unwrap();
         let linux = cfg!(target_os = "linux");
         if linux {
@@ -1367,7 +1387,18 @@ mod tests {
         install_binary(b"new image", &image, "1.1.0", &root).unwrap();
         assert_eq!(std::fs::read(&image).unwrap(), b"new image");
         assert!(!root.join("keyseal-x86_64.new").exists());
-        assert_eq!(install_target(None), Some((exe, !linux)));
+        assert_eq!(install_target(None, false), Some((exe, !linux)));
+    }
+
+    /// The Microsoft Store updates a helper it installed: nothing is
+    /// replaced or staged.
+    #[test]
+    fn a_store_install_replaces_nothing() {
+        assert_eq!(install_target(None, true), None);
+        assert_eq!(
+            install_target(Some(PathBuf::from("/x.AppImage")), true),
+            None
+        );
     }
 
     /// A bundle in a folder the user can't write (`/Applications` for a

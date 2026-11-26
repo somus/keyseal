@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Regenerates the helper's app icons from brand/: AppIcon.icns for macOS,
-# keyseal.ico for Windows and keyseal.svg for Linux. Run on macOS with
+# keyseal.ico and the MSIX package's logos for Windows and keyseal.svg for
+# Linux. Run on macOS with
 # rsvg-convert (librsvg) and ImageMagick installed; commit the results.
 set -euo pipefail
 
@@ -23,5 +24,10 @@ for size in 16 20 24 32 40 48 64 256; do
   pngs+=("$work/win-$size.png")
 done
 magick "${pngs[@]}" "$packaging/windows/keyseal.ico"
+
+# The logos the MSIX package's manifest names, at their 100% scale sizes.
+for logo in Square44x44Logo:44 Square150x150Logo:150 StoreLogo:50; do
+  rsvg-convert -w "${logo#*:}" -h "${logo#*:}" "$root/brand/keyseal-icon-windows.svg" -o "$packaging/windows/assets/${logo%:*}.png"
+done
 
 cp "$root/brand/keyseal-icon.svg" "$packaging/linux/keyseal.svg"

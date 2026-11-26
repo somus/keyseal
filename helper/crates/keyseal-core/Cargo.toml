@@ -26,7 +26,7 @@ zeroize.workspace = true
 flate2.workspace = true
 
 [target.'cfg(windows)'.dependencies]
-windows.workspace = true
+windows = { workspace = true, features = ["Win32_Storage_Packaging_Appx"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 core-foundation.workspace = true

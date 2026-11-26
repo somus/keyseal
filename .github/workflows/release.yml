@@ -165,6 +165,19 @@ jobs:
         with:
           name: unsigned-windows-x64
           path: dist/
+      # The Microsoft Store package of the same exe, unsigned: a maintainer
+      # uploads it to Partner Center by hand and the Store signs it. Kept
+      # out of dist/, so it isn't a release asset and isn't in SHA256SUMS
+      # or keyseal-update.json.
+      - name: MSIX for the Microsoft Store
+        shell: pwsh
+        run: |
+          $version = "${{ needs.check.outputs.version }}"
+          helper/packaging/windows/build-msix.ps1 "dist/keyseal-helper-$version-windows-x64.exe" notices/THIRD-PARTY-NOTICES.txt $version msix
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: msix-windows-x64
+          path: msix/
 
   # Built in an Ubuntu 22.04 container, so the binary needs only glibc 2.35
   # and maintainers can reproduce it with the same image.

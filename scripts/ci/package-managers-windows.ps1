@@ -71,11 +71,12 @@ if ($Tool -eq 'winget') {
   Run 2 winget validate, --manifest, $manifest, --disable-interactivity
   Run 5 winget install, --manifest, $manifest, --disable-interactivity, --accept-source-agreements, --accept-package-agreements
   CheckInstalled 'winget'
-  $list = winget list --name KeySeal --disable-interactivity --accept-source-agreements | Out-String
+  $list = winget list --product-code KeySeal --disable-interactivity --accept-source-agreements | Out-String
   Write-Host $list
   Check ($list -match "KeySeal\s+\S+\s+$([regex]::Escape($Version))") "winget list doesn't show KeySeal $Version."
-  # Finds the install by the manifest's Apps entry and runs its uninstall.
-  Run 5 winget uninstall, --manifest, $manifest, --disable-interactivity, --accept-source-agreements
+  # A package installed from a local manifest is matched by its Apps entry,
+  # whose key the manifest declares as ProductCode, not by the manifest.
+  Run 5 winget uninstall, --product-code, KeySeal, --disable-interactivity, --accept-source-agreements
   CheckRemoved 'winget'
 } elseif ($Tool -eq 'choco') {
   $feed = Join-Path $env:RUNNER_TEMP 'choco-feed'

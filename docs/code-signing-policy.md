@@ -149,8 +149,8 @@ own.
 
 | Maintainer | apt key | Fingerprint |
 | --- | --- | --- |
-| Somasundaram Ayyappan (@somus) | primary, in Bitwarden | to be added with the key |
-| | backup, offline | to be added with the key |
+| Somasundaram Ayyappan (@somus) | primary, in Bitwarden | `CE038BC286C8712669BE8989CAB1719F06AE6894` |
+| | backup, offline | not made yet |
 
 A release must ship `main`'s keyring, as it must pin `main`'s release
 keys ([Which commits are released](#which-commits-are-released)).

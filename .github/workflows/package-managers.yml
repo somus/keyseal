@@ -63,13 +63,31 @@ jobs:
         with:
           name: package-managers
           path: package-managers
-      # The runner image has Chocolatey but not winget. This is the
-      # supported way to install it where the Store isn't available.
+      # The runner image has Chocolatey but not winget, and its App
+      # Installer stub has no x64 package for Repair-WinGetPackageManager to
+      # register. Install winget-cli's release bundle and its dependencies,
+      # pinned by SHA-256 (the digests GitHub lists for the release assets).
       - name: Install winget
         shell: pwsh
         run: |
-          Install-Module Microsoft.WinGet.Client -RequiredVersion 1.29.380 -Repository PSGallery -Force
-          Repair-WinGetPackageManager -Version 1.29.380 -AllUsers -Force
+          $release = 'https://github.com/microsoft/winget-cli/releases/download/v1.29.380'
+          $files = @{
+            'Microsoft.DesktopAppInstaller_8wekyb3d8bbwe.msixbundle' = '65dea9c01ce08ee7b763366b27c0e651f97db857c11ca9b9c301826c10092f2e'
+            'DesktopAppInstaller_Dependencies.zip' = 'ba875afe9d190f61218985ac0292a99d1db710bf93e13c68944ca9d89f0d82d1'
+          }
+          $ProgressPreference = 'SilentlyContinue'
+          foreach ($file in $files.Keys) {
+            $path = Join-Path $env:RUNNER_TEMP $file
+            Invoke-WebRequest "$release/$file" -OutFile $path
+            if ((Get-FileHash $path SHA256).Hash -ne $files[$file]) { throw "$file doesn't match its SHA-256." }
+          }
+          Expand-Archive (Join-Path $env:RUNNER_TEMP 'DesktopAppInstaller_Dependencies.zip') (Join-Path $env:RUNNER_TEMP 'winget-deps')
+          Add-AppxPackage -Path (Join-Path $env:RUNNER_TEMP 'Microsoft.DesktopAppInstaller_8wekyb3d8bbwe.msixbundle') `
+            -DependencyPath (Get-ChildItem (Join-Path $env:RUNNER_TEMP 'winget-deps/x64/*.appx')).FullName `
+            -ForceUpdateFromAnyVersion
+          $apps = Join-Path $env:LOCALAPPDATA 'Microsoft\WindowsApps'
+          $env:PATH = "$apps;$env:PATH"
+          Add-Content $env:GITHUB_PATH $apps
           winget --version
           winget settings --enable LocalManifestFiles
       - name: Install and uninstall with winget and Chocolatey

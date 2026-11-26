@@ -282,7 +282,6 @@ printf '%s\n' \
   "	source_aarch64 = $releases_tag/keyseal-helper-$version-linux-arm64.tar.gz" \
   "	sha256sums_aarch64 = $arm64_sum" \
   '' \
-  'pkgname = keyseal-bin' \
-  '' >"$aur/.SRCINFO"
+  'pkgname = keyseal-bin' >"$aur/.SRCINFO"
 
 echo "$out"

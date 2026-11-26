@@ -1,9 +1,9 @@
 name: package-managers
 
-# Generates the winget manifests, the Chocolatey package and the AUR
-# PKGBUILD for a published helper release (helper/packaging/package-managers.sh)
-# and installs, checks and uninstalls each on Windows and Arch Linux. Nothing
-# is submitted: docs/releasing.md has the maintainer's steps.
+# Generates the Chocolatey package and the AUR PKGBUILD for a published
+# helper release (helper/packaging/package-managers.sh) and installs, checks
+# and uninstalls each on Windows and Arch Linux. Nothing is submitted:
+# docs/releasing.md has the maintainer's steps.
 on:
   pull_request:
     paths:
@@ -64,60 +64,9 @@ jobs:
         with:
           name: package-managers
           path: package-managers
-      # The runner image has Chocolatey but not winget, and its App
-      # Installer stub has no x64 package for Repair-WinGetPackageManager to
-      # register. Install winget-cli's release bundle and its dependencies,
-      # pinned by SHA-256 (the digests GitHub lists for the release assets).
-      - name: Install winget
-        shell: pwsh
-        run: |
-          $release = 'https://github.com/microsoft/winget-cli/releases/download/v1.29.380'
-          $files = @{
-            'Microsoft.DesktopAppInstaller_8wekyb3d8bbwe.msixbundle' = '65dea9c01ce08ee7b763366b27c0e651f97db857c11ca9b9c301826c10092f2e'
-            'DesktopAppInstaller_Dependencies.zip' = 'ba875afe9d190f61218985ac0292a99d1db710bf93e13c68944ca9d89f0d82d1'
-          }
-          $ProgressPreference = 'SilentlyContinue'
-          foreach ($file in $files.Keys) {
-            $path = Join-Path $env:RUNNER_TEMP $file
-            Invoke-WebRequest "$release/$file" -OutFile $path
-            if ((Get-FileHash $path SHA256).Hash -ne $files[$file]) { throw "$file doesn't match its SHA-256." }
-          }
-          Expand-Archive (Join-Path $env:RUNNER_TEMP 'DesktopAppInstaller_Dependencies.zip') (Join-Path $env:RUNNER_TEMP 'winget-deps')
-          Add-AppxPackage -Path (Join-Path $env:RUNNER_TEMP 'Microsoft.DesktopAppInstaller_8wekyb3d8bbwe.msixbundle') `
-            -DependencyPath (Get-ChildItem (Join-Path $env:RUNNER_TEMP 'winget-deps/x64/*.appx')).FullName `
-            -ForceUpdateFromAnyVersion
-          $apps = Join-Path $env:LOCALAPPDATA 'Microsoft\WindowsApps'
-          $env:PATH = "$apps;$env:PATH"
-          Add-Content $env:GITHUB_PATH $apps
-          winget --version
-          winget settings --enable LocalManifestFiles
-      # First, while SmartScreen is still on: Chocolatey's download carries
-      # no mark of the web, so the unsigned exe runs without a prompt.
       - name: Install and uninstall with Chocolatey
         shell: pwsh
-        run: scripts/ci/package-managers-windows.ps1 "$PWD/package-managers" $env:VERSION choco
-        env:
-          VERSION: ${{ needs.generate.outputs.version }}
-      # winget marks the files it extracts from the downloaded zip as from
-      # the internet and starts keyseal.exe through the shell, so SmartScreen
-      # and then the shell's security warning hold the unsigned exe until
-      # someone clicks Run, as they do for a user's own download. No one can
-      # click on a runner, and the install waits forever; this turns both
-      # off for the rest of the job: SmartScreen, and the warning for
-      # programs from the Internet zone (URL action 1806).
-      - name: Let downloaded programs run without a prompt
-        if: ${{ !cancelled() }}
-        shell: pwsh
-        run: |
-          $policy = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System'
-          New-Item $policy -Force | Out-Null
-          Set-ItemProperty $policy EnableSmartScreen 0 -Type DWord
-          $internet = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings\Zones\3'
-          Set-ItemProperty $internet 1806 0 -Type DWord
-      - name: Install and uninstall with winget
-        if: ${{ !cancelled() }}
-        shell: pwsh
-        run: scripts/ci/package-managers-windows.ps1 "$PWD/package-managers" $env:VERSION winget
+        run: scripts/ci/package-managers-windows.ps1 "$PWD/package-managers" $env:VERSION
         env:
           VERSION: ${{ needs.generate.outputs.version }}
 

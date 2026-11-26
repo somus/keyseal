@@ -1,14 +1,12 @@
 #!/usr/bin/env bash
-# The winget manifests, the Chocolatey package and the AUR PKGBUILD for a
-# published helper release, from its assets: nothing is built.
+# The Chocolatey package and the AUR PKGBUILD for a published helper
+# release, from its assets: nothing is built.
 #
 #   helper/packaging/package-managers.sh <version> <out dir>
 #
 # Writes under <out dir>:
-#   winget/manifests/k/KeySeal/KeySeal/<version>/  the three manifests, laid
-#                                                  out as in winget-pkgs
-#   chocolatey/keyseal/                            keyseal.nuspec and tools/
-#   aur/keyseal-bin/                               PKGBUILD and .SRCINFO
+#   chocolatey/keyseal/  keyseal.nuspec and tools/
+#   aur/keyseal-bin/     PKGBUILD and .SRCINFO
 #
 # The checksums come only from the release's SHA256SUMS, once
 # verify-signatures.sh has checked it against this checkout's pinned keys.
@@ -25,7 +23,7 @@ repo=somus/keyseal
 tag="helper-v$version"
 releases="https://github.com/$repo/releases/download/$tag"
 
-# The metadata the three share, from README.md, LICENSE and the deb.
+# The metadata the two share, from README.md, LICENSE and the deb.
 name=KeySeal
 publisher=KeySeal
 summary='Signs documents with a token or smart card for websites that use KeySeal.'
@@ -64,77 +62,8 @@ arm64_sum="$(checksum "keyseal-helper-$version-linux-arm64.tar.gz")"
 desktop_sum="$(from_tag keyseal.desktop)"
 icon_sum="$(from_tag keyseal.svg)"
 
-# winget: zip with the helper as its nested exe installer. `keyseal.exe
-# install` is silent and per-user, and writes the Apps entry declared here.
-winget_version=1.28.0
-winget="$out/winget/manifests/k/KeySeal/KeySeal/$version"
-mkdir -p "$winget"
-cat >"$winget/KeySeal.KeySeal.yaml" <<YAML
-# yaml-language-server: \$schema=https://aka.ms/winget-manifest.version.$winget_version.schema.json
-
-PackageIdentifier: KeySeal.KeySeal
-PackageVersion: $version
-DefaultLocale: en-US
-ManifestType: version
-ManifestVersion: $winget_version
-YAML
-cat >"$winget/KeySeal.KeySeal.installer.yaml" <<YAML
-# yaml-language-server: \$schema=https://aka.ms/winget-manifest.installer.$winget_version.schema.json
-
-PackageIdentifier: KeySeal.KeySeal
-PackageVersion: $version
-InstallerType: zip
-NestedInstallerType: exe
-NestedInstallerFiles:
-- RelativeFilePath: keyseal.exe
-Scope: user
-InstallModes:
-- silent
-- silentWithProgress
-InstallerSwitches:
-  Silent: install
-  SilentWithProgress: install
-UpgradeBehavior: install
-Protocols:
-- keyseal
-AppsAndFeaturesEntries:
-- DisplayName: $name
-  Publisher: $publisher
-  ProductCode: KeySeal
-InstallationMetadata:
-  DefaultInstallLocation: '%LOCALAPPDATA%\keyseal'
-Installers:
-- Architecture: x64
-  InstallerUrl: $windows_url
-  InstallerSha256: $(tr '[:lower:]' '[:upper:]' <<<"$windows_sum")
-ManifestType: installer
-ManifestVersion: $winget_version
-YAML
-cat >"$winget/KeySeal.KeySeal.locale.en-US.yaml" <<YAML
-# yaml-language-server: \$schema=https://aka.ms/winget-manifest.defaultLocale.$winget_version.schema.json
-
-PackageIdentifier: KeySeal.KeySeal
-PackageVersion: $version
-PackageLocale: en-US
-Publisher: $publisher
-PublisherUrl: $homepage
-PublisherSupportUrl: $source_url/issues
-PackageName: $name
-PackageUrl: $homepage
-License: $license
-LicenseUrl: $license_url
-ShortDescription: $summary
-Description: '${description//\'/\'\'}'
-Moniker: keyseal
-Tags:
-$(printf -- '- %s\n' "${tags[@]}")
-ReleaseNotesUrl: $release_notes
-ManifestType: defaultLocale
-ManifestVersion: $winget_version
-YAML
-
-# Chocolatey: the install script downloads the same zip and runs the same
-# per-user install; the uninstall runs the installed helper's own.
+# Chocolatey: the install script downloads the Windows zip and runs its
+# per-user install, as install.cmd does; the uninstall runs the installed helper's own.
 choco="$out/chocolatey/keyseal"
 mkdir -p "$choco/tools"
 cat >"$choco/keyseal.nuspec" <<XML

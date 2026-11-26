@@ -163,7 +163,7 @@ procedure.
 
 ### Package managers
 
-KeySeal's packages for winget, Chocolatey and the AUR (`keyseal-bin`) are
+KeySeal's packages for Chocolatey and the AUR (`keyseal-bin`) are
 made from a published release's assets, not built, by
 `helper/packaging/package-managers.sh`. It takes the checksums from the
 release's `SHA256SUMS` once `verify-signatures.sh` has checked its
@@ -173,9 +173,9 @@ or a version you give it, and installs, checks and uninstalls each, on a
 Windows runner and in an Arch Linux container; it runs on pull requests
 that change these files.
 
-On Windows the helper updates itself, so winget and Chocolatey can show
-an older version than the one installed until their next upgrade, which
-installs the newer release over it. A tarball install, the AUR one
+On Windows the helper updates itself, so Chocolatey can show an older
+version than the one installed until its next upgrade, which installs the
+newer release over it. A tarball install, the AUR one
 included, doesn't update itself.
 
 After each helper release:
@@ -193,20 +193,7 @@ After each helper release:
    gh workflow run package-managers.yml --repo somus/keyseal -f version=1.4.0
    ```
 
-3. winget: copy `winget/manifests/k/KeySeal/KeySeal/1.4.0` to the same
-   path in your fork of
-   [microsoft/winget-pkgs](https://github.com/microsoft/winget-pkgs), on a
-   branch of its `master`, and open a pull request titled
-   `New version: KeySeal.KeySeal version 1.4.0` (`New package: ...` the
-   first time), one version per pull request. Its validation pipeline
-   downloads the zip, scans it, installs it as a standard user and labels
-   the pull request with anything that fails; a moderator merges it.
-   winget marks the files it extracts as downloaded and starts
-   `keyseal.exe` through the shell, so until the exe is signed SmartScreen
-   and the shell's security warning stop it for a click, for users and
-   possibly in that pipeline; the workflow turns both off to get past
-   them.
-4. Chocolatey: on Windows, in `chocolatey/keyseal`:
+3. Chocolatey: on Windows, in `chocolatey/keyseal`:
 
    ```powershell
    choco pack
@@ -216,7 +203,7 @@ After each helper release:
    The package goes through automated validation, verification (an
    install and uninstall in a VM) and a virus scan; the first version, and
    any later one the checks flag, also waits for a human moderator.
-5. AUR: in your clone of the package's repository, copy `PKGBUILD` and
+4. AUR: in your clone of the package's repository, copy `PKGBUILD` and
    `.SRCINFO` from `aur/keyseal-bin`, commit and push:
 
    ```sh
@@ -227,9 +214,6 @@ After each helper release:
 
 First-time setup, once per maintainer:
 
-- winget: a GitHub account with a fork of `microsoft/winget-pkgs`. The
-  first pull request asks you to sign the Microsoft Contributor License
-  Agreement; it can't be merged until you have.
 - Chocolatey: an account on
   [community.chocolatey.org](https://community.chocolatey.org/account/Register),
   and its API key stored with

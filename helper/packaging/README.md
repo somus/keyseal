@@ -35,7 +35,7 @@ Sign:
 
 ## Package managers
 
-`package-managers.sh <version> <out dir>` writes the winget manifests (`KeySeal.KeySeal`), the Chocolatey package (`keyseal`) and the AUR `PKGBUILD` and `.SRCINFO` (`keyseal-bin`) for a published release, from its assets and its signature-checked `SHA256SUMS`. winget and Chocolatey run the zip's `keyseal.exe install`, so they install per user, as `install.cmd` does; the AUR package installs the Linux tarball as the deb lays it out. `.github/workflows/package-managers.yml` installs and uninstalls each on Windows and Arch Linux. Submitting them is a maintainer's step: [Package managers](../../docs/releasing.md#package-managers).
+`package-managers.sh <version> <out dir>` writes the Chocolatey package (`keyseal`) and the AUR `PKGBUILD` and `.SRCINFO` (`keyseal-bin`) for a published release, from its assets and its signature-checked `SHA256SUMS`. Chocolatey runs the zip's `keyseal.exe install`, so it installs per user, as `install.cmd` does; the AUR package installs the Linux tarball as the deb lays it out. `.github/workflows/package-managers.yml` installs and uninstalls each on Windows and Arch Linux. Submitting them is a maintainer's step: [Package managers](../../docs/releasing.md#package-managers).
 
 ## macOS: the token worker
 

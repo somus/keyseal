@@ -1,14 +1,13 @@
-# Installs KeySeal from the winget manifests and then from the Chocolatey
-# package that helper/packaging/package-managers.sh wrote, checks each
-# install the way scripts/ci/windows-install-smoke.ps1 does, uninstalls it
-# with the same tool and checks that it is gone.
+# Installs KeySeal from the Chocolatey package that
+# helper/packaging/package-managers.sh wrote, checks the install the way
+# scripts/ci/windows-install-smoke.ps1 does, uninstalls it with Chocolatey
+# and checks that it is gone.
 #
-#   scripts/ci/package-managers-windows.ps1 <out dir> <version> winget|choco
+#   scripts/ci/package-managers-windows.ps1 <out dir> <version>
 #
-# Needs winget with local manifests enabled and Chocolatey. It changes the
-# current user's registry and Start menu, so CI runs it on a throwaway
-# runner.
-param([string]$Out, [string]$Version, [string]$Tool)
+# Needs Chocolatey. It changes the current user's registry and Start menu,
+# so CI runs it on a throwaway runner.
+param([string]$Out, [string]$Version)
 $ErrorActionPreference = 'Stop'
 
 function Check($condition, $message) {
@@ -45,14 +44,14 @@ function CheckRemoved($by) {
   Write-Host "$by removed KeySeal."
 }
 
-# Runs a package manager command, and if it hasn't finished within
+# Runs a Chocolatey command, and if it hasn't finished within
 # $minutes, lists the processes it may be waiting on before failing.
 function Run($minutes, $program, [string[]]$arguments) {
   $process = Start-Process $program $arguments -NoNewWindow -PassThru
   $null = $process.Handle
   if (-not $process.WaitForExit($minutes * 60000)) {
     Get-CimInstance Win32_Process |
-      Where-Object { $_.Name -match 'keyseal|reg|powershell|winget|choco|AppInstaller|smartscreen|consent|WerFault' } |
+      Where-Object { $_.Name -match 'keyseal|reg|powershell|choco|smartscreen|consent|WerFault' } |
       Format-Table ProcessId, ParentProcessId, Name, CommandLine -AutoSize -Wrap | Out-String -Width 400 | Write-Host
     Get-ChildItem $env:TEMP -Recurse -Filter keyseal.exe -ErrorAction SilentlyContinue | ForEach-Object {
       Write-Host $_.FullName
@@ -66,27 +65,11 @@ function Run($minutes, $program, [string[]]$arguments) {
 
 Check (-not (Test-Path $dir)) "$dir exists before the install."
 
-if ($Tool -eq 'winget') {
-  $manifest = Join-Path $Out "winget/manifests/k/KeySeal/KeySeal/$Version"
-  Run 2 winget validate, --manifest, $manifest, --disable-interactivity
-  Run 5 winget install, --manifest, $manifest, --disable-interactivity, --accept-source-agreements, --accept-package-agreements
-  CheckInstalled 'winget'
-  $list = winget list --name KeySeal --exact --disable-interactivity --accept-source-agreements | Out-String
-  Write-Host $list
-  Check ($list -match "KeySeal\s+\S+\s+$([regex]::Escape($Version))") "winget list doesn't show KeySeal $Version."
-  # A package installed from a local manifest is matched by its Apps entry,
-  # whose key the manifest declares as ProductCode, not by the manifest.
-  Run 5 winget uninstall, --product-code, KeySeal, --disable-interactivity, --accept-source-agreements
-  CheckRemoved 'winget'
-} elseif ($Tool -eq 'choco') {
-  $feed = Join-Path $env:RUNNER_TEMP 'choco-feed'
-  choco pack (Join-Path $Out 'chocolatey/keyseal/keyseal.nuspec') --out $feed
-  Check ($LASTEXITCODE -eq 0) "choco pack exited with $LASTEXITCODE."
-  Run 5 choco install, keyseal, --source, $feed, --yes, --no-progress
-  CheckInstalled 'choco'
-  Check (-not (Test-Path (Join-Path $env:ChocolateyInstall 'bin/keyseal.exe'))) 'Chocolatey shimmed the downloaded keyseal.exe.'
-  Run 5 choco uninstall, keyseal, --yes, --no-progress
-  CheckRemoved 'choco'
-} else {
-  throw "Name winget or choco, not $Tool."
-}
+$feed = Join-Path $env:RUNNER_TEMP 'choco-feed'
+choco pack (Join-Path $Out 'chocolatey/keyseal/keyseal.nuspec') --out $feed
+Check ($LASTEXITCODE -eq 0) "choco pack exited with $LASTEXITCODE."
+Run 5 choco install, keyseal, --source, $feed, --yes, --no-progress
+CheckInstalled 'choco'
+Check (-not (Test-Path (Join-Path $env:ChocolateyInstall 'bin/keyseal.exe'))) 'Chocolatey shimmed the downloaded keyseal.exe.'
+Run 5 choco uninstall, keyseal, --yes, --no-progress
+CheckRemoved 'choco'

@@ -222,7 +222,7 @@ pkgdesc='${summary%.}'
 arch=('x86_64' 'aarch64')
 url='$homepage'
 license=('$license')
-depends=('glibc' 'gcc-libs' 'libxcb' 'libxkbcommon' 'libxkbcommon-x11' 'vulkan-icd-loader' 'wayland' 'hicolor-icon-theme')
+depends=('glibc' 'libgcc' 'libxcb' 'libxkbcommon' 'libxkbcommon-x11' 'vulkan-icd-loader' 'wayland' 'hicolor-icon-theme')
 optdepends=('p11-kit: tokens registered with p11-kit'
             'vulkan-driver: the windows, on a GPU')
 provides=('keyseal')
@@ -262,7 +262,7 @@ printf '%s\n' \
   '	arch = aarch64' \
   "	license = $license" \
   '	depends = glibc' \
-  '	depends = gcc-libs' \
+  '	depends = libgcc' \
   '	depends = libxcb' \
   '	depends = libxkbcommon' \
   '	depends = libxkbcommon-x11' \

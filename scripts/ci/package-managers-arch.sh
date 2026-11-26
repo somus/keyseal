@@ -26,7 +26,7 @@ echo '.SRCINFO matches makepkg --printsrcinfo.'
 sed 's/^CARCH=.*/CARCH="aarch64"/' /etc/makepkg.conf >/tmp/makepkg-aarch64.conf
 su builder -c 'makepkg --config /tmp/makepkg-aarch64.conf --verifysource'
 # makepkg checks the dependencies but installs none without sudo.
-pacman -S --noconfirm --needed --asdeps glibc gcc-libs libxcb libxkbcommon libxkbcommon-x11 vulkan-icd-loader wayland hicolor-icon-theme
+pacman -S --noconfirm --needed --asdeps glibc libgcc libxcb libxkbcommon libxkbcommon-x11 vulkan-icd-loader wayland hicolor-icon-theme
 su builder -c 'makepkg --noconfirm'
 
 package="$(ls keyseal-bin-"$version"-1-x86_64.pkg.tar.*)"

@@ -71,7 +71,7 @@ if ($Tool -eq 'winget') {
   Run 2 winget validate, --manifest, $manifest, --disable-interactivity
   Run 5 winget install, --manifest, $manifest, --disable-interactivity, --accept-source-agreements, --accept-package-agreements
   CheckInstalled 'winget'
-  $list = winget list --product-code KeySeal --disable-interactivity --accept-source-agreements | Out-String
+  $list = winget list --name KeySeal --exact --disable-interactivity --accept-source-agreements | Out-String
   Write-Host $list
   Check ($list -match "KeySeal\s+\S+\s+$([regex]::Escape($Version))") "winget list doesn't show KeySeal $Version."
   # A package installed from a local manifest is matched by its Apps entry,

@@ -19,6 +19,14 @@ lines under the new version with the release date.
 
 ### [Unreleased][helper-unreleased]
 
+#### Added
+
+- The Debian/Ubuntu package adds KeySeal's apt repository, signed by the
+  maintainers, so later versions come with the system's updates
+  (`apt upgrade` or Software Updater) instead of a download by hand.
+  `sudo apt-mark hold keyseal` keeps the version installed, and
+  `apt remove keyseal` removes the repository too.
+
 ### [0.6.1][helper-0.6.1] - 2026-11-17
 
 #### Fixed

@@ -12,7 +12,7 @@ key and is outside this policy.
 | --- | --- | --- | --- |
 | `keyseal-update.json` | Ed25519, threshold of pinned keys | Maintainers | Each maintainer's Bitwarden vault, with an offline backup key |
 | `SHA256SUMS` | Ed25519, the same keys and threshold | Maintainers | The same keys |
-| `InRelease`, the apt repository's signed `Release` | OpenPGP, Ed25519, any key of the keyring the deb installs | The maintainer who publishes | Bitwarden, with an offline backup key |
+| `InRelease`, the apt repository's signed `Release` | OpenPGP, Ed25519, any key of the keyring the deb installs | The maintainer who publishes | Bitwarden |
 | macOS `KeySeal.app` (with the token worker inside) and disk image | Apple Developer ID, notarized; ad-hoc signed until the project has a Developer ID | The release workflow | Apple certificate in the `release-macos` GitHub environment |
 | Windows `keyseal.exe` | none yet: SignPath Foundation declined the first application (October 2026) | | |
 | Linux binaries, tarball, deb, AppImage | none (apt checks the deb against the signed `InRelease`) | | |
@@ -121,11 +121,12 @@ own.
 - **No expiry.** An expired key makes `apt update` fail for every deb user,
   and a new expiry date reaches users only in a deb they install, so an
   expiry adds a deadline without stopping a thief: a stolen key is replaced
-  by a release either way. Loss is what the keys are protected against, so
-  there are two, as with release keys: a primary in the maintainer's
-  Bitwarden vault, and a backup encrypted with a passphrase and kept
-  offline. Both are in the keyring; apt accepts `InRelease` signed by
-  either.
+  by a release either way. For now there is one key, in the maintainer's
+  Bitwarden vault. If it is lost, deb users must install a later release's
+  deb by hand to get updates again. A backup key encrypted with a
+  passphrase and kept offline (`new-apt-key.sh offline`) would avoid that;
+  apt accepts `InRelease` signed by any key in the keyring, so a backup
+  counts once a release's deb has installed it.
 - **Custody:** the same rule as release keys: the unencrypted key is never
   written to disk. GnuPG works only from a keyring on disk, so
   `helper/packaging/new-apt-key.sh` and `sign-apt-release.sh` use a
@@ -133,8 +134,8 @@ own.
   gpg the passphrase through a pipe, and delete the home and stop its
   agent when they exit; the decrypted key exists only in that agent's
   memory. The Bitwarden item holds the encrypted key in its notes and a
-  random passphrase in a hidden field; the offline backup's passphrase is
-  the maintainer's own.
+  random passphrase in a hidden field; an offline key's passphrase is the
+  maintainer's own.
 - **What it protects:** a deb user's machine installs from the repository
   only what `InRelease` vouches for: `Packages` by SHA-256, and through it
   each deb's SHA-256. Someone who can change the release's files, but
@@ -149,8 +150,7 @@ own.
 
 | Maintainer | apt key | Fingerprint |
 | --- | --- | --- |
-| Somasundaram Ayyappan (@somus) | primary, in Bitwarden | `CE038BC286C8712669BE8989CAB1719F06AE6894` |
-| | backup, offline | not made yet |
+| Somasundaram Ayyappan (@somus) | in Bitwarden | `CE038BC286C8712669BE8989CAB1719F06AE6894` |
 
 A release must ship `main`'s keyring, as it must pin `main`'s release
 keys ([Which commits are released](#which-commits-are-released)).
@@ -270,12 +270,13 @@ If a release key is lost, stolen or suspected compromised:
    its signed `SHA256SUMS`.
 4. Record the event and the new keyIds in this file.
 
-If an apt repository key is lost, stolen or suspected compromised, make a
-release whose keyring drops it (and adds any replacement), signed with the
-other key. Users get the new keyring with that release; until then, the
-old key still counts for their apt. If both keys are lost, deb users must
-install a release's deb by hand, which brings the new keyring
-([docs/releasing.md](releasing.md#the-apt-repository)).
+If the apt repository key is lost, stolen or suspected compromised, make a
+new one and a release whose keyring holds only the new key. Its
+`InRelease` is signed with a key deb users don't have yet, so apt refuses
+it, and they must install that release's deb by hand, which brings the new
+keyring ([docs/releasing.md](releasing.md#the-apt-repository)). Once the
+keyring also holds a backup key, a release signed with the backup moves
+them over through apt instead.
 
 If the Apple certificate or API key leaks, revoke it in the Apple Developer
 account, replace the environment secrets, and re-release. If the Windows

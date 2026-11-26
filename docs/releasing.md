@@ -291,7 +291,9 @@ for file in keyseal-update.json SHA256SUMS; do
   jq -cs '{signatures: .}' "$file"-*.json > "$file.sig"
   src/helper/packaging/verify-signatures.sh "draft/$file" "$file.sig"
 done
-src/helper/packaging/sign-apt-release.sh offline /Volumes/<backup drive>/keyseal-apt-backup.asc \
+# The apt key has no offline backup yet; with one, sign with
+# `offline /Volumes/<backup drive>/keyseal-apt-backup.asc` instead.
+src/helper/packaging/sign-apt-release.sh bitwarden "KeySeal apt repository key" \
   draft/Release > InRelease
 src/helper/packaging/verify-apt-release.sh draft/Release InRelease
 gh workflow run release.yml --repo somus/keyseal --ref main -f tag=helper-v1.4.0 \
@@ -325,9 +327,10 @@ someone who controls GitHub's release downloads.
 
 First-time setup, once, on the Mac that signs, with GnuPG 2.2 or later
 (`brew install gnupg`), OpenSSL, `jq` and the Bitwarden CLI logged in. Make
-a primary key in Bitwarden and a backup key offline, both added to the
-keyring the deb installs, and commit the keyring in a reviewed pull
-request:
+the key in Bitwarden, which adds its public half to the keyring the deb
+installs, and commit the keyring in a reviewed pull request. A backup key
+kept offline is optional; the second command adds one to the same
+keyring:
 
 ```sh
 export BW_SESSION="$(bw unlock --raw)"
@@ -338,9 +341,9 @@ helper/packaging/new-apt-key.sh offline /Volumes/<backup drive>/keyseal-apt-back
 gpg --show-keys helper/packaging/linux/keyseal-archive-keyring.asc
 ```
 
-Each prints its key's fingerprint; record both in
+Each prints its key's fingerprint; record it in
 [The apt repository key](code-signing-policy.md#the-apt-repository-key). `gpg --show-keys` must
-list exactly those two keys, Ed25519, with no expiry. Until the keyring is
+list exactly the keys you made, Ed25519, with no expiry. Until the keyring is
 committed, `build-deb.sh`, and so the release run, fails.
 `sign-release.sh` signs with the Bitwarden item named
 "KeySeal apt repository key" unless `KEYSEAL_APT_KEY` names another.

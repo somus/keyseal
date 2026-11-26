@@ -1,0 +1,89 @@
+name: package-managers
+
+# Generates the Chocolatey package and the AUR PKGBUILD for a published
+# helper release (helper/packaging/package-managers.sh) and installs, checks
+# and uninstalls each on Windows and Arch Linux. Nothing is submitted:
+# docs/releasing.md has the maintainer's steps.
+on:
+  pull_request:
+    paths:
+      - .github/workflows/package-managers.yml
+      - helper/packaging/package-managers.sh
+      - helper/packaging/verify-signatures.sh
+      - scripts/ci/package-managers-*
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Helper version, such as 0.6.1; the latest helper release if empty
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - id: version
+        run: |
+          if [ -z "$VERSION" ]; then
+            VERSION="$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName)"
+            VERSION="${VERSION#helper-v}"
+          fi
+          echo "version=$VERSION" >>"$GITHUB_OUTPUT"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+      - run: |
+          git fetch --no-tags origin tag "helper-v$VERSION"
+          helper/packaging/package-managers.sh "$VERSION" package-managers
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: package-managers
+          path: package-managers
+          include-hidden-files: true
+
+  windows:
+    needs: generate
+    runs-on: windows-2025
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: scripts/ci
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: package-managers
+          path: package-managers
+      - name: Install and uninstall with Chocolatey
+        shell: pwsh
+        run: scripts/ci/package-managers-windows.ps1 "$PWD/package-managers" $env:VERSION
+        env:
+          VERSION: ${{ needs.generate.outputs.version }}
+
+  arch:
+    needs: generate
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    container: archlinux:base-devel@sha256:949ecb1661609ab7e8f6854ba03efd62792e7a796313738e94b040c095c20d91
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: scripts/ci
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: package-managers
+          path: package-managers
+      - name: Build, install and remove with makepkg and pacman
+        run: bash scripts/ci/package-managers-arch.sh "$PWD/package-managers" "$VERSION"
+        env:
+          VERSION: ${{ needs.generate.outputs.version }}

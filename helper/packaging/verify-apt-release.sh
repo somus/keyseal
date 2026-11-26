@@ -17,7 +17,8 @@ home="$(mktemp -d)"
 trap 'gpgconf --homedir "$home" --kill all; rm -rf "$home"' EXIT
 # gpgv reads only a binary keyring, and only that one: no other key counts.
 gpg --homedir "$home" --batch --quiet --dearmor --output "$home/keyring.gpg" "$keyring"
-if ! gpgv --homedir "$home" --quiet --keyring "$home/keyring.gpg" --output "$home/signed" "$inrelease" 2>"$home/log"; then
+# To stdout: gpgv 2.5 doesn't write the signed text to an --output file.
+if ! gpgv --homedir "$home" --quiet --keyring "$home/keyring.gpg" --output - "$inrelease" >"$home/signed" 2>"$home/log"; then
   cat "$home/log" >&2
   echo "$inrelease isn't signed by a key of $keyring." >&2
   exit 1

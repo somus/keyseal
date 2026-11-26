@@ -19,7 +19,7 @@
 set -euo pipefail
 
 images=("$@")
-[ "${#images[@]}" -gt 0 ] || images=(ubuntu:22.04 ubuntu:24.04 ubuntu:26.04 debian:12 debian:13)
+[ "${#images[@]}" -gt 0 ] || images=(ubuntu:22.04 ubuntu:24.04 ubuntu:26.04 ubuntu:26.10 debian:12 debian:13)
 root="$(git -C "$(dirname "$0")" rev-parse --show-toplevel)"
 packaging="$root/helper/packaging"
 work="$(mktemp -d)"

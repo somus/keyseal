@@ -19,6 +19,15 @@ lines under the new version with the release date.
 
 ### [Unreleased][helper-unreleased]
 
+#### Added
+
+- The release run also builds the Windows helper as an unsigned MSIX package
+  for the Microsoft Store, from the same `keyseal.exe`. A helper the Store
+  installed leaves updates to the Store, `keyseal install` and
+  `keyseal uninstall` say the Store installs and removes it, and
+  `keyseal doctor` says it came from the Store and where its files are. The
+  zip install is unchanged.
+
 ### [0.6.1][helper-0.6.1] - 2026-11-17
 
 #### Fixed

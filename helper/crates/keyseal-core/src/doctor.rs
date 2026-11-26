@@ -141,6 +141,8 @@ const TOO_LONG: &str = "Checking took too long: a token driver stopped respondin
 
 /// What [`report`] needs, read from the system.
 struct Facts {
+    /// The package family name of a Microsoft Store install.
+    store: Option<String>,
     config: Result<(PathBuf, Result<Vec<Record>, String>), String>,
     gpu: Result<Option<String>, String>,
     insecure: bool,
@@ -257,6 +259,7 @@ fn gather(gpu: Result<Option<String>, String>) -> Facts {
         };
     }
     Facts {
+        store: crate::install::store_package(),
         config,
         gpu,
         insecure: origin::insecure_origins_allowed(),
@@ -315,6 +318,12 @@ fn write(facts: &Facts, lines: &mut Vec<String>) -> Result<Status, String> {
         std::env::consts::OS,
         std::env::consts::ARCH
     ));
+    if let Some(family) = &facts.store {
+        // A packaged app's writes to %APPDATA% land in the package's folder.
+        lines.push(format!(
+            r"Installed from the Microsoft Store, which keeps it up to date. Files under %APPDATA% are kept in %LOCALAPPDATA%\Packages\{family}\LocalCache\Roaming"
+        ));
+    }
     match &facts.config {
         Ok((dir, records)) => {
             lines.push(format!("Config directory: {}", dir.display()));
@@ -346,8 +355,13 @@ fn write(facts: &Facts, lines: &mut Vec<String>) -> Result<Status, String> {
         );
     }
     if !facts.proxies.is_empty() {
+        let downloads = if facts.store.is_some() {
+            "The driver catalogue downloads"
+        } else {
+            "Updates and the driver catalogue download"
+        };
         lines.push(format!(
-            "Proxy: {} set. Updates and the driver catalogue download through it; jobs connect to sites directly, never through a proxy, since the address a site resolves to can't be checked through one",
+            "Proxy: {} set. {downloads} through it; jobs connect to sites directly, never through a proxy, since the address a site resolves to can't be checked through one",
             facts.proxies.join(", ")
         ));
     }
@@ -505,6 +519,7 @@ mod tests {
         let known = candidate("/usr/local/lib/libeTPkcs11.dylib", modules::Source::Known);
         let missing = candidate("/usr/local/lib/libmtoken.dylib", modules::Source::Known);
         Facts {
+            store: None,
             config: Ok((
                 "/config/keyseal".into(),
                 Ok(vec![Record {
@@ -577,6 +592,22 @@ mod tests {
                 ("libeTPkcs11.dylib", None, &DriverState::NotTried),
                 ("libmtoken.dylib", None, &DriverState::Missing),
             ]
+        );
+    }
+
+    /// A Microsoft Store install says so, says where its files are, and
+    /// downloads no updates through a proxy.
+    #[test]
+    fn reports_a_store_install() {
+        let mut facts = facts();
+        facts.store = Some("KeySeal.Dev_abc123".into());
+        facts.proxies = vec!["HTTPS_PROXY"];
+        let text = report(&facts).text;
+        assert!(text.contains(
+            "Installed from the Microsoft Store, which keeps it up to date. Files under %APPDATA% are kept in %LOCALAPPDATA%\\Packages\\KeySeal.Dev_abc123\\LocalCache\\Roaming\n"
+        ));
+        assert!(
+            text.contains("Proxy: HTTPS_PROXY set. The driver catalogue downloads through it;")
         );
     }
 

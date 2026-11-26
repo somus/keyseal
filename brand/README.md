@@ -16,4 +16,4 @@ The helper is white-label, so the brand stays on KeySeal's own surfaces: the app
 
 ## Regenerating the icons
 
-`scripts/make-icons.sh` turns the SVGs into `helper/packaging/macos/AppIcon.icns`, `helper/packaging/windows/keyseal.ico` and `helper/packaging/linux/keyseal.svg`. It needs macOS with `rsvg-convert` and ImageMagick (`brew install librsvg imagemagick`). Commit the results.
+`scripts/make-icons.sh` turns the SVGs into `helper/packaging/macos/AppIcon.icns`, `helper/packaging/windows/keyseal.ico`, the MSIX logos in `helper/packaging/windows/assets/` and `helper/packaging/linux/keyseal.svg`. It needs macOS with `rsvg-convert` and ImageMagick (`brew install librsvg imagemagick`). Commit the results.

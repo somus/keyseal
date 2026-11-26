@@ -10,9 +10,11 @@
 #    to be on main, to pin main's keys (check-release-commit.sh, this
 #    checkout's copy) and to be the commit the release run built, so every
 #    check runs reviewed scripts.
-# 2. Checks keyseal-update.json and SHA256SUMS against the assets, the
-#    Windows exe and zip against the unsigned exe the release run built, and
-#    the macOS zip and disk image against its unsigned binaries
+# 2. Checks keyseal-update.json and SHA256SUMS against the assets, the apt
+#    repository's Packages and Release against the debs
+#    (linux/make-apt-repo.sh) and that each deb adds that repository with
+#    the tagged source's apt keyring, the Windows exe and zip against the
+#    unsigned exe the release run built, and the macOS zip and disk image against its unsigned binaries
 #    (compare-bundle.sh), with their Developer ID or ad-hoc signature. The
 #    zip and the app must hold the third-party notices this script makes
 #    from the tagged source (third-party-notices.sh).
@@ -32,26 +34,31 @@
 #    image cache; and --skip-rebuild skips it, accepting that CI built what
 #    the tag holds.
 # 4. Signs both files with the release key in Bitwarden
-#    ($KEYSEAL_RELEASE_KEY, by default "KeySeal release key"), verifies the
-#    signatures with verify-signatures.sh, starts the publish run, waits for
-#    it, and requires the release to be published and latest.
+#    ($KEYSEAL_RELEASE_KEY, by default "KeySeal release key") and Release
+#    into InRelease with the apt repository key ($KEYSEAL_APT_KEY, by
+#    default "KeySeal apt repository key"), verifies the signatures with
+#    verify-signatures.sh and verify-apt-release.sh, starts the publish run
+#    with all three, waits for it, and requires the release to be published
+#    and latest.
 #
 # A missing draft is waited for: the tag's release run makes it. Bitwarden
 # is unlocked once at the start unless BW_SESSION is set; either way the
-# session is taken out of the environment and handed only to bw and
-# sign-file.sh. The terminal bell and a notification mark the end, unless
-# KEYSEAL_NO_NOTIFY=1 (scripts/release.sh notifies instead).
+# session is taken out of the environment and handed only to bw,
+# sign-file.sh and sign-apt-release.sh. The terminal bell and a
+# notification mark the end, unless KEYSEAL_NO_NOTIFY=1 (scripts/release.sh
+# notifies instead).
 #
 # --verify-only stops after step 3, needs no Bitwarden, and takes a published
 # release as well as a draft, whose uploaded signatures it then verifies too.
 #
 # With a THRESHOLD above 1 each maintainer runs it with KEYSEAL_SIGN_ONLY=1
 # and sends their two .json entries; whoever publishes puts every entry in
-# the work directory before running it without.
+# the work directory before running it without, and signs InRelease.
 #
-# Needs gh, jq, git, bw, OpenSSL 3 or later, the Xcode command line tools,
-# and rustup and cargo-about 0.9.3 for the notices; boat for the default
-# rebuild and --rebuild-boat, Docker for the default and --rebuild-local.
+# Needs gh, jq, git, bw, OpenSSL 3 or later, GnuPG 2.2 or later, the Xcode
+# command line tools, and rustup and cargo-about 0.9.3 for the notices; boat
+# for the default rebuild and --rebuild-boat, Docker for the default and
+# --rebuild-local.
 # Works in $KEYSEAL_RELEASE_DIR, a directory you own (made private), or by
 # default a new private one under $TMPDIR; its path must not hold a space.
 set -euo pipefail
@@ -94,6 +101,7 @@ here="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=release-common.sh
 . "$here/release-common.sh"
 key="${KEYSEAL_RELEASE_KEY:-KeySeal release key}"
+apt_key="${KEYSEAL_APT_KEY:-KeySeal apt repository key}"
 # Deleted on every way out of this script, and only the ones it made.
 sandboxes=()
 outcome="$tag: the release failed; see the terminal."
@@ -107,7 +115,7 @@ trap on_exit EXIT
 trap 'exit 130' INT TERM
 
 step "Preflight"
-for tool in gh jq git openssl codesign ditto spctl cargo-about rustup; do
+for tool in gh jq git openssl gpg gpgv codesign ditto spctl cargo-about rustup; do
   command -v "$tool" >/dev/null || fail "needs $tool on the PATH"
 done
 case "$(openssl version)" in
@@ -175,7 +183,7 @@ done
 $verify_only || [ "$is_draft" = true ] || fail "$tag is not a draft release in $repo"
 
 step "Downloading the draft and the tagged source into $work"
-rm -rf "$work/draft" "$work/src" "$work/build-in-container.sh" "$work/ci-unsigned" "$work/ci-windows" "$work/mine" "$work/unzipped" "$work/rebuilt" "$work"/rebuild-* "$work"/rebuilt-* "$work/THIRD-PARTY-NOTICES.txt"
+rm -rf "$work/draft" "$work/src" "$work/build-in-container.sh" "$work/ci-unsigned" "$work/ci-windows" "$work/mine" "$work/deb" "$work/InRelease" "$work/unzipped" "$work/rebuilt" "$work"/rebuild-* "$work"/rebuilt-* "$work/THIRD-PARTY-NOTICES.txt"
 gh release download "$tag" --repo "$repo" --dir "$work/draft"
 # Not `clone --branch`: it would take a branch named like the tag over the tag.
 git clone -q --no-checkout "https://github.com/$repo.git" "$work/src"
@@ -204,6 +212,29 @@ step "keyseal-update.json and SHA256SUMS describe the assets"
 cmp "$work/mine/keyseal-update.json" "$draft/keyseal-update.json" || fail "keyseal-update.json"
 cmp "$work/mine/SHA256SUMS" "$draft/SHA256SUMS" || fail "SHA256SUMS"
 jq . "$draft/keyseal-update.json"
+
+# A tag made before the apt repository has no Packages or Release.
+apt_repo=false
+[ ! -f "$src/helper/packaging/linux/make-apt-repo.sh" ] || apt_repo=true
+if $apt_repo; then
+  step "Packages and Release describe the debs, which add the apt repository with the tagged apt keyring"
+  "$src/helper/packaging/linux/make-apt-repo.sh" "$version" "$draft" "$work/mine" >/dev/null
+  cmp "$work/mine/Packages" "$draft/Packages" || fail "Packages"
+  cmp "$work/mine/Release" "$draft/Release" || fail "Release"
+  for arch in amd64 arm64; do
+    rm -rf "$work/deb"
+    mkdir "$work/deb"
+    ar p "$draft/keyseal_${version}_$arch.deb" data.tar.xz >"$work/deb/data.tar.xz"
+    tar -xf "$work/deb/data.tar.xz" -C "$work/deb" \
+      ./etc/apt/sources.list.d/keyseal.sources ./usr/share/keyrings/keyseal-archive-keyring.asc \
+      || fail "reading the $arch deb's apt source and keyring"
+    cmp "$work/deb/etc/apt/sources.list.d/keyseal.sources" "$src/helper/packaging/linux/keyseal.sources" \
+      || fail "the $arch deb's apt source"
+    cmp "$work/deb/usr/share/keyrings/keyseal-archive-keyring.asc" "$src/helper/packaging/linux/keyseal-archive-keyring.asc" \
+      || fail "the $arch deb's apt keyring isn't the tagged one"
+  done
+  cat "$draft/Release"
+fi
 
 step "Third-party notices from the tagged source"
 "$src/helper/packaging/third-party-notices.sh" "$work/THIRD-PARTY-NOTICES.txt" \
@@ -347,6 +378,7 @@ if $verify_only; then
   for file in keyseal-update.json SHA256SUMS; do
     [ ! -f "$draft/$file.sig" ] || "$src/helper/packaging/verify-signatures.sh" "$draft/$file" "$draft/$file.sig"
   done
+  [ ! -f "$draft/InRelease" ] || "$src/helper/packaging/verify-apt-release.sh" "$draft/Release" "$draft/InRelease"
   step "Every check passed; nothing signed (--verify-only)"
   outcome="$tag: every check passed."
   exit 0
@@ -363,6 +395,14 @@ if [ "${KEYSEAL_SIGN_ONLY:-}" = 1 ]; then
   exit 0
 fi
 
+apt_release=()
+if $apt_repo; then
+  step "Signing Release into InRelease with \"$apt_key\""
+  BW_SESSION="$bw_session" "$src/helper/packaging/sign-apt-release.sh" bitwarden "$apt_key" "$draft/Release" >"$work/InRelease"
+  # As base64: a workflow input keeps one line as it is.
+  apt_release=(-f apt_release="$(base64 <"$work/InRelease" | tr -d '\n')")
+fi
+
 step "Verifying the signatures with the pinned keys"
 jq -cs '{signatures: .}' "$work"/keyseal-update.json-*.json >"$work/keyseal-update.json.sig"
 jq -cs '{signatures: .}' "$work"/SHA256SUMS-*.json >"$work/SHA256SUMS.sig"
@@ -371,6 +411,9 @@ jq -cs '{signatures: .}' "$work"/SHA256SUMS-*.json >"$work/SHA256SUMS.sig"
 # helper built from the tag.
 "$src/helper/packaging/verify-signatures.sh" "$draft/keyseal-update.json" "$work/keyseal-update.json.sig"
 "$src/helper/packaging/verify-signatures.sh" "$draft/SHA256SUMS" "$work/SHA256SUMS.sig"
+# With the tagged apt keyring, which the debs install and the publish run
+# verifies with.
+! $apt_repo || "$src/helper/packaging/verify-apt-release.sh" "$draft/Release" "$work/InRelease"
 
 step "Publishing"
 # gh doesn't always say which run it started, so the publish run is the
@@ -382,7 +425,7 @@ newest_dispatch() {
 before="$(newest_dispatch)"
 gh workflow run release.yml --repo "$repo" --ref main -f tag="$tag" \
   -f signatures="$(cat "$work/keyseal-update.json.sig")" \
-  -f checksum_signatures="$(cat "$work/SHA256SUMS.sig")" >/dev/null
+  -f checksum_signatures="$(cat "$work/SHA256SUMS.sig")" ${apt_release[@]+"${apt_release[@]}"} >/dev/null
 publish_run=""
 for _ in $(seq 30); do
   publish_run="$(newest_dispatch)"

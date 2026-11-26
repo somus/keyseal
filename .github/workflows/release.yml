@@ -5,13 +5,16 @@ name: release
 # 1. Pushing a helper-v* tag builds the unsigned binaries reproducibly,
 #    signs the macOS app (ad-hoc until there is a Developer ID, then
 #    notarized), and makes a draft release holding every asset,
-#    keyseal-update.json and the SHA-256 lists.
+#    keyseal-update.json, the SHA-256 lists and the apt repository's
+#    Packages and Release.
 # 2. Maintainers rebuild, compare, and sign keyseal-update.json and SHA256SUMS
-#    offline with their release keys, software keys in Bitwarden for now
+#    offline with their release keys, software keys in Bitwarden for now,
+#    and Release into InRelease with the apt repository key
 #    (docs/code-signing-policy.md, docs/releasing.md). A manual
 #    run with the combined signatures verifies them with the pinned keys and
-#    threshold, checks every asset against SHA256SUMS, then publishes the
-#    draft as the latest release.
+#    threshold, and InRelease with the checked-in apt keyring, checks every
+#    asset against SHA256SUMS, then publishes the draft as the latest
+#    release.
 #
 # Both halves release only a commit on main that pins main's keys, and the
 # first only one whose checks and e2e runs passed on main. The draft's
@@ -36,6 +39,11 @@ on:
       checksum_signatures:
         description: "The contents of SHA256SUMS.sig"
         required: true
+        type: string
+      # Required once the draft has an apt repository (Release).
+      apt_release:
+        description: "InRelease (Release signed with the apt repository key), base64 encoded on one line"
+        required: false
         type: string
 
 permissions:
@@ -351,10 +359,12 @@ jobs:
             cp "artifacts/unsigned-$platform/"keyseal-helper-*.AppImage "artifacts/unsigned-$platform/"keyseal-helper-*.tar.gz \
               "artifacts/unsigned-$platform/"keyseal_* dist/
           done
+          # The flat apt repository the debs add; SHA256SUMS lists it.
+          helper/packaging/linux/make-apt-repo.sh "$version" dist
           # --copy adds the downloads again without the version, for links
           # to releases/latest/download/<name>.
           helper/packaging/make-manifest.sh --copy "$version" dist
-          cat dist/SHA256SUMS-unsigned dist/SHA256SUMS dist/keyseal-update.json
+          cat dist/SHA256SUMS-unsigned dist/SHA256SUMS dist/keyseal-update.json dist/Release
       # Build provenance for every asset, checked with gh attestation verify
       # (docs/releasing.md). The signatures maintainers add later aren't
       # build outputs and aren't attested.
@@ -408,6 +418,7 @@ jobs:
         env:
           SIGNATURES: ${{ inputs.signatures }}
           CHECKSUM_SIGNATURES: ${{ inputs.checksum_signatures }}
+          APT_RELEASE: ${{ inputs.apt_release }}
         run: |
           mkdir signatures
           printenv SIGNATURES >signatures/keyseal-update.json.sig
@@ -416,6 +427,12 @@ jobs:
             update verify ../dist/keyseal-update.json ../signatures/keyseal-update.json.sig)
           # First installs download without the helper; SHA256SUMS covers them.
           helper/packaging/verify-signatures.sh dist/SHA256SUMS signatures/SHA256SUMS.sig
+          # apt reads InRelease, and accepts it signed by a key of the
+          # keyring the debs install, this checkout's.
+          if [ -f dist/Release ]; then
+            printenv APT_RELEASE | base64 -d >signatures/InRelease
+            helper/packaging/verify-apt-release.sh dist/Release signatures/InRelease
+          fi
       - name: The manifest and SHA256SUMS match the tag and every asset
         run: |
           version="${TAG#helper-v}"
@@ -428,8 +445,13 @@ jobs:
           helper/packaging/make-manifest.sh "$version" dist expected
           cmp expected/keyseal-update.json dist/keyseal-update.json
           cmp expected/SHA256SUMS dist/SHA256SUMS
+          if [ -f dist/Release ]; then
+            helper/packaging/linux/make-apt-repo.sh "$version" dist expected
+            cmp expected/Packages dist/Packages
+            cmp expected/Release dist/Release
+          fi
       # The helper reads releases/latest, so this release becomes latest.
       - name: Publish
         run: |
-          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber signatures/keyseal-update.json.sig signatures/SHA256SUMS.sig
+          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber signatures/*
           gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest

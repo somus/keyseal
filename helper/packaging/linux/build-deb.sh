@@ -13,6 +13,15 @@
 #
 # KEYSEAL_NOTICES names the third-party notices to install under
 # /usr/share/doc/keyseal (../third-party-notices.sh makes them).
+#
+# The deb also adds KeySeal's apt repository, the flat repository on the
+# latest GitHub release (make-apt-repo.sh), so later versions come with
+# the system's updates: keyseal.sources in /etc/apt/sources.list.d and the
+# public key it names, keyseal-archive-keyring.asc, in /usr/share/keyrings.
+# Neither is a conffile, so an upgrade puts back the shipped entry and
+# `apt remove` deletes both. KEYSEAL_TEST_APT_KEYRING replaces the key for
+# tests (scripts/ci/apt-upgrade.sh); check-deb.sh and sign-release.sh
+# refuse a deb whose key isn't the checked-in one.
 set -euo pipefail
 
 binary="$1"
@@ -29,6 +38,11 @@ case "$binary" in
     exit 2
     ;;
 esac
+keyring="${KEYSEAL_TEST_APT_KEYRING:-$here/keyseal-archive-keyring.asc}"
+[ -s "$keyring" ] || {
+  echo "$keyring is missing: the apt repository key's public half, made with helper/packaging/new-apt-key.sh (docs/releasing.md)." >&2
+  exit 1
+}
 
 root="$(mktemp -d)"
 trap 'rm -rf "$root"' EXIT
@@ -36,6 +50,8 @@ install -Dm 0755 "$binary" "$root/usr/bin/keyseal"
 install -Dm 0644 "$here/keyseal.desktop" "$root/usr/share/applications/keyseal.desktop"
 install -Dm 0644 "$here/keyseal.svg" "$root/usr/share/icons/hicolor/scalable/apps/keyseal.svg"
 install -Dm 0644 "${KEYSEAL_NOTICES:?}" "$root/usr/share/doc/keyseal/THIRD-PARTY-NOTICES.txt"
+install -Dm 0644 "$here/keyseal.sources" "$root/etc/apt/sources.list.d/keyseal.sources"
+install -Dm 0644 "$keyring" "$root/usr/share/keyrings/keyseal-archive-keyring.asc"
 mkdir -p "$root/DEBIAN"
 cat >"$root/DEBIAN/control" <<CONTROL
 Package: keyseal

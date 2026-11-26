@@ -109,10 +109,13 @@ procedure.
      (downloads) and `keyseal-helper-<v>-linux-x64.AppImage` (download and
      update), and the same for arm64: `keyseal-helper-<v>-linux-arm64.tar.gz`,
      `keyseal_<v>_arm64.deb` and `keyseal-helper-<v>-linux-arm64.AppImage`.
-     An AppImage replaces itself; a deb or tarball install keeps its
-     binary and downloads nothing, and the helper says once per version
-     that the release is out.
+     An AppImage replaces itself; a deb install gets the release through
+     apt ([The apt repository](#the-apt-repository)); a tarball install
+     keeps its binary and downloads nothing, and the helper says once per
+     version that the release is out.
    - `keyseal-update.json`, `SHA256SUMS`, `SHA256SUMS-unsigned`, `BUILDINFO`
+   - `Packages` and `Release`, the apt repository of the two debs
+     (`helper/packaging/linux/make-apt-repo.sh`)
    - the downloads again without the version, for fixed links:
      `keyseal-macos-universal.dmg`, `keyseal-windows-x64.zip`,
      `keyseal-linux-x64.AppImage`, `keyseal_amd64.deb`,
@@ -121,7 +124,8 @@ procedure.
    Each of these files has a build provenance attestation
    ([Checking build provenance](#checking-build-provenance)).
 4. `helper/packaging/sign-release.sh` checks, signs and publishes on a Mac,
-   with Bitwarden logged in, cargo-about 0.9.3 installed
+   with Bitwarden logged in, GnuPG installed (`brew install gnupg`, once),
+   cargo-about 0.9.3 installed
    (`cargo install --locked --features cli cargo-about@0.9.3`, once), and
    what the [rebuild mode](#rebuild-modes) needs: by default Docker running
    and the `boat` CLI signed in. `scripts/release.sh` runs it; on its own:
@@ -132,30 +136,33 @@ procedure.
 
    Run it from an up-to-date checkout of `main`. It asks for the Bitwarden
    master password unless `BW_SESSION` is set, and hands the session only
-   to `bw` and `sign-file.sh`. It waits for the tag's release run to make
-   the draft; when GitHub cancelled one of its jobs because no hosted
+   to `bw`, `sign-file.sh` and `sign-apt-release.sh`. It waits for the
+   tag's release run to make the draft; when GitHub cancelled one of its jobs because no hosted
    runner took it, as happens when macOS runners are short, it runs the
    failed jobs again, once. It then runs every check in the policy's
    [Before signing](code-signing-policy.md#before-signing-reproducibility),
    stopping at the first difference, signs `keyseal-update.json` and
-   `SHA256SUMS` with your release key, verifies the signatures with
-   `verify-signatures.sh` (never with the draft's helper), starts the
-   publish run (step 5), waits for it, and stops unless the release is then
-   published and latest.
+   `SHA256SUMS` with your release key and `Release` into `InRelease` with
+   the apt repository key, verifies the signatures with
+   `verify-signatures.sh` (never with the draft's helper) and
+   `verify-apt-release.sh`, starts the publish run (step 5), waits for it,
+   and stops unless the release is then published and latest.
 
    `--verify-only` runs every check and stops before signing, without
    Bitwarden, on a draft or a published release; on a published one it
-   also verifies the signatures the release carries. Anyone can use it to
-   check a release:
+   also verifies the signatures the release carries, `InRelease` among
+   them. Anyone can use it to check a release:
 
    ```sh
    helper/packaging/sign-release.sh 1.4.0 --verify-only
    ```
 
 5. The publish run checks the tag again, verifies both files' signatures
-   with the pinned keys and threshold, checks that the draft holds exactly
-   the assets `SHA256SUMS` lists and that they match it and the manifest,
-   uploads the signatures and publishes the release as latest.
+   with the pinned keys and threshold and `InRelease` with the tag's apt
+   keyring, checks that the draft holds exactly the assets `SHA256SUMS`
+   lists and that they match it, the manifest, `Packages` and `Release`,
+   uploads the signatures and `InRelease` and publishes the release as
+   latest.
 6. Installed helpers find the release within a day, or at once after a
    server refuses them with `426`.
 7. Once the release is published, update the package managers
@@ -284,9 +291,80 @@ for file in keyseal-update.json SHA256SUMS; do
   jq -cs '{signatures: .}' "$file"-*.json > "$file.sig"
   src/helper/packaging/verify-signatures.sh "draft/$file" "$file.sig"
 done
+# The apt key has no offline backup yet; with one, sign with
+# `offline /Volumes/<backup drive>/keyseal-apt-backup.asc` instead.
+src/helper/packaging/sign-apt-release.sh bitwarden "KeySeal apt repository key" \
+  draft/Release > InRelease
+src/helper/packaging/verify-apt-release.sh draft/Release InRelease
 gh workflow run release.yml --repo somus/keyseal --ref main -f tag=helper-v1.4.0 \
-  -f signatures="$(cat keyseal-update.json.sig)" -f checksum_signatures="$(cat SHA256SUMS.sig)"
+  -f signatures="$(cat keyseal-update.json.sig)" -f checksum_signatures="$(cat SHA256SUMS.sig)" \
+  -f apt_release="$(base64 < InRelease | tr -d '\n')"
 ```
+
+With the apt repository key in Bitwarden but not the release key, or the
+other way round, sign that file with the script in Bitwarden mode instead
+(`bitwarden "<item name>"` in place of `offline <file>`).
+
+### The apt repository
+
+The deb adds an apt source, `/etc/apt/sources.list.d/keyseal.sources`,
+and the public keys it trusts, `/usr/share/keyrings/keyseal-archive-keyring.asc`
+(`helper/packaging/linux/build-deb.sh`), so Debian and Ubuntu users get
+each new release with their system's updates. The repository is the latest
+release itself, read from `https://github.com/somus/keyseal/releases/latest/download`
+as a flat repository (suite `./`): `Packages` lists both debs, `Release`
+holds the size and SHA-256 of `Packages`, and `InRelease` is `Release`
+signed with the apt repository key. apt offers only the latest release, so
+it relies on the helper release being the repository's latest release, as
+the helper's own updater does. While the latest release has no
+`InRelease`, `apt update` reports an error for KeySeal's source and offers
+no update; the publish run refuses to publish a release that has
+`Release` without a valid `InRelease`.
+
+`InRelease` carries no `Valid-Until`, so nothing has to be signed again
+between releases. A stale `InRelease` could be served back only by
+someone who controls GitHub's release downloads.
+
+First-time setup, once, on the Mac that signs, with GnuPG 2.2 or later
+(`brew install gnupg`), OpenSSL, `jq` and the Bitwarden CLI logged in. Make
+the key in Bitwarden, which adds its public half to the keyring the deb
+installs, and commit the keyring in a reviewed pull request. A backup key
+kept offline is optional; the second command adds one to the same
+keyring:
+
+```sh
+export BW_SESSION="$(bw unlock --raw)"
+helper/packaging/new-apt-key.sh bitwarden "KeySeal apt repository key" \
+  helper/packaging/linux/keyseal-archive-keyring.asc
+helper/packaging/new-apt-key.sh offline /Volumes/<backup drive>/keyseal-apt-backup.asc \
+  helper/packaging/linux/keyseal-archive-keyring.asc
+gpg --show-keys helper/packaging/linux/keyseal-archive-keyring.asc
+```
+
+Each prints its key's fingerprint; record it in
+[The apt repository key](code-signing-policy.md#the-apt-repository-key). `gpg --show-keys` must
+list exactly the keys you made, Ed25519, with no expiry. Until the keyring is
+committed, `build-deb.sh`, and so the release run, fails.
+`sign-release.sh` signs with the Bitwarden item named
+"KeySeal apt repository key" unless `KEYSEAL_APT_KEY` names another.
+
+What to check on a release: `sign-release.sh` prints `Release` before it
+signs, and refuses a draft whose `Packages` or `Release` differ from what
+`make-apt-repo.sh` makes of its debs, or whose debs hold another source
+entry or keyring than the tag. After publishing, on a Debian or Ubuntu
+machine with the deb installed, `sudo apt update` must show the release
+being read without errors and `apt policy keyseal` the new version as
+the candidate.
+
+Changing the keys: a new keyring reaches users only inside a deb they
+install, and apt accepts `InRelease` signed by any key in the keyring they
+already have. To replace a key, release a version whose keyring holds the
+old and the new key, signed with the old one; once users have had time to
+update, sign with the new key and drop the old one in a later release.
+Users who never installed the release in between, and every user if both
+keys are lost, see `apt update` fail and must install the new deb by hand,
+which puts the new keyring in place. `scripts/ci/apt-upgrade.sh` tests the
+repository end to end with throwaway keys.
 
 ### Manifest expiry
 

@@ -73,6 +73,8 @@ The **Debian/Ubuntu package** installs KeySeal for everyone on the computer. Ope
 sudo apt install ./keyseal_amd64.deb
 ```
 
+The package also adds KeySeal's software source, so new versions of KeySeal come with your system's updates, like any other software on the computer.
+
 The **AppImage** installs for you alone and updates itself. In a terminal, in the folder you downloaded it to:
 
 ```sh
@@ -219,10 +221,11 @@ The diagnostics list the sites you allowed, your token, its drivers and certific
 
 KeySeal updates itself. After a website has used it, at most once a day, it checks KeySeal's releases for a newer version and downloads it. It checks that the maintainers signed the update before using it, and installs it the next time a website starts it. You don't need to do anything.
 
-There are three exceptions, where KeySeal shows a window telling you about a new version instead:
+There are four exceptions, where KeySeal shows a window telling you about a new version instead:
 
 - **Mac, without an administrator account:** KeySeal can't replace itself in Applications. The window says where it saved the new version; open that file and drag KeySeal to Applications, replacing the old one.
-- **Linux, from the Debian package or the tarball:** install the new version from the [latest release](https://github.com/somus/keyseal/releases/latest) the way you installed the first one. The AppImage updates itself.
+- **Linux, from the Debian package:** the new version comes with your system's updates, through Software Updater or `sudo apt update && sudo apt upgrade`. To stay on the version you have, run `sudo apt-mark hold keyseal`; `sudo apt-mark unhold keyseal` undoes it. To stop your computer checking KeySeal's source at all, run `sudo rm /etc/apt/sources.list.d/keyseal.sources`; installing a newer package by hand adds it again.
+- **Linux, from the tarball:** install the new version from the [latest release](https://github.com/somus/keyseal/releases/latest) the way you installed the first one. The AppImage updates itself.
 - **Linux, an AppImage in a folder you can't write to:** the window says where KeySeal saved the new version, to copy over the old one.
 
 ## Uninstalling
@@ -237,6 +240,6 @@ There are three exceptions, where KeySeal shows a window telling you about a new
 
 Either way, KeySeal removes its Start menu shortcut and its folder. Your allowed sites, settings and log stay in `%APPDATA%\keyseal`; delete that folder too to remove them.
 
-**Linux:** for the Debian package, run `sudo apt remove keyseal`. For the AppImage or the tarball, run `~/.local/bin/keyseal uninstall`. Your allowed sites, settings and log stay in `~/.config/keyseal`.
+**Linux:** for the Debian package, run `sudo apt remove keyseal`, which also removes KeySeal's software source. For the AppImage or the tarball, run `~/.local/bin/keyseal uninstall`. Your allowed sites, settings and log stay in `~/.config/keyseal`.
 
 To stop trusting one site without uninstalling, open KeySeal's settings and click the bin icon (**Forget**) next to it under **Trusted sites**.

@@ -21,6 +21,11 @@ lines under the new version with the release date.
 
 #### Added
 
+- The Debian/Ubuntu package adds KeySeal's apt repository, signed by the
+  maintainers, so later versions come with the system's updates
+  (`apt upgrade` or Software Updater) instead of a download by hand.
+  `sudo apt-mark hold keyseal` keeps the version installed, and
+  `apt remove keyseal` removes the repository too.
 - The release run also builds the Windows helper as an unsigned MSIX package
   for the Microsoft Store, from the same `keyseal.exe`. A helper the Store
   installed leaves updates to the Store, `keyseal install` and

@@ -13,7 +13,8 @@ Build:
 Package:
 
 - `macos/build-dmg.sh`: `KeySeal.app`, its update zip and the disk image, signed with a Developer ID or ad hoc.
-- `linux/build-tarball.sh`, `linux/build-deb.sh` and `linux/build-appimage.sh`: the tarball, the deb and the AppImage.
+- `linux/build-tarball.sh`, `linux/build-deb.sh` and `linux/build-appimage.sh`: the tarball, the deb and the AppImage. The deb adds the apt source `linux/keyseal.sources` and the keyring `linux/keyseal-archive-keyring.asc`.
+- `linux/make-apt-repo.sh`: `Packages` and `Release`, the flat apt repository of a release's debs.
 - `make-manifest.sh`: `keyseal-update.json` and `SHA256SUMS` for a release's assets.
 - The Windows zip is made in `release.yml`: `keyseal.exe`, `windows/install.cmd` and `THIRD-PARTY-NOTICES.txt`.
 - `windows/build-msix.ps1`: the unsigned MSIX package for the Microsoft Store (see below).
@@ -24,11 +25,14 @@ Check:
 - `macos/compare-bundle.sh`: the app in a macOS zip or disk image holds exactly the given unsigned executables, once their signatures are removed.
 - `linux/check-deb.sh`: the deb installs from its dependencies alone on a clean system and KeySeal starts.
 - `verify-signatures.sh`: a file's signatures meet `THRESHOLD` of the pinned `RELEASE_KEYS`.
+- `verify-apt-release.sh`: `InRelease` is `Release`, signed by a key of the apt keyring.
 
 Sign:
 
 - `new-key.sh`: makes a release or catalogue key and prints the public half to pin.
 - `sign-file.sh`: signs a file with such a key.
+- `new-apt-key.sh`: makes an apt repository key and adds its public half to the apt keyring.
+- `sign-apt-release.sh`: signs `Release` into `InRelease` with such a key.
 - `macos/notarize.sh`: notarizes and staples the app or disk image.
 - `sign-release.sh`: checks a draft release, signs it and publishes it, on a maintainer's Mac.
 - `release-common.sh`: what `sign-release.sh` and `scripts/release.sh` share, the preflight for the rebuild and Bitwarden and the notification, sourced by both.

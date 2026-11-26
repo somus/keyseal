@@ -1,8 +1,9 @@
 # Code signing policy
 
 This policy covers everything KeySeal signs for users: the helper's update
-manifest, the macOS app, and, once a Windows signing service accepts the
-project, the Windows executable. The driver catalogue has its own single-maintainer
+manifest, the apt repository on the helper's releases, the macOS app, and,
+once a Windows signing service accepts the project, the Windows
+executable. The driver catalogue has its own single-maintainer
 key and is outside this policy.
 
 ## What is signed, and by whom
@@ -11,9 +12,10 @@ key and is outside this policy.
 | --- | --- | --- | --- |
 | `keyseal-update.json` | Ed25519, threshold of pinned keys | Maintainers | Each maintainer's Bitwarden vault, with an offline backup key |
 | `SHA256SUMS` | Ed25519, the same keys and threshold | Maintainers | The same keys |
+| `InRelease`, the apt repository's signed `Release` | OpenPGP, Ed25519, any key of the keyring the deb installs | The maintainer who publishes | Bitwarden |
 | macOS `KeySeal.app` (with the token worker inside) and disk image | Apple Developer ID, notarized; ad-hoc signed until the project has a Developer ID | The release workflow | Apple certificate in the `release-macos` GitHub environment |
 | Windows `keyseal.exe` | none yet: SignPath Foundation declined the first application (October 2026) | | |
-| Linux binaries, tarball, deb, AppImage | none | | |
+| Linux binaries, tarball, deb, AppImage | none (apt checks the deb against the signed `InRelease`) | | |
 
 Every published asset is listed with its SHA-256 in the release's signed
 `SHA256SUMS` (signatures in `SHA256SUMS.sig`), and the update assets also
@@ -75,6 +77,8 @@ change to this file and, for release keys, to `RELEASE_KEYS` in
   Ed25519 in PIV slot 9c) removes that. The move is a normal key rotation:
   a release signed by the current keys pins the YubiKey keys, and the next
   release drops the software keys.
+- The apt repository key is an OpenPGP key, described under
+  [The apt repository key](#the-apt-repository-key).
 - CI never holds a release key. The Apple Developer ID certificate and App
   Store Connect API key are GitHub environment secrets usable only by the
   release workflow's runs for `helper-v*` tags, which only maintainers can
@@ -100,6 +104,57 @@ pinned in `CATALOGUE_KEYS` (`catalogue/README.md`). A new or replaced key
 reaches users only in a release signed by keys their helpers already
 trust; helpers that install it trust the new key from then on.
 
+### The apt repository key
+
+The deb adds an apt source for the flat repository on the latest helper
+release and installs the public keys apt checks it with,
+`helper/packaging/linux/keyseal-archive-keyring.asc`
+([docs/releasing.md](releasing.md#the-apt-repository)). apt can't use the
+Ed25519 release keys, so `InRelease` is signed with an OpenPGP key of its
+own.
+
+- **Algorithm:** Ed25519, as a version 4 OpenPGP key, with SHA-512
+  signatures. Every apt verifier in use reads it: `gpgv` on Ubuntu 22.04
+  and 24.04 and Debian 12, and `sqv`, which refuses weak algorithms, on
+  Debian 13 and newer Ubuntu releases (`scripts/ci/apt-upgrade.sh` checks
+  each). RSA would work too, at a larger key and signature for no gain.
+- **No expiry.** An expired key makes `apt update` fail for every deb user,
+  and a new expiry date reaches users only in a deb they install, so an
+  expiry adds a deadline without stopping a thief: a stolen key is replaced
+  by a release either way. For now there is one key, in the maintainer's
+  Bitwarden vault. If it is lost, deb users must install a later release's
+  deb by hand to get updates again. A backup key encrypted with a
+  passphrase and kept offline (`new-apt-key.sh offline`) would avoid that;
+  apt accepts `InRelease` signed by any key in the keyring, so a backup
+  counts once a release's deb has installed it.
+- **Custody:** the same rule as release keys: the unencrypted key is never
+  written to disk. GnuPG works only from a keyring on disk, so
+  `helper/packaging/new-apt-key.sh` and `sign-apt-release.sh` use a
+  throwaway GnuPG home holding only the passphrase-protected key, give
+  gpg the passphrase through a pipe, and delete the home and stop its
+  agent when they exit; the decrypted key exists only in that agent's
+  memory. The Bitwarden item holds the encrypted key in its notes and a
+  random passphrase in a hidden field; an offline key's passphrase is the
+  maintainer's own.
+- **What it protects:** a deb user's machine installs from the repository
+  only what `InRelease` vouches for: `Packages` by SHA-256, and through it
+  each deb's SHA-256. Someone who can change the release's files, but
+  doesn't hold an apt key, can't make apt install anything. It doesn't
+  vouch for the release beyond that: `sign-release.sh` signs `InRelease`
+  only after every check of the draft passes, as it does `SHA256SUMS`.
+  The deb's first install, a download by hand, isn't covered; that is
+  what the signed `SHA256SUMS` is for. And apt runs as root, so a stolen
+  apt key together with control of the release's files would let someone
+  install anything on every deb user's machine: the key is held as
+  carefully as a release key, although no threshold applies to it.
+
+| Maintainer | apt key | Fingerprint |
+| --- | --- | --- |
+| Somasundaram Ayyappan (@somus) | in Bitwarden | `CE038BC286C8712669BE8989CAB1719F06AE6894` |
+
+A release must ship `main`'s keyring, as it must pin `main`'s release
+keys ([Which commits are released](#which-commits-are-released)).
+
 ## Threshold
 
 The helper accepts a manifest only when signatures from `THRESHOLD`
@@ -117,9 +172,9 @@ says what that means for releasing). The release workflow holds
 ## Which commits are released
 
 The release workflow releases only a commit on `main`, and only when its
-`RELEASE_KEYS`, `THRESHOLD` and `CATALOGUE_KEYS` equal those on `main`
-(`helper/packaging/check-release-commit.sh`), so a tag on an unreviewed
-commit can't bring keys of its own. It also needs the `checks` and `e2e`
+`RELEASE_KEYS`, `THRESHOLD` and `CATALOGUE_KEYS`, and its apt keyring,
+equal those on `main` (`helper/packaging/check-release-commit.sh`), so a
+tag on an unreviewed commit can't bring keys of its own. It also needs the `checks` and `e2e`
 runs for the commit's push to `main` to have passed
 (`scripts/ci/ci-passed.sh`).
 
@@ -163,7 +218,9 @@ A maintainer signs a manifest and `SHA256SUMS` only after
 `helper/packaging/sign-release.sh` passes on the draft. It requires the tagged
 commit to be on `main`, to pin `main`'s keys and to be the commit the
 release run built, and remakes `keyseal-update.json` and `SHA256SUMS` from
-the assets. Per platform it checks:
+the assets, and the apt repository's `Packages` and `Release` from the
+debs, whose apt source and keyring must be the tag's. Per platform it
+checks:
 
 - **Linux**: it rebuilds the binary from the tagged source with
   `helper/packaging/build-release.sh` in the pinned container, requires the
@@ -212,6 +269,14 @@ If a release key is lost, stolen or suspected compromised:
    download page, and ask them to reinstall from a release checked against
    its signed `SHA256SUMS`.
 4. Record the event and the new keyIds in this file.
+
+If the apt repository key is lost, stolen or suspected compromised, make a
+new one and a release whose keyring holds only the new key. Its
+`InRelease` is signed with a key deb users don't have yet, so apt refuses
+it, and they must install that release's deb by hand, which brings the new
+keyring ([docs/releasing.md](releasing.md#the-apt-repository)). Once the
+keyring also holds a backup key, a release signed with the backup moves
+them over through apt instead.
 
 If the Apple certificate or API key leaks, revoke it in the Apple Developer
 account, replace the environment secrets, and re-release. If the Windows

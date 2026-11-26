@@ -526,8 +526,15 @@ fn kept(config: &Path, version: &str) -> PathBuf {
     }
 }
 
-/// Where to get `version` for a helper that doesn't replace itself.
+/// Where to get `version` for a helper that doesn't replace itself. The
+/// deb's binary, with the apt source the deb adds, gets it from apt.
 fn available(version: &str) -> String {
+    if cfg!(target_os = "linux")
+        && std::env::current_exe().is_ok_and(|exe| exe == Path::new("/usr/bin/keyseal"))
+        && Path::new("/etc/apt/sources.list.d/keyseal.sources").exists()
+    {
+        return format!("KeySeal {version} is available and arrives with your system's updates.");
+    }
     format!(
         "KeySeal {version} is available at {}. Install it the way you installed this one to update.",
         RELEASES.trim_end_matches("/download")

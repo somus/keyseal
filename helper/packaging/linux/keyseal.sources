@@ -1,0 +1,7 @@
+# KeySeal's apt repository, added by the keyseal package so that new
+# versions of KeySeal come with the system's updates. To keep the version
+# you have, run: sudo apt-mark hold keyseal
+Types: deb
+URIs: https://github.com/somus/keyseal/releases/latest/download
+Suites: ./
+Signed-By: /usr/share/keyrings/keyseal-archive-keyring.asc

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Checks that the commit being released (HEAD) is on main and pins the same
-# release and catalogue keys and threshold as main does now, so a tag on an
-# unreviewed commit can't bring its own keys:
+# release and catalogue keys and threshold, and apt keyring, as main does
+# now, so a tag on an unreviewed commit can't bring its own keys:
 #
 #   helper/packaging/check-release-commit.sh
 #
@@ -27,4 +27,11 @@ for path in helper/crates/keyseal-core/src/update.rs helper/crates/keyseal-core/
     exit 1
   fi
 done
+# The apt keyring the debs install, once the commit has one.
+keyring=helper/packaging/linux/keyseal-archive-keyring.asc
+if git cat-file -e "HEAD:$keyring" 2>/dev/null \
+  && [ "$(git rev-parse "HEAD:$keyring")" != "$(git rev-parse -q --verify "origin/main:$keyring" || true)" ]; then
+  echo "$keyring differs from main's (or main has none)." >&2
+  exit 1
+fi
 echo "$(git rev-parse HEAD) is on main and pins main's keys."

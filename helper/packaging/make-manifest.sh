@@ -59,6 +59,10 @@ assets=(
   keyseal-update.json
   "keyseal_${version}_amd64.deb"
   "keyseal_${version}_arm64.deb"
+  # The apt repository (linux/make-apt-repo.sh); its InRelease is added at
+  # publish, like the signatures.
+  Packages
+  Release
   "${fixed[@]%%=*}"
 )
 for pair in "${fixed[@]}"; do

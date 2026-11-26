@@ -19,6 +19,8 @@ lines under the new version with the release date.
 
 ### [Unreleased][helper-unreleased]
 
+### [0.7.0][helper-0.7.0] - 2026-11-27
+
 #### Added
 
 - The Debian/Ubuntu package adds KeySeal's apt repository, signed by the
@@ -32,6 +34,11 @@ lines under the new version with the release date.
   `keyseal uninstall` say the Store installs and removes it, and
   `keyseal doctor` says it came from the Store and where its files are. The
   zip install is unchanged.
+
+#### Security
+
+- `url` is updated to 2.5.9 (RUSTSEC-2026-0592): a deeply nested `blob:`
+  URL could overflow the stack while its origin was read.
 
 ### [0.6.1][helper-0.6.1] - 2026-11-17
 
@@ -641,7 +648,8 @@ The catalogue is published as the `catalogue` release; its version is the
   mToken CryptoID, InnaIT Key (PK32XX), SafeNet eToken 5110 and eToken PRO
   72K / SafeNet eToken 5100, and TrustKey.
 
-[helper-unreleased]: https://github.com/somus/keyseal/compare/helper-v0.6.1...HEAD
+[helper-unreleased]: https://github.com/somus/keyseal/compare/helper-v0.7.0...HEAD
+[helper-0.7.0]: https://github.com/somus/keyseal/releases/tag/helper-v0.7.0
 [helper-0.6.1]: https://github.com/somus/keyseal/releases/tag/helper-v0.6.1
 [helper-0.6.0]: https://github.com/somus/keyseal/releases/tag/helper-v0.6.0
 [helper-0.5.0]: https://github.com/somus/keyseal/releases/tag/helper-v0.5.0

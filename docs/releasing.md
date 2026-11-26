@@ -201,6 +201,11 @@ After each helper release:
    first time), one version per pull request. Its validation pipeline
    downloads the zip, scans it, installs it as a standard user and labels
    the pull request with anything that fails; a moderator merges it.
+   winget marks the files it extracts as downloaded and starts
+   `keyseal.exe` through the shell, so until the exe is signed SmartScreen
+   and the shell's security warning stop it for a click, for users and
+   possibly in that pipeline; the workflow turns both off to get past
+   them.
 4. Chocolatey: on Windows, in `chocolatey/keyseal`:
 
    ```powershell

@@ -114,3 +114,6 @@ Remove-AppxPackage $installed.PackageFullName
 Check ($null -eq (Get-AppxPackage -Name $identity.Name)) 'The package is still installed.'
 Check (-not (Test-Path $alias)) 'The execution alias is still there.'
 Write-Host 'Packaged, installed, checked and uninstalled.'
+# The declined commands' exit code is still in $LASTEXITCODE, which
+# the runner's PowerShell would exit with.
+exit 0

@@ -158,6 +158,93 @@ procedure.
    uploads the signatures and publishes the release as latest.
 6. Installed helpers find the release within a day, or at once after a
    server refuses them with `426`.
+7. Once the release is published, update the package managers
+   ([Package managers](#package-managers)).
+
+### Package managers
+
+KeySeal's packages for winget, Chocolatey and the AUR (`keyseal-bin`) are
+made from a published release's assets, not built, by
+`helper/packaging/package-managers.sh`. It takes the checksums from the
+release's `SHA256SUMS` once `verify-signatures.sh` has checked its
+signatures, and the AUR package's desktop entry and icon from the tag. The
+`package-managers` workflow generates them for the latest helper release,
+or a version you give it, and installs, checks and uninstalls each, on a
+Windows runner and in an Arch Linux container; it runs on pull requests
+that change these files.
+
+On Windows the helper updates itself, so winget and Chocolatey can show
+an older version than the one installed until their next upgrade, which
+installs the newer release over it. A tarball install, the AUR one
+included, doesn't update itself.
+
+After each helper release:
+
+1. Generate the packages from an up-to-date checkout of `main`:
+
+   ```sh
+   git fetch origin tag helper-v1.4.0
+   helper/packaging/package-managers.sh 1.4.0 /tmp/keyseal-packages
+   ```
+
+2. Run the workflow for the release and wait for it to pass:
+
+   ```sh
+   gh workflow run package-managers.yml --repo somus/keyseal -f version=1.4.0
+   ```
+
+3. winget: copy `winget/manifests/k/KeySeal/KeySeal/1.4.0` to the same
+   path in your fork of
+   [microsoft/winget-pkgs](https://github.com/microsoft/winget-pkgs), on a
+   branch of its `master`, and open a pull request titled
+   `New version: KeySeal.KeySeal version 1.4.0` (`New package: ...` the
+   first time), one version per pull request. Its validation pipeline
+   downloads the zip, scans it, installs it as a standard user and labels
+   the pull request with anything that fails; a moderator merges it.
+4. Chocolatey: on Windows, in `chocolatey/keyseal`:
+
+   ```powershell
+   choco pack
+   choco push keyseal.1.4.0.nupkg --source https://push.chocolatey.org/
+   ```
+
+   The package goes through automated validation, verification (an
+   install and uninstall in a VM) and a virus scan; the first version, and
+   any later one the checks flag, also waits for a human moderator.
+5. AUR: in your clone of the package's repository, copy `PKGBUILD` and
+   `.SRCINFO` from `aur/keyseal-bin`, commit and push:
+
+   ```sh
+   git clone ssh://aur@aur.archlinux.org/keyseal-bin.git
+   cp /tmp/keyseal-packages/aur/keyseal-bin/{PKGBUILD,.SRCINFO} keyseal-bin/
+   cd keyseal-bin && git commit -am 'Update to 1.4.0' && git push
+   ```
+
+First-time setup, once per maintainer:
+
+- winget: a GitHub account with a fork of `microsoft/winget-pkgs`. The
+  first pull request asks you to sign the Microsoft Contributor License
+  Agreement; it can't be merged until you have.
+- Chocolatey: an account on
+  [community.chocolatey.org](https://community.chocolatey.org/account/Register),
+  and its API key stored with
+  `choco apikey --key <key> --source https://push.chocolatey.org/`. The
+  account that pushes the first version owns the `keyseal` package id; add
+  the other maintainers on the package page. The nuspec's `owners` reads
+  `KeySeal`; set it to your Chocolatey user name if moderators ask.
+- AUR: an account on [aur.archlinux.org](https://aur.archlinux.org/register)
+  with your SSH public key added under My Account, and in `~/.ssh/config`:
+
+  ```text
+  Host aur.archlinux.org
+    IdentityFile ~/.ssh/aur
+    User aur
+  ```
+
+  The first push to `keyseal-bin.git` creates the package; add the other
+  maintainers as co-maintainers on its page. The `PKGBUILD`'s
+  `# Maintainer:` line names the project; AUR convention is your own name
+  and address, so change it there if you prefer.
 
 ### Rebuild modes
 

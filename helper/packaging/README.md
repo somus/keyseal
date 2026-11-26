@@ -32,6 +32,10 @@ Sign:
 - `sign-release.sh`: checks a draft release, signs it and publishes it, on a maintainer's Mac.
 - `release-common.sh`: what `sign-release.sh` and `scripts/release.sh` share, the preflight for the rebuild and Bitwarden and the notification, sourced by both.
 
+## Package managers
+
+`package-managers.sh <version> <out dir>` writes the winget manifests (`KeySeal.KeySeal`), the Chocolatey package (`keyseal`) and the AUR `PKGBUILD` and `.SRCINFO` (`keyseal-bin`) for a published release, from its assets and its signature-checked `SHA256SUMS`. winget and Chocolatey run the zip's `keyseal.exe install`, so they install per user, as `install.cmd` does; the AUR package installs the Linux tarball as the deb lays it out. `.github/workflows/package-managers.yml` installs and uninstalls each on Windows and Arch Linux. Submitting them is a maintainer's step: [Package managers](../../docs/releasing.md#package-managers).
+
 ## macOS: the token worker
 
 Several Indian token drivers ship only x86_64 dylibs. The universal helper runs as arm64 on Apple Silicon and can't load them, so for such a driver it starts `keyseal-token-worker`, which loads the driver under Rosetta and runs the PKCS#11 operations over JSON lines on its stdin and stdout (`crates/keyseal-core/src/worker.rs`).

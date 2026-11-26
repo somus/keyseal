@@ -8,7 +8,9 @@
 //! - Windows: a copy in `%LOCALAPPDATA%\keyseal`, the scheme under
 //!   `HKCU\Software\Classes\keyseal`, a Start menu shortcut to the
 //!   settings and an entry under Apps that uninstalls.
-//!   The first start after an update registers the copy again.
+//!   The first start after an update registers the copy again. A helper
+//!   the Microsoft Store installed runs from its package, which declares
+//!   the scheme and the Start menu entry, so it declines both commands.
 //! - Linux: a copy in `~/.local/bin`, its icon and a desktop entry for
 //!   `x-scheme-handler/keyseal`, made the default with `xdg-mime`, that the
 //!   app menu shows too.
@@ -88,8 +90,47 @@ pub fn uninstall() -> Result<(), String> {
     Ok(())
 }
 
+/// What `keyseal install` and `keyseal uninstall` say in a Store install.
+#[cfg(windows)]
+const STORE_INSTALLS: &str = "The Microsoft Store installs and removes this KeySeal. To remove it, right-click KeySeal in the Start menu and select Uninstall.";
+
+/// The package family name when this helper runs from an MSIX package,
+/// which is how the Microsoft Store installs it; `None` for the zip
+/// install and on other systems.
+pub fn store_package() -> Option<String> {
+    #[cfg(windows)]
+    {
+        use windows::Win32::Foundation::APPMODEL_ERROR_NO_PACKAGE;
+        use windows::Win32::Storage::Packaging::Appx::GetCurrentPackageFamilyName;
+        let mut length = 0;
+        // SAFETY: with no buffer it only writes the length it needs.
+        if unsafe { GetCurrentPackageFamilyName(&mut length, None) } == APPMODEL_ERROR_NO_PACKAGE {
+            return None;
+        }
+        let mut name = vec![0u16; length as usize];
+        // SAFETY: `name` holds the `length` UTF-16 units asked for, which
+        // include the terminating null.
+        unsafe {
+            let _ = GetCurrentPackageFamilyName(
+                &mut length,
+                Some(windows::core::PWSTR(name.as_mut_ptr())),
+            );
+        }
+        Some(
+            String::from_utf16_lossy(&name)
+                .trim_end_matches('\0')
+                .to_owned(),
+        )
+    }
+    #[cfg(not(windows))]
+    None
+}
+
 #[cfg(windows)]
 pub fn install() -> Result<(), String> {
+    if store_package().is_some() {
+        return Err(STORE_INSTALLS.into());
+    }
     let (local_app_data, programs) = windows_dirs()?;
     let target = install_windows(&current_exe()?, &local_app_data, &programs, &mut System)?;
     println!(
@@ -101,6 +142,9 @@ pub fn install() -> Result<(), String> {
 
 #[cfg(windows)]
 pub fn uninstall() -> Result<(), String> {
+    if store_package().is_some() {
+        return Err(STORE_INSTALLS.into());
+    }
     let (local_app_data, programs) = windows_dirs()?;
     uninstall_windows(&local_app_data, &programs, &mut System)
 }

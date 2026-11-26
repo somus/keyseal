@@ -189,6 +189,10 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: ../scripts/ci/windows-install-smoke.ps1
+      - name: MSIX package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ../scripts/ci/windows-msix-smoke.ps1
 
   # The one check branch protection requires from this workflow: it fails if
   # any job above failed or was cancelled, and passes when they passed or

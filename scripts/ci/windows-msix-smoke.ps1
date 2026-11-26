@@ -89,17 +89,23 @@ try {
 
   # Writes to %APPDATA% land in the package's folder.
   $log = Join-Path $env:LOCALAPPDATA "Packages\$($installed.PackageFamilyName)\LocalCache\Roaming\keyseal\keyseal.log"
+  function Logged($text) { (Test-Path $log) -and (Get-Content -Raw $log).Contains($text) }
   Start-Process 'keyseal://sign?job=not-a-job'
-  $damaged = 'error: The KeySeal link is damaged'
   foreach ($try in 1..60) {
-    if ((Test-Path $log) -and (Get-Content -Raw $log).Contains($damaged)) { break }
+    if (Logged 'Job started.') { break }
+    Start-Sleep 1
+  }
+  $started = Get-Process keyseal -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $inside }
+  Check ($null -ne $started) 'The link did not start the packaged helper.'
+  # The job logs its error once the signer closes the error window.
+  $damaged = 'error: The KeySeal link is damaged'
+  foreach ($try in 1..30) {
+    if (Logged $damaged) { break }
+    $started | ForEach-Object { [void]$_.CloseMainWindow() }
     Start-Sleep 1
   }
   if (Test-Path $log) { Write-Host "keyseal.log:`n$(Get-Content -Raw $log)" }
-  Check ((Test-Path $log) -and (Get-Content -Raw $log).Contains($damaged)) `
-    "The packaged helper did not log the damaged link to $log."
-  $started = Get-Process keyseal -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $inside }
-  Check ($null -ne $started) 'The link did not start the packaged helper.'
+  Check (Logged $damaged) "The packaged helper did not log the damaged link to $log."
 } finally {
   Get-Process keyseal -ErrorAction SilentlyContinue | Stop-Process -Force
 }

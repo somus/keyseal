@@ -8,8 +8,8 @@
 # each system it installs 1.0.0, points the source the deb added at the
 # server, and requires apt to refuse the repository unsigned, signed by
 # another key, and with Packages changed after signing, then `apt update`
-# and `apt upgrade` to install 1.0.1. Then `apt remove` must take the
-# source and the key away.
+# and `apt upgrade` to install 1.0.1. Then `apt remove` must leave nothing
+# behind, source and key included.
 #
 #   scripts/ci/apt-upgrade.sh [<image>...]
 #
@@ -169,11 +169,11 @@ keyseal
 cmp "$source" /w/keyseal.sources
 apt-get remove -y -qq keyseal >/dev/null
 [ ! -e "$source" ] && [ ! -e "$keyring" ] || { echo "apt remove left the source or the key." >&2; exit 1; }
-echo "After apt remove, dpkg has keyseal as: $(dpkg-query -W -f '${db:Status-Status}' keyseal 2>/dev/null || echo unknown)"
-apt-get purge -y -qq keyseal >/dev/null
+# With no conffiles and no maintainer scripts, nothing is left to purge.
+! dpkg-query -W keyseal 2>/dev/null || { echo "dpkg still has keyseal after apt remove." >&2; exit 1; }
 apt-get update >/tmp/update.log 2>&1 || { cat /tmp/update.log; exit 1; }
 ! grep -i keyseal /tmp/update.log || { echo "apt still reads the repository." >&2; exit 1; }
-echo "Upgraded $old to $new through apt; apt remove took the source and the key away."
+echo "Upgraded $old to $new through apt; apt remove left nothing to purge."
 SH
 cp "$packaging/linux/keyseal.sources" "$work/"
 

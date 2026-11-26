@@ -93,16 +93,19 @@ jobs:
           winget settings --enable LocalManifestFiles
       # winget marks the files it extracts from the downloaded zip as from
       # the internet and starts keyseal.exe through the shell, so SmartScreen
-      # holds the unsigned exe until someone clicks Run anyway, as it does
-      # for a user's own download. No one can click on a runner, and the
-      # install waits forever; this turns SmartScreen off for the rest of
-      # the job. A signed exe would need no prompt.
-      - name: Turn SmartScreen off
+      # and then the shell's security warning hold the unsigned exe until
+      # someone clicks Run, as they do for a user's own download. No one can
+      # click on a runner, and the install waits forever; this turns both
+      # off for the rest of the job: SmartScreen, and the warning for
+      # programs from the Internet zone (URL action 1806).
+      - name: Let downloaded programs run without a prompt
         shell: pwsh
         run: |
           $policy = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System'
           New-Item $policy -Force | Out-Null
           Set-ItemProperty $policy EnableSmartScreen 0 -Type DWord
+          $internet = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings\Zones\3'
+          Set-ItemProperty $internet 1806 0 -Type DWord
       - name: Install and uninstall with winget
         shell: pwsh
         run: scripts/ci/package-managers-windows.ps1 "$PWD/package-managers" $env:VERSION winget

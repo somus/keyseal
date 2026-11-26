@@ -136,8 +136,8 @@ procedure.
 
    Run it from an up-to-date checkout of `main`. It asks for the Bitwarden
    master password unless `BW_SESSION` is set, and hands the session only
-   to `bw`, `sign-file.sh` and `sign-apt-release.sh`. It waits for the tag's release run to make
-   the draft; when GitHub cancelled one of its jobs because no hosted
+   to `bw`, `sign-file.sh` and `sign-apt-release.sh`. It waits for the
+   tag's release run to make the draft; when GitHub cancelled one of its jobs because no hosted
    runner took it, as happens when macOS runners are short, it runs the
    failed jobs again, once. It then runs every check in the policy's
    [Before signing](code-signing-policy.md#before-signing-reproducibility),
@@ -151,8 +151,7 @@ procedure.
    `--verify-only` runs every check and stops before signing, without
    Bitwarden, on a draft or a published release; on a published one it
    also verifies the signatures the release carries, `InRelease` among
-   them. Anyone can use it to
-   check a release:
+   them. Anyone can use it to check a release:
 
    ```sh
    helper/packaging/sign-release.sh 1.4.0 --verify-only
@@ -264,7 +263,7 @@ gpg --show-keys helper/packaging/linux/keyseal-archive-keyring.asc
 ```
 
 Each prints its key's fingerprint; record both in
-[Key custody](code-signing-policy.md#key-custody). `gpg --show-keys` must
+[The apt repository key](code-signing-policy.md#the-apt-repository-key). `gpg --show-keys` must
 list exactly those two keys, Ed25519, with no expiry. Until the keyring is
 committed, `build-deb.sh`, and so the release run, fails.
 `sign-release.sh` signs with the Bitwarden item named

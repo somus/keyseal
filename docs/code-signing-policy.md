@@ -1,8 +1,9 @@
 # Code signing policy
 
 This policy covers everything KeySeal signs for users: the helper's update
-manifest, the apt repository on the helper's releases, the macOS app, and, once a Windows signing service accepts the
-project, the Windows executable. The driver catalogue has its own single-maintainer
+manifest, the apt repository on the helper's releases, the macOS app, and,
+once a Windows signing service accepts the project, the Windows
+executable. The driver catalogue has its own single-maintainer
 key and is outside this policy.
 
 ## What is signed, and by whom
@@ -172,8 +173,8 @@ says what that means for releasing). The release workflow holds
 
 The release workflow releases only a commit on `main`, and only when its
 `RELEASE_KEYS`, `THRESHOLD` and `CATALOGUE_KEYS`, and its apt keyring,
-equal those on `main` (`helper/packaging/check-release-commit.sh`), so a tag on an unreviewed
-commit can't bring keys of its own. It also needs the `checks` and `e2e`
+equal those on `main` (`helper/packaging/check-release-commit.sh`), so a
+tag on an unreviewed commit can't bring keys of its own. It also needs the `checks` and `e2e`
 runs for the commit's push to `main` to have passed
 (`scripts/ci/ci-passed.sh`).
 
@@ -217,7 +218,9 @@ A maintainer signs a manifest and `SHA256SUMS` only after
 `helper/packaging/sign-release.sh` passes on the draft. It requires the tagged
 commit to be on `main`, to pin `main`'s keys and to be the commit the
 release run built, and remakes `keyseal-update.json` and `SHA256SUMS` from
-the assets. Per platform it checks:
+the assets, and the apt repository's `Packages` and `Release` from the
+debs, whose apt source and keyring must be the tag's. Per platform it
+checks:
 
 - **Linux**: it rebuilds the binary from the tagged source with
   `helper/packaging/build-release.sh` in the pinned container, requires the

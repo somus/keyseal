@@ -55,6 +55,7 @@ jobs:
   windows:
     needs: generate
     runs-on: windows-2025
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -90,15 +91,22 @@ jobs:
           Add-Content $env:GITHUB_PATH $apps
           winget --version
           winget settings --enable LocalManifestFiles
-      - name: Install and uninstall with winget and Chocolatey
+      - name: Install and uninstall with winget
         shell: pwsh
-        run: scripts/ci/package-managers-windows.ps1 "$PWD/package-managers" $env:VERSION
+        run: scripts/ci/package-managers-windows.ps1 "$PWD/package-managers" $env:VERSION winget
+        env:
+          VERSION: ${{ needs.generate.outputs.version }}
+      - name: Install and uninstall with Chocolatey
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: scripts/ci/package-managers-windows.ps1 "$PWD/package-managers" $env:VERSION choco
         env:
           VERSION: ${{ needs.generate.outputs.version }}
 
   arch:
     needs: generate
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     container: archlinux:base-devel@sha256:949ecb1661609ab7e8f6854ba03efd62792e7a796313738e94b040c095c20d91
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

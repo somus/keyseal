@@ -207,7 +207,8 @@ if ($LASTEXITCODE -ne 0) { throw "keyseal.exe uninstall exited with $LASTEXITCOD
 PS1
 
 # AUR: keyseal-bin from the tarballs, laid out as the deb installs KeySeal.
-# Depends is the deb's list in Arch's names (linux/build-deb.sh has why).
+# Depends is the deb's list in Arch's names (linux/build-deb.sh has why),
+# and hicolor-icon-theme for the icon's folders, which namcap requires.
 aur="$out/aur/keyseal-bin"
 mkdir -p "$aur"
 raw="https://raw.githubusercontent.com/$repo/\$_tag/helper/packaging/linux"
@@ -221,7 +222,7 @@ pkgdesc='${summary%.}'
 arch=('x86_64' 'aarch64')
 url='$homepage'
 license=('$license')
-depends=('glibc' 'gcc-libs' 'libxcb' 'libxkbcommon' 'libxkbcommon-x11' 'vulkan-icd-loader' 'wayland')
+depends=('glibc' 'gcc-libs' 'libxcb' 'libxkbcommon' 'libxkbcommon-x11' 'vulkan-icd-loader' 'wayland' 'hicolor-icon-theme')
 optdepends=('p11-kit: tokens registered with p11-kit'
             'vulkan-driver: the windows, on a GPU')
 provides=('keyseal')
@@ -267,6 +268,7 @@ printf '%s\n' \
   '	depends = libxkbcommon-x11' \
   '	depends = vulkan-icd-loader' \
   '	depends = wayland' \
+  '	depends = hicolor-icon-theme' \
   '	optdepends = p11-kit: tokens registered with p11-kit' \
   '	optdepends = vulkan-driver: the windows, on a GPU' \
   '	provides = keyseal' \

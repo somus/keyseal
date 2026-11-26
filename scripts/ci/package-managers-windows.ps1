@@ -3,12 +3,12 @@
 # install the way scripts/ci/windows-install-smoke.ps1 does, uninstalls it
 # with the same tool and checks that it is gone.
 #
-#   scripts/ci/package-managers-windows.ps1 <out dir> <version>
+#   scripts/ci/package-managers-windows.ps1 <out dir> <version> winget|choco
 #
 # Needs winget with local manifests enabled and Chocolatey. It changes the
 # current user's registry and Start menu, so CI runs it on a throwaway
 # runner.
-param([string]$Out, [string]$Version)
+param([string]$Out, [string]$Version, [string]$Tool)
 $ErrorActionPreference = 'Stop'
 
 function Check($condition, $message) {
@@ -45,29 +45,47 @@ function CheckRemoved($by) {
   Write-Host "$by removed KeySeal."
 }
 
-Check (-not (Test-Path $dir)) "$dir exists before the installs."
+# Runs a package manager command, and if it hasn't finished within
+# $minutes, lists the processes it may be waiting on before failing.
+function Run($minutes, $program, [string[]]$arguments) {
+  $process = Start-Process $program $arguments -NoNewWindow -PassThru
+  $null = $process.Handle
+  if (-not $process.WaitForExit($minutes * 60000)) {
+    Get-CimInstance Win32_Process |
+      Where-Object { $_.Name -match 'keyseal|reg|powershell|winget|choco|AppInstaller|smartscreen|consent|WerFault' } |
+      Format-Table ProcessId, ParentProcessId, Name, CommandLine -AutoSize -Wrap | Out-String -Width 400 | Write-Host
+    Get-ChildItem $env:TEMP -Recurse -Filter keyseal.exe -ErrorAction SilentlyContinue | ForEach-Object {
+      Write-Host $_.FullName
+      Get-Content $_.FullName -Stream Zone.Identifier -ErrorAction SilentlyContinue | Write-Host
+    }
+    throw "$program $arguments didn't finish within $minutes minutes."
+  }
+  $process.WaitForExit()
+  Check ($process.ExitCode -eq 0) "$program $arguments exited with $($process.ExitCode)."
+}
 
-$manifest = Join-Path $Out "winget/manifests/k/KeySeal/KeySeal/$Version"
-winget validate --manifest $manifest --disable-interactivity
-Check ($LASTEXITCODE -eq 0) "winget validate exited with $LASTEXITCODE."
-winget install --manifest $manifest --disable-interactivity --accept-source-agreements --accept-package-agreements
-Check ($LASTEXITCODE -eq 0) "winget install exited with $LASTEXITCODE."
-CheckInstalled 'winget'
-$list = winget list --name KeySeal --disable-interactivity --accept-source-agreements | Out-String
-Write-Host $list
-Check ($list -match "KeySeal\s+\S+\s+$([regex]::Escape($Version))") "winget list doesn't show KeySeal $Version."
-# Finds the install by the manifest's Apps entry and runs its uninstall.
-winget uninstall --manifest $manifest --disable-interactivity --accept-source-agreements
-Check ($LASTEXITCODE -eq 0) "winget uninstall exited with $LASTEXITCODE."
-CheckRemoved 'winget'
+Check (-not (Test-Path $dir)) "$dir exists before the install."
 
-$feed = Join-Path $env:RUNNER_TEMP 'choco-feed'
-choco pack (Join-Path $Out 'chocolatey/keyseal/keyseal.nuspec') --out $feed
-Check ($LASTEXITCODE -eq 0) "choco pack exited with $LASTEXITCODE."
-choco install keyseal --source $feed --yes --no-progress
-Check ($LASTEXITCODE -eq 0) "choco install exited with $LASTEXITCODE."
-CheckInstalled 'choco'
-Check (-not (Test-Path (Join-Path $env:ChocolateyInstall 'bin/keyseal.exe'))) 'Chocolatey shimmed the downloaded keyseal.exe.'
-choco uninstall keyseal --yes --no-progress
-Check ($LASTEXITCODE -eq 0) "choco uninstall exited with $LASTEXITCODE."
-CheckRemoved 'choco'
+if ($Tool -eq 'winget') {
+  $manifest = Join-Path $Out "winget/manifests/k/KeySeal/KeySeal/$Version"
+  Run 2 winget validate, --manifest, $manifest, --disable-interactivity
+  Run 5 winget install, --manifest, $manifest, --disable-interactivity, --accept-source-agreements, --accept-package-agreements
+  CheckInstalled 'winget'
+  $list = winget list --name KeySeal --disable-interactivity --accept-source-agreements | Out-String
+  Write-Host $list
+  Check ($list -match "KeySeal\s+\S+\s+$([regex]::Escape($Version))") "winget list doesn't show KeySeal $Version."
+  # Finds the install by the manifest's Apps entry and runs its uninstall.
+  Run 5 winget uninstall, --manifest, $manifest, --disable-interactivity, --accept-source-agreements
+  CheckRemoved 'winget'
+} elseif ($Tool -eq 'choco') {
+  $feed = Join-Path $env:RUNNER_TEMP 'choco-feed'
+  choco pack (Join-Path $Out 'chocolatey/keyseal/keyseal.nuspec') --out $feed
+  Check ($LASTEXITCODE -eq 0) "choco pack exited with $LASTEXITCODE."
+  Run 5 choco install, keyseal, --source, $feed, --yes, --no-progress
+  CheckInstalled 'choco'
+  Check (-not (Test-Path (Join-Path $env:ChocolateyInstall 'bin/keyseal.exe'))) 'Chocolatey shimmed the downloaded keyseal.exe.'
+  Run 5 choco uninstall, keyseal, --yes, --no-progress
+  CheckRemoved 'choco'
+} else {
+  throw "Name winget or choco, not $Tool."
+}

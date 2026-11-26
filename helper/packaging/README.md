@@ -78,7 +78,7 @@ The Microsoft Store signs the packages it distributes, so a helper installed fro
 
 ### Version
 
-Store packages have four-part versions whose first part isn't 0 and whose last is 0, so 0.6.1 can't be used as it is. For now `build-msix.ps1` maps `major.minor.patch` to `(major+1).minor.patch.0`, so helper 0.6.1 is package 1.6.1.0. The mapping is provisional and made on one line of that script. A prerelease suffix is dropped, so a release candidate and its release get the same package version; upload only releases.
+Store packages have four-part versions whose first part isn't 0 and whose last is 0, so 0.6.1 can't be used as it is. `build-msix.ps1` maps `major.minor.patch` to `(major+1).minor.patch.0`, so helper 0.6.1 is package 1.6.1.0. The mapping is made on one line of that script. A prerelease suffix is dropped, so a release candidate and its release get the same package version; upload only releases.
 
 ### What changes inside a package
 

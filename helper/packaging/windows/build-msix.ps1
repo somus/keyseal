@@ -15,10 +15,10 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 
-# The Store wants four parts, the first not 0 and the last 0. PROVISIONAL:
-# major.minor.patch becomes (major+1).minor.patch.0 until the maintainers
-# settle the mapping; this line is the only place it is made. A
-# prerelease suffix is dropped.
+# The Store wants four parts, the first not 0 and the last 0, and the
+# helper's versions start at 0: major.minor.patch becomes
+# (major+1).minor.patch.0, here and nowhere else. A prerelease suffix is
+# dropped.
 if ($Version -notmatch '^(\d+)\.(\d+)\.(\d+)') { throw "$Version isn't a version." }
 $packageVersion = '{0}.{1}.{2}.0' -f ([int]$Matches[1] + 1), $Matches[2], $Matches[3]
 

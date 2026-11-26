@@ -91,6 +91,13 @@ jobs:
           Add-Content $env:GITHUB_PATH $apps
           winget --version
           winget settings --enable LocalManifestFiles
+      # First, while SmartScreen is still on: Chocolatey's download carries
+      # no mark of the web, so the unsigned exe runs without a prompt.
+      - name: Install and uninstall with Chocolatey
+        shell: pwsh
+        run: scripts/ci/package-managers-windows.ps1 "$PWD/package-managers" $env:VERSION choco
+        env:
+          VERSION: ${{ needs.generate.outputs.version }}
       # winget marks the files it extracts from the downloaded zip as from
       # the internet and starts keyseal.exe through the shell, so SmartScreen
       # and then the shell's security warning hold the unsigned exe until
@@ -99,6 +106,7 @@ jobs:
       # off for the rest of the job: SmartScreen, and the warning for
       # programs from the Internet zone (URL action 1806).
       - name: Let downloaded programs run without a prompt
+        if: ${{ !cancelled() }}
         shell: pwsh
         run: |
           $policy = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System'
@@ -107,14 +115,9 @@ jobs:
           $internet = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings\Zones\3'
           Set-ItemProperty $internet 1806 0 -Type DWord
       - name: Install and uninstall with winget
-        shell: pwsh
-        run: scripts/ci/package-managers-windows.ps1 "$PWD/package-managers" $env:VERSION winget
-        env:
-          VERSION: ${{ needs.generate.outputs.version }}
-      - name: Install and uninstall with Chocolatey
         if: ${{ !cancelled() }}
         shell: pwsh
-        run: scripts/ci/package-managers-windows.ps1 "$PWD/package-managers" $env:VERSION choco
+        run: scripts/ci/package-managers-windows.ps1 "$PWD/package-managers" $env:VERSION winget
         env:
           VERSION: ${{ needs.generate.outputs.version }}
 

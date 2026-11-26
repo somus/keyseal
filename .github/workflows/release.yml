@@ -42,7 +42,7 @@ on:
         type: string
       # Required once the draft has an apt repository (Release).
       apt_release:
-        description: "The contents of InRelease, Release signed with the apt repository key"
+        description: "InRelease (Release signed with the apt repository key), base64 encoded on one line"
         required: false
         type: string
 
@@ -417,7 +417,7 @@ jobs:
           # apt reads InRelease, and accepts it signed by a key of the
           # keyring the debs install, this checkout's.
           if [ -f dist/Release ]; then
-            printenv APT_RELEASE >signatures/InRelease
+            printenv APT_RELEASE | base64 -d >signatures/InRelease
             helper/packaging/verify-apt-release.sh dist/Release signatures/InRelease
           fi
       - name: The manifest and SHA256SUMS match the tag and every asset

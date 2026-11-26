@@ -220,7 +220,7 @@ src/helper/packaging/sign-apt-release.sh offline /Volumes/<backup drive>/keyseal
 src/helper/packaging/verify-apt-release.sh draft/Release InRelease
 gh workflow run release.yml --repo somus/keyseal --ref main -f tag=helper-v1.4.0 \
   -f signatures="$(cat keyseal-update.json.sig)" -f checksum_signatures="$(cat SHA256SUMS.sig)" \
-  -f apt_release="$(cat InRelease)"
+  -f apt_release="$(base64 < InRelease | tr -d '\n')"
 ```
 
 With the apt repository key in Bitwarden but not the release key, or the

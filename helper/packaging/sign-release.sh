@@ -399,7 +399,8 @@ apt_release=()
 if $apt_repo; then
   step "Signing Release into InRelease with \"$apt_key\""
   BW_SESSION="$bw_session" "$src/helper/packaging/sign-apt-release.sh" bitwarden "$apt_key" "$draft/Release" >"$work/InRelease"
-  apt_release=(-f apt_release="$(cat "$work/InRelease")")
+  # As base64: a workflow input keeps one line as it is.
+  apt_release=(-f apt_release="$(base64 <"$work/InRelease" | tr -d '\n')")
 fi
 
 step "Verifying the signatures with the pinned keys"
